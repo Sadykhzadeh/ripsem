@@ -1,6 +1,8 @@
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use anyhow::{Result, anyhow};
+use directories::ProjectDirs;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 
 use super::Embedder;
@@ -14,8 +16,12 @@ pub struct FastEmbedder {
 impl FastEmbedder {
     pub fn new(model_id: &str) -> Result<Self> {
         let (embedding_model, dims, query_prefix) = map_model(model_id)?;
+        let cache = cache_dir();
+        std::fs::create_dir_all(&cache).ok();
         let model = TextEmbedding::try_new(
-            InitOptions::new(embedding_model).with_show_download_progress(true),
+            InitOptions::new(embedding_model)
+                .with_cache_dir(cache)
+                .with_show_download_progress(true),
         )?;
         Ok(Self {
             model: Mutex::new(model),
@@ -23,6 +29,12 @@ impl FastEmbedder {
             query_prefix,
         })
     }
+}
+
+fn cache_dir() -> PathBuf {
+    ProjectDirs::from("", "", "ripsem")
+        .map(|d| d.cache_dir().join("models"))
+        .unwrap_or_else(|| PathBuf::from(".ripsem-models"))
 }
 
 fn map_model(id: &str) -> Result<(EmbeddingModel, usize, Option<String>)> {
