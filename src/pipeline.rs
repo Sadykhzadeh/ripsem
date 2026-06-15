@@ -88,25 +88,41 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     })
 }
 
-pub fn search(config: &Config, query: &str, k: usize) -> Result<Vec<SearchHit>> {
+pub struct Searcher {
+    index: Index,
+    embedder: Box<dyn embed::Embedder>,
+}
+
+pub fn open(config: &Config) -> Result<Searcher> {
     let index = Index::load(&config.index_path())
         .context("no index yet; run `ripsem index` in this directory first")?;
     let embedder = embed::build(config)?;
-    let qv = embedder.embed_query(query)?;
-    let hits = index.search(&qv, k);
-    Ok(hits
-        .into_iter()
-        .map(|h| {
-            let r = &index.records[h.record_idx];
-            SearchHit {
-                path: r.path.clone(),
-                start_line: r.start_line,
-                end_line: r.end_line,
-                score: h.score,
-                snippet: r.snippet.clone(),
-            }
-        })
-        .collect())
+    Ok(Searcher { index, embedder })
+}
+
+impl Searcher {
+    pub fn query(&self, query: &str, k: usize) -> Result<Vec<SearchHit>> {
+        let qv = self.embedder.embed_query(query)?;
+        Ok(self
+            .index
+            .search(&qv, k)
+            .into_iter()
+            .map(|h| {
+                let r = &self.index.records[h.record_idx];
+                SearchHit {
+                    path: r.path.clone(),
+                    start_line: r.start_line,
+                    end_line: r.end_line,
+                    score: h.score,
+                    snippet: r.snippet.clone(),
+                }
+            })
+            .collect())
+    }
+}
+
+pub fn search(config: &Config, query: &str, k: usize) -> Result<Vec<SearchHit>> {
+    open(config)?.query(query, k)
 }
 
 fn relative(root: &Path, path: &Path) -> String {
