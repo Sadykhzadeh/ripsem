@@ -62,11 +62,11 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
 fn tool_schema() -> Value {
     json!({
         "name": "search",
-        "description": "Semantic code search over the local index. Returns the most relevant code chunks for a natural-language query.",
+        "description": "Search this codebase by meaning rather than exact text. Reach for this first on any 'where/how/what' question about the code: describe what you are looking for in plain language (e.g. 'where is authentication configured', 'how are payments validated') and it returns the most relevant functions and files as ranked snippets with line ranges. Faster and far cheaper on context than scanning with grep, which you should fall back to only for exact strings or symbols.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": { "type": "string", "description": "Natural-language description of what to find." },
+                "query": { "type": "string", "description": "Plain-language description of the code or behavior you want to find." },
                 "path": { "type": "string", "description": "Optional directory to search; defaults to the server's working directory." },
                 "limit": { "type": "integer", "description": "Maximum number of results (default 10)." }
             },
