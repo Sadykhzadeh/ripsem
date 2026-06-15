@@ -1,0 +1,40 @@
+[package]
+name = "ripsem"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Local, offline semantic code search with an MCP server for coding agents"
+repository = ""
+keywords = ["search", "grep", "semantic", "embeddings", "mcp"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+anyhow = "1.0.102"
+bincode = "1"
+clap = { version = "4.6.1", features = ["derive"] }
+content_inspector = "0.2.4"
+directories = "6.0.0"
+fastembed = { version = "5.17.2", optional = true }
+ignore = "0.4.26"
+indicatif = "0.18.4"
+notify = "8.2.0"
+rayon = "1.12.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+toml = "1.1.2"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+walkdir = "2.5.0"
+xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
+
+[features]
+default = []
+fastembed = ["dep:fastembed"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
