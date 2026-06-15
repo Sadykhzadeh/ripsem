@@ -14,6 +14,8 @@ pub fn serve(config: Config) -> Result<()> {
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();
 
+    let session = pipeline::open(&config).ok();
+
     let mut line = String::new();
     loop {
         line.clear();
@@ -28,7 +30,7 @@ pub fn serve(config: Config) -> Result<()> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if let Some(response) = handle(&config, &request) {
+        if let Some(response) = handle(&config, session.as_ref(), &request) {
             writeln!(writer, "{}", serde_json::to_string(&response)?)?;
             writer.flush()?;
         }
@@ -36,7 +38,7 @@ pub fn serve(config: Config) -> Result<()> {
     Ok(())
 }
 
-fn handle(config: &Config, request: &Value) -> Option<Value> {
+fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value) -> Option<Value> {
     let method = request.get("method")?.as_str()?;
     let id = request.get("id").cloned();
 
@@ -50,7 +52,7 @@ fn handle(config: &Config, request: &Value) -> Option<Value> {
             }),
         )),
         "tools/list" => Some(ok(id?, json!({ "tools": [tool_schema()] }))),
-        "tools/call" => Some(handle_call(config, id?, request)),
+        "tools/call" => Some(handle_call(config, session, id?, request)),
         "ping" => Some(ok(id?, json!({}))),
         _ if id.is_some() => Some(error(id.unwrap(), -32601, "method not found")),
         _ => None,
@@ -73,7 +75,12 @@ fn tool_schema() -> Value {
     })
 }
 
-fn handle_call(config: &Config, id: Value, request: &Value) -> Value {
+fn handle_call(
+    config: &Config,
+    session: Option<&pipeline::Searcher>,
+    id: Value,
+    request: &Value,
+) -> Value {
     let args = request
         .get("params")
         .and_then(|p| p.get("arguments"))
@@ -99,12 +106,16 @@ fn handle_call(config: &Config, id: Value, request: &Value) -> Value {
         .map(|l| l as usize)
         .unwrap_or(10);
 
-    let scoped = match args.get("path").and_then(|p| p.as_str()) {
-        Some(p) => Config::load(std::path::Path::new(p)).unwrap_or_else(|_| config.clone()),
-        None => config.clone(),
+    let result = match args.get("path").and_then(|p| p.as_str()) {
+        Some(p) => Config::load(std::path::Path::new(p))
+            .and_then(|c| pipeline::search(&c, query, limit)),
+        None => match session {
+            Some(s) => s.query(query, limit),
+            None => pipeline::search(config, query, limit),
+        },
     };
 
-    match pipeline::search(&scoped, query, limit) {
+    match result {
         Ok(hits) => ok(id, tool_result(&hits)),
         Err(e) => ok(
             id,
