@@ -77,6 +77,21 @@ fn unchanged_files_are_reused_on_reindex() {
 }
 
 #[test]
+fn switching_model_reembeds_without_force() {
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie");
+    dir.write("b.rs", "delta echo foxtrot");
+    let mut config = config_for(&dir.path);
+
+    pipeline::index_repo(&config, false).unwrap();
+
+    config.model = "bge-base-en-v1.5".into();
+    let after = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(after.reused, 0);
+    assert_eq!(after.embedded, 2);
+}
+
+#[test]
 fn force_reindex_reembeds_everything() {
     let dir = TempDir::new();
     dir.write("a.rs", "alpha bravo charlie");
