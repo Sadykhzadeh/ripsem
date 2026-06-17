@@ -7,6 +7,12 @@ pub struct TempDir {
     path: PathBuf,
 }
 
+impl Default for TempDir {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TempDir {
     pub fn new() -> Self {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
