@@ -26,7 +26,7 @@ pub struct SearchHit {
 pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     let embedder = embed::build(config)?;
     let dims = embedder.dims();
-    let files = walk::collect(config);
+    let files = walk::collect(config)?;
 
     let prev = if !force && config.index_path().exists() {
         Index::load(&config.index_path()).ok()
