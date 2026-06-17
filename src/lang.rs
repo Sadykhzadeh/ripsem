@@ -19,6 +19,14 @@ pub fn detect(path: &Path) -> Option<LangSpec> {
         "c" | "h" => tree_sitter_c::LANGUAGE.into(),
         "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => tree_sitter_cpp::LANGUAGE.into(),
         "rb" => tree_sitter_ruby::LANGUAGE.into(),
+        "cs" => tree_sitter_c_sharp::LANGUAGE.into(),
+        "php" => tree_sitter_php::LANGUAGE_PHP.into(),
+        "scala" | "sc" => tree_sitter_scala::LANGUAGE.into(),
+        "kt" | "kts" => tree_sitter_kotlin_ng::LANGUAGE.into(),
+        "sh" | "bash" => tree_sitter_bash::LANGUAGE.into(),
+        "json" => tree_sitter_json::LANGUAGE.into(),
+        "css" => tree_sitter_css::LANGUAGE.into(),
+        "html" | "htm" => tree_sitter_html::LANGUAGE.into(),
         _ => return None,
     };
     Some(LangSpec { language })

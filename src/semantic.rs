@@ -118,6 +118,30 @@ mod tests {
     }
 
     #[test]
+    fn chunks_a_range_of_languages() {
+        let cases = [
+            (
+                "m.py",
+                "def first():\n    return 1\n\ndef second():\n    return 2\n",
+            ),
+            ("s.sh", "foo() {\n  echo hi\n}\nbar() {\n  echo bye\n}\n"),
+            (
+                "p.php",
+                "<?php\nfunction first() { return 1; }\nfunction second() { return 2; }\n",
+            ),
+            (
+                "g.go",
+                "package main\nfunc first() int { return 1 }\nfunc second() int { return 2 }\n",
+            ),
+        ];
+        for (file, src) in cases {
+            let spec = crate::lang::detect(Path::new(file)).unwrap();
+            let chunks = chunk(src, &spec, 40, 4).unwrap();
+            assert!(!chunks.is_empty(), "no chunks for {file}");
+        }
+    }
+
+    #[test]
     fn line_ranges_are_within_the_file() {
         let src = "fn a() {}\nfn b() {}\nfn c() {}\n";
         let chunks = chunk_rust(src, 1);
