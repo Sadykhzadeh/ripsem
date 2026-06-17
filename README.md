@@ -69,7 +69,7 @@ ripsem install claude-code        # writes ripsem into .mcp.json
 
 `ripsem mcp` speaks MCP over stdio and exposes a single `search` tool. After
 `install claude-code`, restart Claude Code in the directory and it can call
-`search` directly.
+`search` directly. `ripsem install cursor` does the same via `.cursor/mcp.json`.
 
 ## Configuration
 

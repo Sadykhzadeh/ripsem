@@ -67,6 +67,8 @@ pub enum ModelCmd {
 pub enum InstallCmd {
     /// Add ripsem to .mcp.json for Claude Code.
     ClaudeCode,
+    /// Add ripsem to .cursor/mcp.json for Cursor.
+    Cursor,
 }
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -79,9 +81,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Status => cmd_status(&root),
         Command::Mcp => mcp::serve(Config::load(&root)?),
         Command::Model { action } => cmd_model(&root, action),
-        Command::Install {
-            target: InstallCmd::ClaudeCode,
-        } => cmd_install_claude(&root),
+        Command::Install { target } => cmd_install(&root, target),
     }
 }
 
@@ -249,8 +249,16 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
     }
 }
 
-fn cmd_install_claude(root: &Path) -> Result<()> {
-    let path = root.join(".mcp.json");
+fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
+    let (rel, name) = match target {
+        InstallCmd::ClaudeCode => (".mcp.json", "Claude Code"),
+        InstallCmd::Cursor => (".cursor/mcp.json", "Cursor"),
+    };
+    let path = root.join(rel);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
     let mut doc: Value = if path.exists() {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
@@ -273,7 +281,7 @@ fn cmd_install_claude(root: &Path) -> Result<()> {
 
     std::fs::write(&path, serde_json::to_string_pretty(&doc)?)?;
     println!("added ripsem to {}", show_path(&path));
-    println!("restart Claude Code in this directory to pick it up");
+    println!("restart {name} in this directory to pick it up");
     Ok(())
 }
 
@@ -292,5 +300,33 @@ mod tests {
     fn strips_the_windows_verbatim_prefix() {
         assert_eq!(show_path(Path::new(r"\\?\C:\repo")), r"C:\repo");
         assert_eq!(show_path(Path::new("/home/user/repo")), "/home/user/repo");
+    }
+
+    #[test]
+    fn install_writes_cursor_config_in_a_subdir() {
+        let dir = crate::testutil::TempDir::new();
+        cmd_install(dir.path(), InstallCmd::Cursor).unwrap();
+        let doc: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".cursor/mcp.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
+        assert_eq!(doc["mcpServers"]["ripsem"]["args"][0], "mcp");
+    }
+
+    #[test]
+    fn install_preserves_existing_servers() {
+        let dir = crate::testutil::TempDir::new();
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers":{"other":{"command":"x"}}}"#,
+        )
+        .unwrap();
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        let doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(doc["mcpServers"]["other"]["command"], "x");
+        assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
     }
 }
