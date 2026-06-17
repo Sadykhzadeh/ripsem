@@ -32,6 +32,7 @@ graph is only built above that size; smaller repos keep exact results.
 ripsem init                       # write .ripsem/config.toml
 ripsem index                      # build the index (incremental on re-runs)
 ripsem search "where is auth set up?"
+ripsem status                     # show index size, chunk/file counts, model
 ripsem watch                      # index and keep it in sync as files change
 ```
 

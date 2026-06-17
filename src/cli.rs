@@ -91,7 +91,7 @@ fn cmd_init(root: &Path) -> Result<()> {
         ..Default::default()
     };
     config.save()?;
-    println!("wrote {}", config.config_path().display());
+    println!("wrote {}", show_path(&config.config_path()));
     println!("model: {} ({:?} backend)", config.model, config.backend);
     Ok(())
 }
@@ -121,7 +121,7 @@ fn cmd_status(root: &Path) -> Result<()> {
     let files: std::collections::HashSet<&str> =
         index.records.iter().map(|r| r.path.as_str()).collect();
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    println!("index:  {} ({})", path.display(), human_size(bytes));
+    println!("index:  {} ({})", show_path(&path), human_size(bytes));
     println!(
         "chunks: {} across {} files",
         index.records.len(),
@@ -137,6 +137,14 @@ fn cmd_status(root: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn show_path(path: &Path) -> String {
+    let shown = path.display().to_string();
+    shown
+        .strip_prefix(r"\\?\")
+        .map(str::to_string)
+        .unwrap_or(shown)
 }
 
 fn human_size(bytes: u64) -> String {
@@ -264,7 +272,7 @@ fn cmd_install_claude(root: &Path) -> Result<()> {
     });
 
     std::fs::write(&path, serde_json::to_string_pretty(&doc)?)?;
-    println!("added ripsem to {}", path.display());
+    println!("added ripsem to {}", show_path(&path));
     println!("restart Claude Code in this directory to pick it up");
     Ok(())
 }
@@ -278,5 +286,11 @@ mod tests {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(2048), "2.0 KB");
         assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn strips_the_windows_verbatim_prefix() {
+        assert_eq!(show_path(Path::new(r"\\?\C:\repo")), r"C:\repo");
+        assert_eq!(show_path(Path::new("/home/user/repo")), "/home/user/repo");
     }
 }
