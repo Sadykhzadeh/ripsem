@@ -108,9 +108,11 @@ mod tests {
         dir.write(".git/hooks/pre-commit.sample", "#!/bin/sh\nexit 0\n");
 
         let collected = collect(&config_at(dir.path())).unwrap();
-        assert!(collected.iter().all(|p| !p
-            .components()
-            .any(|c| c.as_os_str() == ".git")));
+        assert!(
+            collected
+                .iter()
+                .all(|p| !p.components().any(|c| c.as_os_str() == ".git"))
+        );
         assert_eq!(collected.len(), 1);
     }
 

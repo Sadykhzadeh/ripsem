@@ -144,7 +144,9 @@ mod tests {
     fn scoped_search_only_returns_matching_prefix() {
         let mut index = Index::new(3, "test".into());
         index.records.push(record("src/a.rs", vec![1.0, 0.0, 0.0]));
-        index.records.push(record("src/embed/b.rs", vec![1.0, 0.0, 0.0]));
+        index
+            .records
+            .push(record("src/embed/b.rs", vec![1.0, 0.0, 0.0]));
         index.records.push(record("docs/c.md", vec![1.0, 0.0, 0.0]));
 
         let hits = index.search_scoped(&[1.0, 0.0, 0.0], 10, Some("src"));

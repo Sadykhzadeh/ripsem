@@ -92,7 +92,10 @@ fn unchanged_files_are_reused_on_reindex() {
     let first = pipeline::index_repo(&config, false).unwrap();
     assert_eq!(first.embedded, 2);
 
-    dir.write("a.rs", "alpha bravo charlie delta echo foxtrot mike november");
+    dir.write(
+        "a.rs",
+        "alpha bravo charlie delta echo foxtrot mike november",
+    );
     let second = pipeline::index_repo(&config, false).unwrap();
     assert_eq!(second.embedded, 1);
     assert_eq!(second.reused, 1);
