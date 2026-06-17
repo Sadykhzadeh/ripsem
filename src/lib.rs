@@ -7,6 +7,7 @@ pub mod index;
 pub mod mcp;
 pub mod model;
 pub mod pipeline;
+pub mod quant;
 pub mod walk;
 pub mod watch;
 
