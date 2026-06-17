@@ -77,7 +77,7 @@ backend = "fastembed"
 model = "bge-small-en-v1.5"
 chunk_lines = 40
 chunk_overlap = 8
-max_chunk_lines = 120
+max_chunk_lines = 50
 max_file_kb = 1024
 exclude = []
 ```

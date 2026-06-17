@@ -52,7 +52,7 @@ fn default_chunk_overlap() -> usize {
     8
 }
 fn default_max_chunk_lines() -> usize {
-    120
+    50
 }
 fn default_max_file_kb() -> u64 {
     1024
