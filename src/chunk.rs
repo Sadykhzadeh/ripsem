@@ -1,8 +1,28 @@
+use std::path::Path;
+
+use crate::config::Config;
+
 #[derive(Debug, Clone)]
 pub struct Chunk {
     pub start_line: usize,
     pub end_line: usize,
     pub text: String,
+}
+
+pub fn chunk_source(path: &Path, text: &str, config: &Config) -> Vec<Chunk> {
+    #[cfg(feature = "treesitter")]
+    if let Some(spec) = crate::lang::detect(path) {
+        if let Some(chunks) =
+            crate::semantic::chunk(text, &spec, config.max_chunk_lines, config.chunk_overlap)
+        {
+            if !chunks.is_empty() {
+                return chunks;
+            }
+        }
+    }
+    #[cfg(not(feature = "treesitter"))]
+    let _ = path;
+    chunk_file(text, config.chunk_lines, config.chunk_overlap)
 }
 
 pub fn chunk_file(text: &str, chunk_lines: usize, overlap: usize) -> Vec<Chunk> {

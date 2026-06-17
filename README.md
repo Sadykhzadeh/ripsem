@@ -11,12 +11,16 @@ know *what* you want but not the exact words.
 ## Install
 
 ```
-cargo install --path . --features fastembed
+cargo install --path . --features fastembed,treesitter
 ```
 
 The `fastembed` feature pulls in the local embedding runtime. Without it the
 binary still builds and runs on a lightweight lexical backend (useful for tests
 and CI), but real semantic search needs the model.
+
+The `treesitter` feature chunks code on function and type boundaries instead of
+fixed line windows, which keeps each indexed snippet aligned to a logical unit.
+Files in unsupported languages fall back to line-window chunking.
 
 ## Usage
 
@@ -69,9 +73,14 @@ backend = "fastembed"
 model = "bge-small-en-v1.5"
 chunk_lines = 40
 chunk_overlap = 8
+max_chunk_lines = 120
 max_file_kb = 1024
 exclude = []
 ```
+
+`chunk_lines`/`chunk_overlap` size the line windows used for plain-text files and
+for languages without a parser. `max_chunk_lines` caps a single semantic chunk;
+larger functions are split. `exclude` takes gitignore-style globs.
 
 ## License
 
