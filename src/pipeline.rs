@@ -169,6 +169,7 @@ pub struct Searcher {
     embedder: Box<dyn embed::Embedder>,
     index_path: std::path::PathBuf,
     index_mtime: Option<std::time::SystemTime>,
+    lexical_boost: f32,
 }
 
 pub fn open(config: &Config) -> Result<Searcher> {
@@ -182,6 +183,7 @@ pub fn open(config: &Config) -> Result<Searcher> {
         embedder,
         index_path,
         index_mtime,
+        lexical_boost: config.lexical_boost,
     })
 }
 
@@ -228,9 +230,10 @@ impl Searcher {
             }
         }
 
+        let terms = query_terms(query);
         Ok(self
             .index
-            .search_scoped(&qv, k, prefix)
+            .search_hybrid(&qv, &terms, self.lexical_boost, k, prefix)
             .into_iter()
             .map(|h| self.hit(h.record_idx, h.score))
             .collect())
@@ -250,6 +253,16 @@ impl Searcher {
 
 pub fn search(config: &Config, query: &str, k: usize) -> Result<Vec<SearchHit>> {
     open(config)?.query(query, k)
+}
+
+fn query_terms(query: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    query
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|t| t.len() >= 3)
+        .map(|t| t.to_lowercase())
+        .filter(|t| seen.insert(t.clone()))
+        .collect()
 }
 
 fn relative(root: &Path, path: &Path) -> String {
@@ -276,4 +289,24 @@ fn progress(len: u64) -> ProgressBar {
         pb.set_style(style);
     }
     pb
+}
+
+#[cfg(test)]
+mod tests {
+    use super::query_terms;
+
+    #[test]
+    fn keeps_identifiers_and_drops_short_tokens() {
+        let terms = query_terms("Where is parse_header defined, an x?");
+        assert!(terms.contains(&"parse_header".to_string()));
+        assert!(terms.contains(&"where".to_string()));
+        assert!(!terms.contains(&"is".to_string()));
+        assert!(!terms.contains(&"x".to_string()));
+    }
+
+    #[test]
+    fn deduplicates_terms() {
+        let terms = query_terms("cache cache CACHE");
+        assert_eq!(terms, vec!["cache".to_string()]);
+    }
 }
