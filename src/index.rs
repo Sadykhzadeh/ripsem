@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::quant::{self, QuantizedVector};
 
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
@@ -25,6 +25,8 @@ pub struct Index {
     pub dims: usize,
     pub model: String,
     pub records: Vec<Record>,
+    #[serde(default)]
+    pub ann: Option<Vec<u8>>,
 }
 
 pub struct Hit {
@@ -39,6 +41,7 @@ impl Index {
             dims,
             model,
             records: Vec::new(),
+            ann: None,
         }
     }
 

@@ -109,6 +109,16 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     flush(embedder.as_ref(), &mut pending, &mut texts, &mut index)?;
     pb.finish_and_clear();
 
+    #[cfg(feature = "hnsw")]
+    if index.records.len() >= crate::ann::MIN_RECORDS {
+        let vectors: Vec<Vec<f32>> = index
+            .records
+            .iter()
+            .map(|r| crate::quant::dequantize(&r.vector))
+            .collect();
+        index.ann = crate::ann::build(vectors);
+    }
+
     index.save(&config.index_path())?;
     Ok(IndexStats {
         files: files.len(),
@@ -203,21 +213,36 @@ impl Searcher {
         prefix: Option<&str>,
     ) -> Result<Vec<SearchHit>> {
         let qv = self.embedder.embed_query(query)?;
+
+        #[cfg(feature = "hnsw")]
+        if prefix.is_none() {
+            if let Some(blob) = &self.index.ann {
+                if let Some(found) = crate::ann::search(blob, &qv, k) {
+                    return Ok(found
+                        .into_iter()
+                        .map(|(idx, score)| self.hit(idx, score))
+                        .collect());
+                }
+            }
+        }
+
         Ok(self
             .index
             .search_scoped(&qv, k, prefix)
             .into_iter()
-            .map(|h| {
-                let r = &self.index.records[h.record_idx];
-                SearchHit {
-                    path: r.path.clone(),
-                    start_line: r.start_line,
-                    end_line: r.end_line,
-                    score: h.score,
-                    snippet: r.snippet.clone(),
-                }
-            })
+            .map(|h| self.hit(h.record_idx, h.score))
             .collect())
+    }
+
+    fn hit(&self, record_idx: usize, score: f32) -> SearchHit {
+        let r = &self.index.records[record_idx];
+        SearchHit {
+            path: r.path.clone(),
+            start_line: r.start_line,
+            end_line: r.end_line,
+            score,
+            snippet: r.snippet.clone(),
+        }
     }
 }
 

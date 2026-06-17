@@ -1,3 +1,5 @@
+#[cfg(feature = "hnsw")]
+pub mod ann;
 pub mod chunk;
 pub mod cli;
 pub mod config;

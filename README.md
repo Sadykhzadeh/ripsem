@@ -22,6 +22,10 @@ The `treesitter` feature chunks code on function and type boundaries instead of
 fixed line windows, which keeps each indexed snippet aligned to a logical unit.
 Files in unsupported languages fall back to line-window chunking.
 
+The `hnsw` feature builds an approximate-nearest-neighbour index for large
+repositories. Below ~20k chunks the exact flat scan is already sub-10 ms, so the
+graph is only built above that size; smaller repos keep exact results.
+
 ## Usage
 
 ```
