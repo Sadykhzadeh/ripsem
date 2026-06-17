@@ -51,8 +51,12 @@ fn ranks_by_meaning_not_keywords() {
     };
 
     pipeline::index_repo(&config, true).unwrap();
-    let hits = pipeline::search(&config, "verifying a person's identity before granting entry", 5)
-        .unwrap();
+    let hits = pipeline::search(
+        &config,
+        "verifying a person's identity before granting entry",
+        5,
+    )
+    .unwrap();
 
     assert!(!hits.is_empty());
     assert_eq!(
