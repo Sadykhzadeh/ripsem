@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
 description = "Local, offline semantic code search with an MCP server for coding agents"
-repository = ""
+repository = "https://github.com/Sadykhzadeh/ripsem"
 keywords = ["search", "grep", "semantic", "embeddings", "mcp"]
 categories = ["command-line-utilities", "development-tools"]
 
