@@ -113,7 +113,9 @@ fn handle_call(
 
     let result = match session {
         Some(s) => s.query_scoped(query, limit, prefix.as_deref()),
-        None => pipeline::open(config).and_then(|s| s.query_scoped(query, limit, prefix.as_deref())),
+        None => {
+            pipeline::open(config).and_then(|s| s.query_scoped(query, limit, prefix.as_deref()))
+        }
     };
 
     match result {

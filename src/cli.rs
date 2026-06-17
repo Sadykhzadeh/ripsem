@@ -128,7 +128,10 @@ fn cmd_search(root: &Path, query: &str, limit: usize, as_json: bool) -> Result<(
         return Ok(());
     }
     for h in &hits {
-        println!("{}:{}-{}  ({:.3})", h.path, h.start_line, h.end_line, h.score);
+        println!(
+            "{}:{}-{}  ({:.3})",
+            h.path, h.start_line, h.end_line, h.score
+        );
         for l in h.snippet.lines().take(3) {
             println!("    {l}");
         }
@@ -186,7 +189,11 @@ fn cmd_install_claude(root: &Path) -> Result<()> {
         json!({})
     };
 
-    if !doc.get("mcpServers").map(|v| v.is_object()).unwrap_or(false) {
+    if !doc
+        .get("mcpServers")
+        .map(|v| v.is_object())
+        .unwrap_or(false)
+    {
         doc["mcpServers"] = json!({});
     }
     doc["mcpServers"]["ripsem"] = json!({

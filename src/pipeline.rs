@@ -38,7 +38,10 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     if let Some(prev) = prev {
         if prev.dims == dims && prev.model == config.model {
             for record in prev.records {
-                prev_chunks.entry(record.path.clone()).or_default().push(record);
+                prev_chunks
+                    .entry(record.path.clone())
+                    .or_default()
+                    .push(record);
             }
         }
     }
@@ -215,9 +218,7 @@ fn truncate(s: &str, max: usize) -> String {
 
 fn progress(len: u64) -> ProgressBar {
     let pb = ProgressBar::new(len);
-    if let Ok(style) =
-        ProgressStyle::with_template("{spinner} {pos}/{len} files  {wide_msg}")
-    {
+    if let Ok(style) = ProgressStyle::with_template("{spinner} {pos}/{len} files  {wide_msg}") {
         pb.set_style(style);
     }
     pb
