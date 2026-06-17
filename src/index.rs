@@ -58,7 +58,10 @@ impl Index {
             std::fs::create_dir_all(parent)?;
         }
         let bytes = bincode::serialize(self).context("encoding index")?;
-        std::fs::write(path, bytes).with_context(|| format!("writing index {}", path.display()))?;
+        let tmp = temp_sibling(path);
+        std::fs::write(&tmp, bytes).with_context(|| format!("writing index {}", tmp.display()))?;
+        std::fs::rename(&tmp, path)
+            .with_context(|| format!("replacing index {}", path.display()))?;
         Ok(())
     }
 
@@ -87,6 +90,17 @@ impl Index {
         });
         scored.truncate(k);
         scored
+    }
+}
+
+fn temp_sibling(path: &Path) -> std::path::PathBuf {
+    match path.file_name() {
+        Some(name) => {
+            let mut tmp = name.to_os_string();
+            tmp.push(".tmp");
+            path.with_file_name(tmp)
+        }
+        None => path.with_extension("tmp"),
     }
 }
 
@@ -140,6 +154,16 @@ mod tests {
         assert_eq!(loaded.dims, 3);
         assert_eq!(loaded.records.len(), 3);
         assert_eq!(loaded.records[1].path, "y.rs");
+    }
+
+    #[test]
+    fn save_replaces_without_leaving_a_temp_file() {
+        let dir = TempDir::new();
+        let path = dir.path().join(".ripsem/index.bin");
+        sample_index().save(&path).unwrap();
+        sample_index().save(&path).unwrap();
+        assert!(Index::load(&path).is_ok());
+        assert!(!path.with_file_name("index.bin.tmp").exists());
     }
 
     #[test]
