@@ -61,6 +61,28 @@ fn indexes_and_searches_by_overlapping_terms() {
 }
 
 #[test]
+fn indexes_correctly_across_embedding_batches() {
+    let dir = TempDir::new();
+    let mut body = String::new();
+    for i in 0..9000 {
+        if i == 5000 {
+            body.push_str("zebraquux singular beacon token\n");
+        } else {
+            body.push_str(&format!("filler row {i}\n"));
+        }
+    }
+    dir.write("big.rs", &body);
+    let config = config_for(&dir.path);
+
+    let stats = pipeline::index_repo(&config, false).unwrap();
+    assert!(stats.chunks > 256);
+
+    let hits = pipeline::search(&config, "zebraquux singular beacon", 5).unwrap();
+    assert_eq!(hits[0].path, "big.rs");
+    assert!(hits[0].start_line <= 5001 && hits[0].end_line >= 5001);
+}
+
+#[test]
 fn unchanged_files_are_reused_on_reindex() {
     let dir = TempDir::new();
     dir.write("a.rs", "alpha bravo charlie delta echo foxtrot");

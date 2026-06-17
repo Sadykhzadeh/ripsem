@@ -45,6 +45,8 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     let mut index = Index::new(dims, config.model.clone());
     let mut embedded = 0;
     let mut reused = 0;
+    let mut pending: Vec<Pending> = Vec::new();
+    let mut texts: Vec<String> = Vec::new();
 
     let pb = progress(files.len() as u64);
     for path in &files {
@@ -69,20 +71,22 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         if chunks.is_empty() {
             continue;
         }
-        let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-        let vectors = embedder.embed_documents(&texts)?;
-        for (c, vector) in chunks.into_iter().zip(vectors) {
-            index.records.push(Record {
+        embedded += 1;
+        for c in chunks {
+            pending.push(Pending {
                 path: rel.clone(),
                 start_line: c.start_line,
                 end_line: c.end_line,
                 snippet: truncate(&c.text, 400),
                 file_hash: hash,
-                vector,
             });
+            texts.push(c.text);
+            if texts.len() >= EMBED_BATCH {
+                flush(embedder.as_ref(), &mut pending, &mut texts, &mut index)?;
+            }
         }
-        embedded += 1;
     }
+    flush(embedder.as_ref(), &mut pending, &mut texts, &mut index)?;
     pb.finish_and_clear();
 
     index.save(&config.index_path())?;
@@ -92,6 +96,40 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         reused,
         chunks: index.records.len(),
     })
+}
+
+const EMBED_BATCH: usize = 256;
+
+struct Pending {
+    path: String,
+    start_line: usize,
+    end_line: usize,
+    snippet: String,
+    file_hash: u64,
+}
+
+fn flush(
+    embedder: &dyn embed::Embedder,
+    pending: &mut Vec<Pending>,
+    texts: &mut Vec<String>,
+    index: &mut Index,
+) -> Result<()> {
+    if texts.is_empty() {
+        return Ok(());
+    }
+    let vectors = embedder.embed_documents(texts)?;
+    for (p, vector) in pending.drain(..).zip(vectors) {
+        index.records.push(Record {
+            path: p.path,
+            start_line: p.start_line,
+            end_line: p.end_line,
+            snippet: p.snippet,
+            file_hash: p.file_hash,
+            vector,
+        });
+    }
+    texts.clear();
+    Ok(())
 }
 
 pub struct Searcher {
