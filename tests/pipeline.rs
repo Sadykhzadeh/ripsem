@@ -1,0 +1,90 @@
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use ripsem::config::{Backend, Config};
+use ripsem::pipeline;
+
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new() -> Self {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("ripsem-it-{}-{}", std::process::id(), n));
+        std::fs::create_dir_all(&path).unwrap();
+        Self { path }
+    }
+
+    fn write(&self, rel: &str, contents: &str) {
+        std::fs::write(self.path.join(rel), contents).unwrap();
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn config_for(root: &Path) -> Config {
+    Config {
+        backend: Backend::Hash,
+        root: root.to_path_buf(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn indexes_and_searches_by_overlapping_terms() {
+    let dir = TempDir::new();
+    dir.write(
+        "auth.rs",
+        "fn authenticate(user) { verify password create session token logout }",
+    );
+    dir.write(
+        "math.rs",
+        "fn add(a, b) { return arithmetic sum product divide remainder }",
+    );
+    let config = config_for(&dir.path);
+
+    let stats = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(stats.files, 2);
+    assert_eq!(stats.embedded, 2);
+    assert_eq!(stats.reused, 0);
+
+    let hits = pipeline::search(&config, "verify password session token", 5).unwrap();
+    assert!(!hits.is_empty());
+    assert_eq!(hits[0].path, "auth.rs");
+}
+
+#[test]
+fn unchanged_files_are_reused_on_reindex() {
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie delta echo foxtrot");
+    dir.write("b.rs", "golf hotel india juliet kilo lima");
+    let config = config_for(&dir.path);
+
+    let first = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(first.embedded, 2);
+
+    dir.write("a.rs", "alpha bravo charlie delta echo foxtrot mike november");
+    let second = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(second.embedded, 1);
+    assert_eq!(second.reused, 1);
+}
+
+#[test]
+fn force_reindex_reembeds_everything() {
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie");
+    dir.write("b.rs", "delta echo foxtrot");
+    let config = config_for(&dir.path);
+
+    pipeline::index_repo(&config, false).unwrap();
+    let forced = pipeline::index_repo(&config, true).unwrap();
+    assert_eq!(forced.embedded, 2);
+    assert_eq!(forced.reused, 0);
+}

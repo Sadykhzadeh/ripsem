@@ -154,3 +154,82 @@ fn ok(id: Value, result: Value) -> Value {
 fn error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(method: &str, params: Value) -> Value {
+        json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+    }
+
+    #[test]
+    fn initialize_reports_server_info() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("initialize", json!({}))).unwrap();
+        assert_eq!(resp["result"]["serverInfo"]["name"], "ripsem");
+        assert_eq!(resp["result"]["protocolVersion"], PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn tools_list_exposes_search() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("tools/list", json!({}))).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "search");
+    }
+
+    #[test]
+    fn unknown_method_is_an_error() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("nope", json!({}))).unwrap();
+        assert_eq!(resp["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn notification_without_id_is_ignored() {
+        let cfg = Config::default();
+        let note = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
+        assert!(handle(&cfg, None, &note).is_none());
+    }
+
+    #[test]
+    fn call_without_query_is_rejected() {
+        let cfg = Config::default();
+        let resp = handle(
+            &cfg,
+            None,
+            &req("tools/call", json!({ "name": "search", "arguments": {} })),
+        )
+        .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn call_to_unknown_tool_is_rejected() {
+        let cfg = Config::default();
+        let resp = handle(
+            &cfg,
+            None,
+            &req("tools/call", json!({ "name": "other", "arguments": {} })),
+        )
+        .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn result_text_lists_hits() {
+        let hits = vec![pipeline::SearchHit {
+            path: "a.rs".into(),
+            start_line: 1,
+            end_line: 4,
+            score: 0.5,
+            snippet: "fn main() {}".into(),
+        }];
+        let value = tool_result(&hits);
+        let text = value["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("a.rs:1-4"));
+        assert_eq!(value["isError"], false);
+    }
+}
