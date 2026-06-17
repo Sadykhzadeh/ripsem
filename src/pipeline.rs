@@ -146,10 +146,19 @@ pub fn open(config: &Config) -> Result<Searcher> {
 
 impl Searcher {
     pub fn query(&self, query: &str, k: usize) -> Result<Vec<SearchHit>> {
+        self.query_scoped(query, k, None)
+    }
+
+    pub fn query_scoped(
+        &self,
+        query: &str,
+        k: usize,
+        prefix: Option<&str>,
+    ) -> Result<Vec<SearchHit>> {
         let qv = self.embedder.embed_query(query)?;
         Ok(self
             .index
-            .search(&qv, k)
+            .search_scoped(&qv, k, prefix)
             .into_iter()
             .map(|h| {
                 let r = &self.index.records[h.record_idx];

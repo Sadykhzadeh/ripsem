@@ -74,10 +74,15 @@ impl Index {
     }
 
     pub fn search(&self, query: &[f32], k: usize) -> Vec<Hit> {
+        self.search_scoped(query, k, None)
+    }
+
+    pub fn search_scoped(&self, query: &[f32], k: usize, prefix: Option<&str>) -> Vec<Hit> {
         let mut scored: Vec<Hit> = self
             .records
             .par_iter()
             .enumerate()
+            .filter(|(_, r)| prefix.is_none_or(|p| path_in_scope(&r.path, p)))
             .map(|(i, r)| Hit {
                 score: quant::dot(&r.vector, query),
                 record_idx: i,
@@ -90,6 +95,13 @@ impl Index {
         });
         scored.truncate(k);
         scored
+    }
+}
+
+fn path_in_scope(path: &str, prefix: &str) -> bool {
+    match path.strip_prefix(prefix) {
+        Some(rest) => rest.is_empty() || rest.starts_with('/'),
+        None => false,
     }
 }
 
@@ -126,6 +138,30 @@ mod tests {
         index.records.push(record("y.rs", vec![0.0, 1.0, 0.0]));
         index.records.push(record("z.rs", vec![0.0, 0.0, 1.0]));
         index
+    }
+
+    #[test]
+    fn scoped_search_only_returns_matching_prefix() {
+        let mut index = Index::new(3, "test".into());
+        index.records.push(record("src/a.rs", vec![1.0, 0.0, 0.0]));
+        index.records.push(record("src/embed/b.rs", vec![1.0, 0.0, 0.0]));
+        index.records.push(record("docs/c.md", vec![1.0, 0.0, 0.0]));
+
+        let hits = index.search_scoped(&[1.0, 0.0, 0.0], 10, Some("src"));
+        let paths: Vec<&str> = hits
+            .iter()
+            .map(|h| index.records[h.record_idx].path.as_str())
+            .collect();
+        assert!(paths.contains(&"src/a.rs"));
+        assert!(paths.contains(&"src/embed/b.rs"));
+        assert!(!paths.contains(&"docs/c.md"));
+    }
+
+    #[test]
+    fn scope_prefix_does_not_match_partial_segments() {
+        assert!(path_in_scope("src/a.rs", "src"));
+        assert!(path_in_scope("src", "src"));
+        assert!(!path_in_scope("source/a.rs", "src"));
     }
 
     #[test]

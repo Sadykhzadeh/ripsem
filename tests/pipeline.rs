@@ -114,6 +114,25 @@ fn switching_model_reembeds_without_force() {
 }
 
 #[test]
+fn scoped_search_limits_results_to_a_subdirectory() {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path.join("src")).unwrap();
+    std::fs::create_dir_all(dir.path.join("docs")).unwrap();
+    dir.write("src/auth.rs", "verify password create session token");
+    dir.write("docs/auth.md", "verify password create session token");
+    let config = config_for(&dir.path);
+
+    pipeline::index_repo(&config, false).unwrap();
+    let searcher = pipeline::open(&config).unwrap();
+
+    let hits = searcher
+        .query_scoped("verify password session token", 10, Some("src"))
+        .unwrap();
+    assert!(!hits.is_empty());
+    assert!(hits.iter().all(|h| h.path.starts_with("src/")));
+}
+
+#[test]
 fn force_reindex_reembeds_everything() {
     let dir = TempDir::new();
     dir.write("a.rs", "alpha bravo charlie");
