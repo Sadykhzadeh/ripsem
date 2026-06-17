@@ -156,6 +156,28 @@ fn searcher_hot_reloads_a_rebuilt_index() {
 }
 
 #[test]
+fn empty_repository_indexes_without_error() {
+    let dir = TempDir::new();
+    let config = config_for(&dir.path);
+
+    let stats = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(stats.files, 0);
+    assert_eq!(stats.chunks, 0);
+
+    let hits = pipeline::search(&config, "anything at all", 5).unwrap();
+    assert!(hits.is_empty());
+}
+
+#[test]
+fn searching_without_an_index_is_a_clear_error() {
+    let dir = TempDir::new();
+    let config = config_for(&dir.path);
+
+    let err = pipeline::search(&config, "where is auth", 5).unwrap_err();
+    assert!(err.to_string().contains("ripsem index"));
+}
+
+#[test]
 fn force_reindex_reembeds_everything() {
     let dir = TempDir::new();
     dir.write("a.rs", "alpha bravo charlie");
