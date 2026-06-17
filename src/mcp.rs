@@ -67,7 +67,7 @@ fn tool_schema() -> Value {
             "type": "object",
             "properties": {
                 "query": { "type": "string", "description": "Plain-language description of the code or behavior you want to find." },
-                "path": { "type": "string", "description": "Optional directory to search; defaults to the server's working directory." },
+                "path": { "type": "string", "description": "Optional subdirectory (relative to the repo) to limit results to, e.g. 'src/embed'." },
                 "limit": { "type": "integer", "description": "Maximum number of results (default 10)." }
             },
             "required": ["query"]
@@ -106,13 +106,14 @@ fn handle_call(
         .map(|l| l as usize)
         .unwrap_or(10);
 
-    let result = match args.get("path").and_then(|p| p.as_str()) {
-        Some(p) => Config::load(std::path::Path::new(p))
-            .and_then(|c| pipeline::search(&c, query, limit)),
-        None => match session {
-            Some(s) => s.query(query, limit),
-            None => pipeline::search(config, query, limit),
-        },
+    let prefix = args
+        .get("path")
+        .and_then(|p| p.as_str())
+        .and_then(|p| scope_prefix(p, &config.root));
+
+    let result = match session {
+        Some(s) => s.query_scoped(query, limit, prefix.as_deref()),
+        None => pipeline::open(config).and_then(|s| s.query_scoped(query, limit, prefix.as_deref())),
     };
 
     match result {
@@ -124,6 +125,26 @@ fn handle_call(
                 "isError": true
             }),
         ),
+    }
+}
+
+fn scope_prefix(raw: &str, root: &std::path::Path) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "." {
+        return None;
+    }
+    let candidate = std::path::Path::new(raw);
+    let rel = if candidate.is_absolute() {
+        candidate.strip_prefix(root).ok()?
+    } else {
+        candidate
+    };
+    let normalized = rel.to_string_lossy().replace('\\', "/");
+    let trimmed = normalized.trim_matches('/');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -216,6 +237,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn scope_prefix_normalizes_relative_paths() {
+        let root = std::path::Path::new("/repo");
+        assert_eq!(scope_prefix("src/embed", root), Some("src/embed".into()));
+        assert_eq!(scope_prefix("src\\embed\\", root), Some("src/embed".into()));
+        assert_eq!(scope_prefix(".", root), None);
+        assert_eq!(scope_prefix("  ", root), None);
     }
 
     #[test]
