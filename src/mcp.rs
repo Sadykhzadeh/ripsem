@@ -14,7 +14,7 @@ pub fn serve(config: Config) -> Result<()> {
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();
 
-    let session = pipeline::open(&config).ok();
+    let mut session = pipeline::open(&config).ok();
 
     let mut line = String::new();
     loop {
@@ -30,6 +30,9 @@ pub fn serve(config: Config) -> Result<()> {
             Ok(v) => v,
             Err(_) => continue,
         };
+        if let Some(s) = session.as_mut() {
+            let _ = s.refresh();
+        }
         if let Some(response) = handle(&config, session.as_ref(), &request) {
             writeln!(writer, "{}", serde_json::to_string(&response)?)?;
             writer.flush()?;

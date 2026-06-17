@@ -136,6 +136,26 @@ fn scoped_search_limits_results_to_a_subdirectory() {
 }
 
 #[test]
+fn searcher_hot_reloads_a_rebuilt_index() {
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie delta echo");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let mut searcher = pipeline::open(&config).unwrap();
+    let before = searcher.query("zulu yankee xray", 5).unwrap();
+    assert!(before.iter().all(|h| h.path == "a.rs"));
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    dir.write("b.rs", "zulu yankee xray whiskey victor");
+    pipeline::index_repo(&config, false).unwrap();
+
+    assert!(searcher.refresh().unwrap());
+    let after = searcher.query("zulu yankee xray", 5).unwrap();
+    assert!(after.iter().any(|h| h.path == "b.rs"));
+}
+
+#[test]
 fn force_reindex_reembeds_everything() {
     let dir = TempDir::new();
     dir.write("a.rs", "alpha bravo charlie");
