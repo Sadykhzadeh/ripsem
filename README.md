@@ -20,7 +20,9 @@ and CI), but real semantic search needs the model.
 
 The `treesitter` feature chunks code on function and type boundaries instead of
 fixed line windows, which keeps each indexed snippet aligned to a logical unit.
-Files in unsupported languages fall back to line-window chunking.
+It covers Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP,
+Scala, Kotlin, Bash, HTML, CSS, and JSON; other files fall back to line-window
+chunking.
 
 The `hnsw` feature builds an approximate-nearest-neighbour index for large
 repositories. Below ~20k chunks the exact flat scan is already sub-10 ms, so the
