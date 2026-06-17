@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::index::{Index, Record};
 use crate::{chunk, embed, fingerprint, walk};
 
+#[derive(Debug)]
 pub struct IndexStats {
     pub files: usize,
     pub embedded: usize,
@@ -16,6 +17,7 @@ pub struct IndexStats {
     pub chunks: usize,
 }
 
+#[derive(Debug)]
 pub struct SearchHit {
     pub path: String,
     pub start_line: usize,
