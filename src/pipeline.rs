@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -32,7 +33,14 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     } else {
         None
     };
-    let prev_hashes = prev.as_ref().map(|i| i.file_hashes()).unwrap_or_default();
+    let mut prev_chunks: HashMap<String, Vec<Record>> = HashMap::new();
+    if let Some(prev) = prev {
+        if prev.dims == dims && prev.model == config.model {
+            for record in prev.records {
+                prev_chunks.entry(record.path.clone()).or_default().push(record);
+            }
+        }
+    }
 
     let mut index = Index::new(dims, config.model.clone());
     let mut embedded = 0;
@@ -48,11 +56,9 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         };
         let hash = fingerprint::content_hash(&bytes);
 
-        if let (Some(prev_index), Some(&ph)) = (prev.as_ref(), prev_hashes.get(&rel)) {
-            if ph == hash {
-                for r in prev_index.records.iter().filter(|r| r.path == rel) {
-                    index.records.push(r.clone());
-                }
+        if let Some(records) = prev_chunks.get_mut(&rel) {
+            if records.first().map(|r| r.file_hash) == Some(hash) {
+                index.records.append(records);
                 reused += 1;
                 continue;
             }
