@@ -125,7 +125,7 @@ fn flush(
             end_line: p.end_line,
             snippet: p.snippet,
             file_hash: p.file_hash,
-            vector,
+            vector: crate::quant::quantize(&vector),
         });
     }
     texts.clear();

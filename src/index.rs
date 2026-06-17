@@ -5,6 +5,10 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::quant::{self, QuantizedVector};
+
+pub const FORMAT_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
     pub path: String,
@@ -12,11 +16,12 @@ pub struct Record {
     pub end_line: usize,
     pub snippet: String,
     pub file_hash: u64,
-    pub vector: Vec<f32>,
+    pub vector: QuantizedVector,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Index {
+    pub format_version: u32,
     pub dims: usize,
     pub model: String,
     pub records: Vec<Record>,
@@ -30,6 +35,7 @@ pub struct Hit {
 impl Index {
     pub fn new(dims: usize, model: String) -> Self {
         Self {
+            format_version: FORMAT_VERSION,
             dims,
             model,
             records: Vec::new(),
@@ -39,7 +45,12 @@ impl Index {
     pub fn load(path: &Path) -> Result<Self> {
         let bytes =
             std::fs::read(path).with_context(|| format!("reading index {}", path.display()))?;
-        bincode::deserialize(&bytes).context("decoding index")
+        let index: Index = bincode::deserialize(&bytes)
+            .context("index format is from an older ripsem; run `ripsem index --force`")?;
+        if index.format_version != FORMAT_VERSION {
+            anyhow::bail!("index format is from an older ripsem; run `ripsem index --force`");
+        }
+        Ok(index)
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -65,7 +76,7 @@ impl Index {
             .par_iter()
             .enumerate()
             .map(|(i, r)| Hit {
-                score: dot(&r.vector, query),
+                score: quant::dot(&r.vector, query),
                 record_idx: i,
             })
             .collect();
@@ -77,10 +88,6 @@ impl Index {
         scored.truncate(k);
         scored
     }
-}
-
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
 #[cfg(test)]
@@ -95,7 +102,7 @@ mod tests {
             end_line: 1,
             snippet: path.into(),
             file_hash: 0,
-            vector,
+            vector: quant::quantize(&vector),
         }
     }
 
@@ -133,6 +140,16 @@ mod tests {
         assert_eq!(loaded.dims, 3);
         assert_eq!(loaded.records.len(), 3);
         assert_eq!(loaded.records[1].path, "y.rs");
+    }
+
+    #[test]
+    fn rejects_a_mismatched_format_version() {
+        let dir = TempDir::new();
+        let path = dir.path().join(".ripsem/index.bin");
+        let mut index = sample_index();
+        index.format_version = FORMAT_VERSION + 1;
+        index.save(&path).unwrap();
+        assert!(Index::load(&path).is_err());
     }
 
     #[test]
