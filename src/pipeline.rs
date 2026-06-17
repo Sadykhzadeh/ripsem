@@ -3,6 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 
 use crate::config::Config;
 use crate::index::{Index, Record};
@@ -41,6 +42,22 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
             }
         }
     }
+    let prev_hash: HashMap<&str, u64> = prev_chunks
+        .iter()
+        .filter_map(|(p, recs)| recs.first().map(|r| (p.as_str(), r.file_hash)))
+        .collect();
+
+    let scanned: Vec<(usize, u64, bool)> = files
+        .par_iter()
+        .enumerate()
+        .filter_map(|(i, path)| {
+            let bytes = std::fs::read(path).ok()?;
+            let hash = fingerprint::content_hash(&bytes);
+            let rel = relative(&config.root, path);
+            let changed = prev_hash.get(rel.as_str()) != Some(&hash);
+            Some((i, hash, changed))
+        })
+        .collect();
 
     let mut index = Index::new(dims, config.model.clone());
     let mut embedded = 0;
@@ -48,24 +65,24 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     let mut pending: Vec<Pending> = Vec::new();
     let mut texts: Vec<String> = Vec::new();
 
-    let pb = progress(files.len() as u64);
-    for path in &files {
+    let pb = progress(scanned.len() as u64);
+    for (i, hash, changed) in scanned {
         pb.inc(1);
+        let path = &files[i];
         let rel = relative(&config.root, path);
-        let bytes = match std::fs::read(path) {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let hash = fingerprint::content_hash(&bytes);
 
-        if let Some(records) = prev_chunks.get_mut(&rel) {
-            if records.first().map(|r| r.file_hash) == Some(hash) {
+        if !changed {
+            if let Some(records) = prev_chunks.get_mut(&rel) {
                 index.records.append(records);
                 reused += 1;
                 continue;
             }
         }
 
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
         let text = String::from_utf8_lossy(&bytes);
         let chunks = chunk::chunk_file(text.as_ref(), config.chunk_lines, config.chunk_overlap);
         if chunks.is_empty() {
