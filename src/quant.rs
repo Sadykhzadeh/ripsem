@@ -32,6 +32,14 @@ pub fn quantize(vector: &[f32]) -> QuantizedVector {
     QuantizedVector { scale, data }
 }
 
+pub fn dequantize(stored: &QuantizedVector) -> Vec<f32> {
+    stored
+        .data
+        .iter()
+        .map(|&q| q as f32 * stored.scale)
+        .collect()
+}
+
 pub fn dot(stored: &QuantizedVector, query: &[f32]) -> f32 {
     let acc: f32 = stored
         .data
