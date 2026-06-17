@@ -81,14 +81,31 @@ impl Index {
     }
 
     pub fn search_scoped(&self, query: &[f32], k: usize, prefix: Option<&str>) -> Vec<Hit> {
+        self.search_hybrid(query, &[], 0.0, k, prefix)
+    }
+
+    pub fn search_hybrid(
+        &self,
+        query: &[f32],
+        terms: &[String],
+        boost: f32,
+        k: usize,
+        prefix: Option<&str>,
+    ) -> Vec<Hit> {
         let mut scored: Vec<Hit> = self
             .records
             .par_iter()
             .enumerate()
             .filter(|(_, r)| prefix.is_none_or(|p| path_in_scope(&r.path, p)))
-            .map(|(i, r)| Hit {
-                score: quant::dot(&r.vector, query),
-                record_idx: i,
+            .map(|(i, r)| {
+                let mut score = quant::dot(&r.vector, query);
+                if boost > 0.0 {
+                    score += boost * lexical_fraction(r, terms);
+                }
+                Hit {
+                    score,
+                    record_idx: i,
+                }
             })
             .collect();
         scored.sort_unstable_by(|a, b| {
@@ -106,6 +123,19 @@ fn path_in_scope(path: &str, prefix: &str) -> bool {
         Some(rest) => rest.is_empty() || rest.starts_with('/'),
         None => false,
     }
+}
+
+fn lexical_fraction(record: &Record, terms: &[String]) -> f32 {
+    if terms.is_empty() {
+        return 0.0;
+    }
+    let snippet = record.snippet.to_lowercase();
+    let path = record.path.to_lowercase();
+    let present = terms
+        .iter()
+        .filter(|t| snippet.contains(t.as_str()) || path.contains(t.as_str()))
+        .count();
+    present as f32 / terms.len() as f32
 }
 
 fn temp_sibling(path: &Path) -> std::path::PathBuf {
@@ -167,6 +197,24 @@ mod tests {
         assert!(path_in_scope("src/a.rs", "src"));
         assert!(path_in_scope("src", "src"));
         assert!(!path_in_scope("source/a.rs", "src"));
+    }
+
+    #[test]
+    fn lexical_boost_breaks_ties_toward_literal_matches() {
+        let mut index = Index::new(3, "test".into());
+        let mut with_term = record("a.rs", vec![1.0, 0.0, 0.0]);
+        with_term.snippet = "fn parse_header() {}".into();
+        let mut without = record("b.rs", vec![1.0, 0.0, 0.0]);
+        without.snippet = "fn unrelated() {}".into();
+        index.records.push(with_term);
+        index.records.push(without);
+
+        let terms = vec!["parse_header".to_string()];
+        let hits = index.search_hybrid(&[1.0, 0.0, 0.0], &terms, 0.1, 2, None);
+        assert_eq!(index.records[hits[0].record_idx].path, "a.rs");
+
+        let plain = index.search_scoped(&[1.0, 0.0, 0.0], 2, None);
+        assert!((plain[0].score - plain[1].score).abs() < 1e-6);
     }
 
     #[test]

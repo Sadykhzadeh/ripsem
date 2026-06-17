@@ -79,13 +79,16 @@ model = "bge-small-en-v1.5"
 chunk_lines = 40
 chunk_overlap = 8
 max_chunk_lines = 50
+lexical_boost = 0.1
 max_file_kb = 1024
 exclude = []
 ```
 
 `chunk_lines`/`chunk_overlap` size the line windows used for plain-text files and
 for languages without a parser. `max_chunk_lines` caps a single semantic chunk;
-larger functions are split. `exclude` takes gitignore-style globs.
+larger functions are split. `lexical_boost` nudges results whose text contains the
+query's literal terms above otherwise-equal matches (set it to `0.0` for pure
+semantic ranking). `exclude` takes gitignore-style globs.
 
 ## License
 

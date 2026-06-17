@@ -34,6 +34,8 @@ pub struct Config {
     pub chunk_overlap: usize,
     #[serde(default = "default_max_chunk_lines")]
     pub max_chunk_lines: usize,
+    #[serde(default = "default_lexical_boost")]
+    pub lexical_boost: f32,
     #[serde(default = "default_max_file_kb")]
     pub max_file_kb: u64,
     #[serde(default)]
@@ -54,6 +56,9 @@ fn default_chunk_overlap() -> usize {
 fn default_max_chunk_lines() -> usize {
     50
 }
+fn default_lexical_boost() -> f32 {
+    0.1
+}
 fn default_max_file_kb() -> u64 {
     1024
 }
@@ -66,6 +71,7 @@ impl Default for Config {
             chunk_lines: default_chunk_lines(),
             chunk_overlap: default_chunk_overlap(),
             max_chunk_lines: default_max_chunk_lines(),
+            lexical_boost: default_lexical_boost(),
             max_file_kb: default_max_file_kb(),
             exclude: Vec::new(),
             root: PathBuf::from("."),
