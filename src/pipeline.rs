@@ -87,7 +87,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
             Err(_) => continue,
         };
         let text = String::from_utf8_lossy(&bytes);
-        let chunks = chunk::chunk_file(text.as_ref(), config.chunk_lines, config.chunk_overlap);
+        let chunks = chunk::chunk_source(path, text.as_ref(), config);
         if chunks.is_empty() {
             continue;
         }

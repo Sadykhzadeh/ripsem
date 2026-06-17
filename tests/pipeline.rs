@@ -71,14 +71,14 @@ fn indexes_correctly_across_embedding_batches() {
             body.push_str(&format!("filler row {i}\n"));
         }
     }
-    dir.write("big.rs", &body);
+    dir.write("big.txt", &body);
     let config = config_for(&dir.path);
 
     let stats = pipeline::index_repo(&config, false).unwrap();
     assert!(stats.chunks > 256);
 
     let hits = pipeline::search(&config, "zebraquux singular beacon", 5).unwrap();
-    assert_eq!(hits[0].path, "big.rs");
+    assert_eq!(hits[0].path, "big.txt");
     assert!(hits[0].start_line <= 5001 && hits[0].end_line >= 5001);
 }
 
