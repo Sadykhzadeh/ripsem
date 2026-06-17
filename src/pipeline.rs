@@ -155,16 +155,43 @@ fn flush(
 pub struct Searcher {
     index: Index,
     embedder: Box<dyn embed::Embedder>,
+    index_path: std::path::PathBuf,
+    index_mtime: Option<std::time::SystemTime>,
 }
 
 pub fn open(config: &Config) -> Result<Searcher> {
-    let index = Index::load(&config.index_path())
+    let index_path = config.index_path();
+    let index = Index::load(&index_path)
         .context("no index yet; run `ripsem index` in this directory first")?;
     let embedder = embed::build(config)?;
-    Ok(Searcher { index, embedder })
+    let index_mtime = file_mtime(&index_path);
+    Ok(Searcher {
+        index,
+        embedder,
+        index_path,
+        index_mtime,
+    })
+}
+
+fn file_mtime(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 impl Searcher {
+    pub fn refresh(&mut self) -> Result<bool> {
+        let mtime = file_mtime(&self.index_path);
+        if mtime == self.index_mtime {
+            return Ok(false);
+        }
+        let index = Index::load(&self.index_path)?;
+        if index.dims != self.index.dims {
+            return Ok(false);
+        }
+        self.index = index;
+        self.index_mtime = mtime;
+        Ok(true)
+    }
+
     pub fn query(&self, query: &str, k: usize) -> Result<Vec<SearchHit>> {
         self.query_scoped(query, k, None)
     }
