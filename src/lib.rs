@@ -9,3 +9,6 @@ pub mod model;
 pub mod pipeline;
 pub mod walk;
 pub mod watch;
+
+#[cfg(test)]
+pub mod testutil;

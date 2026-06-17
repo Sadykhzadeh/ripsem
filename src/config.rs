@@ -108,3 +108,41 @@ impl Config {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::TempDir;
+
+    #[test]
+    fn defaults_are_sane() {
+        let cfg = Config::default();
+        assert_eq!(cfg.model, DEFAULT_MODEL);
+        assert!(cfg.chunk_lines > cfg.chunk_overlap);
+        assert_eq!(cfg.dims(), 384);
+    }
+
+    #[test]
+    fn round_trips_through_disk() {
+        let dir = TempDir::new();
+        let mut cfg = Config {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        cfg.model = "bge-base-en-v1.5".into();
+        cfg.chunk_lines = 64;
+        cfg.save().unwrap();
+
+        let loaded = Config::load(dir.path()).unwrap();
+        assert_eq!(loaded.model, "bge-base-en-v1.5");
+        assert_eq!(loaded.chunk_lines, 64);
+        assert_eq!(loaded.root, dir.path());
+    }
+
+    #[test]
+    fn missing_config_yields_defaults() {
+        let dir = TempDir::new();
+        let cfg = Config::load(dir.path()).unwrap();
+        assert_eq!(cfg.model, DEFAULT_MODEL);
+    }
+}
