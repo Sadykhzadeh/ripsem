@@ -20,7 +20,7 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Lint
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-features --all-targets -- -D warnings
       - name: Test
         run: cargo test --all-targets
       - name: Test pure-Rust features
