@@ -90,6 +90,18 @@ larger functions are split. `lexical_boost` nudges results whose text contains t
 query's literal terms above otherwise-equal matches (set it to `0.0` for pure
 semantic ranking). `exclude` takes gitignore-style globs.
 
+## Quality
+
+Retrieval quality is measured by a labelled benchmark over a small multi-domain
+corpus, scored by recall@k and MRR against ground-truth files:
+
+```
+cargo test --release --features fastembed,treesitter \
+  --test retrieval_quality -- --ignored --nocapture
+```
+
+It needs the embedding model, so it is `#[ignore]`d out of the normal run.
+
 ## License
 
 Apache-2.0
