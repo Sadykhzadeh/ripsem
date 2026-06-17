@@ -26,7 +26,10 @@ pub fn collect(config: &Config) -> Vec<PathBuf> {
             continue;
         }
         let path = entry.into_path();
-        if path.components().any(|c| c.as_os_str() == ".ripsem") {
+        if path
+            .components()
+            .any(|c| matches!(c.as_os_str().to_str(), Some(".ripsem") | Some(".git")))
+        {
             continue;
         }
         if is_indexable(&path, max_bytes) {
@@ -82,6 +85,20 @@ mod tests {
         assert!(names.contains(&"keep.rs".to_string()));
         assert!(!names.contains(&"blob.bin".to_string()));
         assert!(!names.contains(&"empty.txt".to_string()));
+    }
+
+    #[test]
+    fn skips_git_internals() {
+        let dir = TempDir::new();
+        dir.write("main.rs", "fn main() {}\n");
+        dir.write(".git/config", "[core]\n\trepositoryformatversion = 0\n");
+        dir.write(".git/hooks/pre-commit.sample", "#!/bin/sh\nexit 0\n");
+
+        let collected = collect(&config_at(dir.path()));
+        assert!(collected.iter().all(|p| !p
+            .components()
+            .any(|c| c.as_os_str() == ".git")));
+        assert_eq!(collected.len(), 1);
     }
 
     #[test]
