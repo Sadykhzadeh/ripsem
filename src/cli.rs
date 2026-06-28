@@ -42,7 +42,13 @@ pub enum Command {
     /// Index and keep the index in sync as files change.
     Watch,
     /// Show index health and configuration for this directory.
-    Status,
+    Status {
+        /// Emit machine-readable JSON (schema `ripsem/status/v1`) instead of the
+        /// human summary — for tooling or an agent checking whether the index
+        /// exists, is stale, or needs rebuilding.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the MCP server over stdio.
     Mcp,
     /// Inspect and choose the embedding model and backend.
@@ -87,7 +93,7 @@ pub fn run(cli: Cli) -> Result<()> {
             within,
         } => cmd_search(&root, &query, limit, json, within.as_deref()),
         Command::Watch => watch::run(Config::load(&root)?),
-        Command::Status => cmd_status(&root),
+        Command::Status { json } => cmd_status(&root, json),
         Command::Mcp => mcp::serve(Config::load(&root)?),
         Command::Model { action } => cmd_model(&root, action),
         Command::Install { target } => cmd_install(&root, target),
@@ -105,45 +111,116 @@ fn cmd_init(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_status(root: &Path) -> Result<()> {
+/// Index-health facts gathered for the `status` output (both human and JSON).
+struct IndexFacts {
+    path: String,
+    size_bytes: u64,
+    chunks: usize,
+    files: usize,
+    ann: bool,
+    index_model: String,
+    stale: bool,
+}
+
+/// Render `status` as machine-readable JSON (schema `ripsem/status/v1`). Pure:
+/// takes the already-gathered facts so it is unit-testable without a real index.
+/// `index` is `None` (with an optional `error`) when the index is missing or
+/// unreadable; the `error` is `null` for a plain "missing" index.
+fn status_json(
+    model: &str,
+    backend: Backend,
+    dims: usize,
+    index: Option<&IndexFacts>,
+    error: Option<&str>,
+) -> String {
+    let index_json = match index {
+        Some(f) => json!({
+            "present": true,
+            "path": f.path,
+            "size_bytes": f.size_bytes,
+            "chunks": f.chunks,
+            "files": f.files,
+            "ann": f.ann,
+            "model": f.index_model,
+            "stale": f.stale,
+        }),
+        None => json!({ "present": false, "error": error }),
+    };
+    let doc = json!({
+        "schema": "ripsem/status/v1",
+        "model": model,
+        "backend": backend,
+        "dims": dims,
+        "index": index_json,
+    });
+    serde_json::to_string_pretty(&doc).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+}
+
+fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
     let config = Config::load(root)?;
+    let path = config.index_path();
+
+    // Gather the index facts once, then render as JSON or human text. A missing
+    // file and an unreadable index both yield `None`; the latter carries an error.
+    let (facts, error) = if !path.exists() {
+        (None, None)
+    } else {
+        match Index::load(&path) {
+            Ok(index) => {
+                let files: std::collections::HashSet<&str> =
+                    index.records.iter().map(|r| r.path.as_str()).collect();
+                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                let facts = IndexFacts {
+                    path: show_path(&path),
+                    size_bytes: size,
+                    chunks: index.records.len(),
+                    files: files.len(),
+                    ann: index.ann.is_some(),
+                    index_model: index.model.clone(),
+                    stale: index.model != config.model,
+                };
+                (Some(facts), None)
+            }
+            Err(e) => (None, Some(e.to_string())),
+        }
+    };
+
+    if as_json {
+        println!(
+            "{}",
+            status_json(
+                &config.model,
+                config.backend,
+                config.dims(),
+                facts.as_ref(),
+                error.as_deref()
+            )
+        );
+        return Ok(());
+    }
+
     println!(
         "model:  {} ({:?} backend, {} dims)",
         config.model,
         config.backend,
         config.dims()
     );
-
-    let path = config.index_path();
-    if !path.exists() {
-        println!("index:  missing — run `ripsem index`");
-        return Ok(());
-    }
-    let index = match Index::load(&path) {
-        Ok(i) => i,
-        Err(e) => {
-            println!("index:  unreadable ({e})");
-            return Ok(());
+    match (&facts, &error) {
+        (None, None) => println!("index:  missing — run `ripsem index`"),
+        (None, Some(e)) => println!("index:  unreadable ({e})"),
+        (Some(f), _) => {
+            println!("index:  {} ({})", f.path, human_size(f.size_bytes));
+            println!("chunks: {} across {} files", f.chunks, f.files);
+            if f.ann {
+                println!("ann:    present (approximate search)");
+            }
+            if f.stale {
+                println!(
+                    "note:   index built with {}, config wants {}; run `ripsem index --force`",
+                    f.index_model, config.model
+                );
+            }
         }
-    };
-
-    let files: std::collections::HashSet<&str> =
-        index.records.iter().map(|r| r.path.as_str()).collect();
-    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    println!("index:  {} ({})", show_path(&path), human_size(bytes));
-    println!(
-        "chunks: {} across {} files",
-        index.records.len(),
-        files.len()
-    );
-    if index.ann.is_some() {
-        println!("ann:    present (approximate search)");
-    }
-    if index.model != config.model {
-        println!(
-            "note:   index built with {}, config wants {}; run `ripsem index --force`",
-            index.model, config.model
-        );
     }
     Ok(())
 }
@@ -331,6 +408,52 @@ mod tests {
         .unwrap();
         assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
         assert_eq!(doc["mcpServers"]["ripsem"]["args"][0], "mcp");
+    }
+
+    #[test]
+    fn status_json_reports_a_loaded_index() {
+        // A present index renders the versioned schema, the lowercase backend, and
+        // the health facts (chunks/files/ann/stale) a tool or agent checks.
+        let facts = IndexFacts {
+            path: "/repo/.ripsem/index.bin".into(),
+            size_bytes: 2048,
+            chunks: 12,
+            files: 3,
+            ann: true,
+            index_model: "bge-small-en-v1.5".into(),
+            stale: false,
+        };
+        let out = status_json("bge-small-en-v1.5", Backend::Hash, 384, Some(&facts), None);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["schema"], "ripsem/status/v1");
+        assert_eq!(v["model"], "bge-small-en-v1.5");
+        assert_eq!(v["backend"], "hash");
+        assert_eq!(v["dims"], 384);
+        assert_eq!(v["index"]["present"], true);
+        assert_eq!(v["index"]["chunks"], 12);
+        assert_eq!(v["index"]["files"], 3);
+        assert_eq!(v["index"]["ann"], true);
+        assert_eq!(v["index"]["stale"], false);
+    }
+
+    #[test]
+    fn status_json_reports_a_missing_index_with_null_error() {
+        // No index file ⇒ present:false and a null error (distinct from unreadable).
+        let out = status_json("m", Backend::Fastembed, 768, None, None);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["backend"], "fastembed");
+        assert_eq!(v["index"]["present"], false);
+        assert!(v["index"]["error"].is_null());
+    }
+
+    #[test]
+    fn status_json_reports_an_unreadable_index_with_the_error() {
+        // A corrupt/unreadable index ⇒ present:false carrying the error string, so
+        // a caller can tell "never built" from "broke".
+        let out = status_json("m", Backend::Hash, 384, None, Some("bad magic"));
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["index"]["present"], false);
+        assert_eq!(v["index"]["error"], "bad magic");
     }
 
     #[test]
