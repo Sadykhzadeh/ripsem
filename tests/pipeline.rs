@@ -136,6 +136,28 @@ fn scoped_search_limits_results_to_a_subdirectory() {
 }
 
 #[test]
+fn search_scoped_convenience_limits_results_to_a_prefix() {
+    // The `search_scoped` convenience (backing the CLI `search --in`) scopes the
+    // whole-index search to a path prefix, returning only matching files.
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.path.join("src")).unwrap();
+    std::fs::create_dir_all(dir.path.join("docs")).unwrap();
+    dir.write("src/auth.rs", "verify password create session token");
+    dir.write("docs/auth.md", "verify password create session token");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let scoped =
+        pipeline::search_scoped(&config, "verify password session token", 10, Some("src")).unwrap();
+    assert!(!scoped.is_empty());
+    assert!(scoped.iter().all(|h| h.path.starts_with("src/")));
+
+    // No scope (None) searches the whole index — docs/ is reachable too.
+    let all = pipeline::search_scoped(&config, "verify password session token", 10, None).unwrap();
+    assert!(all.iter().any(|h| h.path.starts_with("docs/")));
+}
+
+#[test]
 fn searcher_hot_reloads_a_rebuilt_index() {
     let dir = TempDir::new();
     dir.write("a.rs", "alpha bravo charlie delta echo");

@@ -255,6 +255,17 @@ pub fn search(config: &Config, query: &str, k: usize) -> Result<Vec<SearchHit>> 
     open(config)?.query(query, k)
 }
 
+/// Like [`search`], but limit results to a repo-relative path prefix (already
+/// normalized — see `mcp::scope_prefix`). `None` searches the whole index.
+pub fn search_scoped(
+    config: &Config,
+    query: &str,
+    k: usize,
+    prefix: Option<&str>,
+) -> Result<Vec<SearchHit>> {
+    open(config)?.query_scoped(query, k, prefix)
+}
+
 fn query_terms(query: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     query
