@@ -35,6 +35,7 @@ ripsem init                       # write .ripsem/config.toml
 ripsem index                      # build the index (incremental on re-runs)
 ripsem search "where is auth set up?"
 ripsem status                     # show index size, chunk/file counts, model
+ripsem status --json              # the same as JSON (schema ripsem/status/v1)
 ripsem watch                      # index and keep it in sync as files change
 ```
 
