@@ -44,7 +44,9 @@ ranked by cosine similarity and print as `path:start-end` with a snippet. Add
 `--json` for machine-readable output, or `--in <subdir>` to limit results to a
 subdirectory (e.g. `ripsem search "where is auth set up?" --in src/auth`). Use
 `--context <N>` to control how many snippet lines print per hit (default 3; `0`
-prints just the locations).
+prints just the locations). Pass `--min-score <SCORE>` to drop hits below a
+cosine threshold and keep only confident matches (applies to both the human and
+`--json` output).
 
 ## Models
 

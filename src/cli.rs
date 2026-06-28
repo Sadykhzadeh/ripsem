@@ -43,6 +43,11 @@ pub enum Command {
         /// `--json`, which always returns the full snippet.
         #[arg(long, value_name = "LINES", default_value_t = 3)]
         context: usize,
+        /// Drop hits whose cosine score is below this threshold, keeping only
+        /// confident matches. Absent means no filtering. Applies to both the
+        /// human and `--json` output.
+        #[arg(long, value_name = "SCORE")]
+        min_score: Option<f32>,
     },
     /// Index and keep the index in sync as files change.
     Watch,
@@ -97,7 +102,16 @@ pub fn run(cli: Cli) -> Result<()> {
             json,
             within,
             context,
-        } => cmd_search(&root, &query, limit, json, within.as_deref(), context),
+            min_score,
+        } => cmd_search(
+            &root,
+            &query,
+            limit,
+            json,
+            within.as_deref(),
+            context,
+            min_score,
+        ),
         Command::Watch => watch::run(Config::load(&root)?),
         Command::Status { json } => cmd_status(&root, json),
         Command::Mcp => mcp::serve(Config::load(&root)?),
@@ -271,6 +285,16 @@ fn snippet_lines(snippet: &str, context: usize) -> Vec<&str> {
     snippet.lines().take(context).collect()
 }
 
+/// Drop hits scoring below `min`. `None` keeps everything; a set threshold
+/// retains only hits with `score >= min`. This is a result filter, so callers
+/// apply it before both the JSON and human branches.
+fn apply_min_score(hits: Vec<pipeline::SearchHit>, min: Option<f32>) -> Vec<pipeline::SearchHit> {
+    match min {
+        Some(min) => hits.into_iter().filter(|h| h.score >= min).collect(),
+        None => hits,
+    }
+}
+
 fn cmd_search(
     root: &Path,
     query: &str,
@@ -278,6 +302,7 @@ fn cmd_search(
     as_json: bool,
     within: Option<&str>,
     context: usize,
+    min_score: Option<f32>,
 ) -> Result<()> {
     let config = Config::load(root)?;
     // Normalize the optional --in scope the same way the MCP `search` tool does,
@@ -285,6 +310,7 @@ fn cmd_search(
     // all resolve to the same repo-relative prefix.
     let prefix = within.and_then(|raw| mcp::scope_prefix(raw, &config.root));
     let hits = pipeline::search_scoped(&config, query, limit, prefix.as_deref())?;
+    let hits = apply_min_score(hits, min_score);
 
     if as_json {
         let rows: Vec<Value> = hits
@@ -418,6 +444,29 @@ mod tests {
             snippet_lines(snippet, 10),
             vec!["one", "two", "three", "four"]
         );
+    }
+
+    fn hit(score: f32) -> pipeline::SearchHit {
+        pipeline::SearchHit {
+            path: "a.rs".into(),
+            start_line: 1,
+            end_line: 2,
+            score,
+            snippet: "fn main() {}".into(),
+        }
+    }
+
+    #[test]
+    fn min_score_filters_by_threshold() {
+        // No threshold keeps everything in order.
+        let kept = apply_min_score(vec![hit(0.9), hit(0.5), hit(0.2)], None);
+        assert_eq!(kept.len(), 3);
+        // A threshold keeps hits at or above it and drops the rest.
+        let kept = apply_min_score(vec![hit(0.9), hit(0.5), hit(0.2)], Some(0.5));
+        let scores: Vec<f32> = kept.iter().map(|h| h.score).collect();
+        assert_eq!(scores, vec![0.9, 0.5]);
+        // An empty input stays empty whether or not a threshold is set.
+        assert!(apply_min_score(vec![], Some(0.5)).is_empty());
     }
 
     #[test]
