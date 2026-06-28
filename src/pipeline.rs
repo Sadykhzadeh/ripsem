@@ -173,6 +173,8 @@ pub struct Searcher {
     // The embedder is built once for the model the index was opened with; a
     // hot-reload that swapped in a different same-dim model would be incomparable.
     model: String,
+    #[cfg(feature = "hnsw")]
+    ann_map: Option<instant_distance::HnswMap<crate::ann::Embedding, u32>>,
 }
 
 pub fn open(config: &Config) -> Result<Searcher> {
@@ -182,6 +184,8 @@ pub fn open(config: &Config) -> Result<Searcher> {
     let embedder = embed::build(config)?;
     let index_mtime = file_mtime(&index_path);
     let model = index.model.clone();
+    #[cfg(feature = "hnsw")]
+    let ann_map = index.ann.as_deref().and_then(crate::ann::load);
     Ok(Searcher {
         index,
         embedder,
@@ -189,6 +193,8 @@ pub fn open(config: &Config) -> Result<Searcher> {
         index_mtime,
         lexical_boost: config.lexical_boost,
         model,
+        #[cfg(feature = "hnsw")]
+        ann_map,
     })
 }
 
@@ -210,6 +216,10 @@ impl Searcher {
         // are not comparable to queries from our embedder; keep the old index.
         if index.model != self.model {
             return Ok(false);
+        }
+        #[cfg(feature = "hnsw")]
+        {
+            self.ann_map = index.ann.as_deref().and_then(crate::ann::load);
         }
         self.index = index;
         self.index_mtime = mtime;
@@ -241,22 +251,21 @@ impl Searcher {
 
         #[cfg(feature = "hnsw")]
         if prefix.is_none() {
-            if let Some(blob) = &self.index.ann {
+            if let Some(map) = &self.ann_map {
                 // Over-fetch ANN candidates, then re-rank them with the exact
                 // hybrid scoring (vector + lexical boost) the flat scan uses, so
                 // the HNSW path doesn't silently drop the lexical boost or return
                 // a different score scale than `--min-score` expects. The wider
                 // candidate pool also recovers recall the approximate graph loses.
                 const ANN_OVERFETCH: usize = 4;
-                if let Some(found) = crate::ann::search(blob, &qv, k * ANN_OVERFETCH) {
-                    let candidates: Vec<usize> = found.into_iter().map(|(idx, _)| idx).collect();
-                    return Ok(self
-                        .index
-                        .rerank(&candidates, &qv, &terms, self.lexical_boost, k)
-                        .into_iter()
-                        .map(|h| self.hit(h.record_idx, h.score))
-                        .collect());
-                }
+                let found = crate::ann::search_map(map, &qv, k * ANN_OVERFETCH);
+                let candidates: Vec<usize> = found.into_iter().map(|(idx, _)| idx).collect();
+                return Ok(self
+                    .index
+                    .rerank(&candidates, &qv, &terms, self.lexical_boost, k)
+                    .into_iter()
+                    .map(|h| self.hit(h.record_idx, h.score))
+                    .collect());
             }
         }
 
