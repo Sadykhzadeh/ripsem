@@ -42,7 +42,9 @@ ripsem watch                      # index and keep it in sync as files change
 Search respects `.gitignore` and an optional `.ripsemignore`. Results are
 ranked by cosine similarity and print as `path:start-end` with a snippet. Add
 `--json` for machine-readable output, or `--in <subdir>` to limit results to a
-subdirectory (e.g. `ripsem search "where is auth set up?" --in src/auth`).
+subdirectory (e.g. `ripsem search "where is auth set up?" --in src/auth`). Use
+`--context <N>` to control how many snippet lines print per hit (default 3; `0`
+prints just the locations).
 
 ## Models
 
