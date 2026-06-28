@@ -48,8 +48,11 @@ impl Index {
     pub fn load(path: &Path) -> Result<Self> {
         let bytes =
             std::fs::read(path).with_context(|| format!("reading index {}", path.display()))?;
-        let index: Index = bincode::deserialize(&bytes)
-            .context("index format is from an older ripsem; run `ripsem index --force`")?;
+        let index: Index = bincode::deserialize(&bytes).map_err(|e| {
+            anyhow::anyhow!(
+                "index is unreadable or corrupt: {e}; run `ripsem index --force` to rebuild"
+            )
+        })?;
         if index.format_version != FORMAT_VERSION {
             anyhow::bail!("index format is from an older ripsem; run `ripsem index --force`");
         }
@@ -263,6 +266,18 @@ mod tests {
         index.format_version = FORMAT_VERSION + 1;
         index.save(&path).unwrap();
         assert!(Index::load(&path).is_err());
+    }
+
+    #[test]
+    fn corrupt_index_reports_a_decode_error_not_old_format() {
+        let dir = TempDir::new();
+        let path = dir.path().join(".ripsem/index.bin");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, [0xde, 0xad, 0xbe, 0xef, 0x00, 0xff, 0x42, 0x13]).unwrap();
+
+        let err = Index::load(&path).unwrap_err().to_string();
+        assert!(err.contains("unreadable or corrupt"), "got: {err}");
+        assert!(!err.contains("from an older ripsem"), "got: {err}");
     }
 
     #[test]
