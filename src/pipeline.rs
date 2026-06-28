@@ -170,6 +170,9 @@ pub struct Searcher {
     index_path: std::path::PathBuf,
     index_mtime: Option<std::time::SystemTime>,
     lexical_boost: f32,
+    // The embedder is built once for the model the index was opened with; a
+    // hot-reload that swapped in a different same-dim model would be incomparable.
+    model: String,
 }
 
 pub fn open(config: &Config) -> Result<Searcher> {
@@ -178,12 +181,14 @@ pub fn open(config: &Config) -> Result<Searcher> {
         .context("no index yet; run `ripsem index` in this directory first")?;
     let embedder = embed::build(config)?;
     let index_mtime = file_mtime(&index_path);
+    let model = index.model.clone();
     Ok(Searcher {
         index,
         embedder,
         index_path,
         index_mtime,
         lexical_boost: config.lexical_boost,
+        model,
     })
 }
 
@@ -201,9 +206,24 @@ impl Searcher {
         if index.dims != self.index.dims {
             return Ok(false);
         }
+        // A same-dim index rebuilt with a different model produces vectors that
+        // are not comparable to queries from our embedder; keep the old index.
+        if index.model != self.model {
+            return Ok(false);
+        }
         self.index = index;
         self.index_mtime = mtime;
         Ok(true)
+    }
+
+    /// The embedding model this searcher was opened with. A hot-reload that
+    /// would change this is rejected (see [`Searcher::refresh`]).
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn record_count(&self) -> usize {
+        self.index.records.len()
     }
 
     pub fn query(&self, query: &str, k: usize) -> Result<Vec<SearchHit>> {
