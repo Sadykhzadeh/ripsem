@@ -65,13 +65,14 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
 fn tool_schema() -> Value {
     json!({
         "name": "search",
-        "description": "Search this codebase by meaning rather than exact text. Reach for this first on any 'where/how/what' question about the code: describe what you are looking for in plain language (e.g. 'where is authentication configured', 'how are payments validated') and it returns the most relevant functions and files as ranked snippets with line ranges. Faster and far cheaper on context than scanning with grep, which you should fall back to only for exact strings or symbols.",
+        "description": "Semantic search over this codebase; describe what you want in plain language and get back ranked code snippets with file paths and line ranges.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": { "type": "string", "description": "Plain-language description of the code or behavior you want to find." },
                 "path": { "type": "string", "description": "Optional subdirectory (relative to the repo) to limit results to, e.g. 'src/embed'." },
-                "limit": { "type": "integer", "description": "Maximum number of results (default 10)." }
+                "limit": { "type": "integer", "description": "Maximum number of results (default 5)." },
+                "min_score": { "type": "number", "description": "Drop hits scoring below this (0–1). Default: no filter." }
             },
             "required": ["query"]
         }
@@ -107,7 +108,11 @@ fn handle_call(
         .get("limit")
         .and_then(|l| l.as_u64())
         .map(|l| l as usize)
-        .unwrap_or(10);
+        .unwrap_or(5);
+    let min_score = args
+        .get("min_score")
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32);
 
     let prefix = args
         .get("path")
@@ -122,7 +127,11 @@ fn handle_call(
     };
 
     match result {
-        Ok(hits) => ok(id, tool_result(&hits)),
+        Ok(hits) => {
+            let hits = apply_min_score(hits, min_score);
+            let hits = dedup_overlapping(hits);
+            ok(id, tool_result(&hits))
+        }
         Err(e) => ok(
             id,
             json!({
@@ -156,6 +165,37 @@ pub(crate) fn scope_prefix(raw: &str, root: &std::path::Path) -> Option<String> 
     }
 }
 
+/// Drop hits whose score is below `min`. `None` keeps all.
+fn apply_min_score(hits: Vec<pipeline::SearchHit>, min: Option<f32>) -> Vec<pipeline::SearchHit> {
+    match min {
+        Some(min) => hits.into_iter().filter(|h| h.score >= min).collect(),
+        None => hits,
+    }
+}
+
+/// Remove lower-scored hits that overlap with a higher-scored hit from the same
+/// file. Two hits overlap when their `[start_line, end_line]` ranges share at
+/// least one line. Hits are expected to arrive in descending score order; the
+/// first (highest-scored) hit for any overlapping pair wins. Non-overlapping
+/// hits from the same file and hits from different files are always kept.
+fn dedup_overlapping(hits: Vec<pipeline::SearchHit>) -> Vec<pipeline::SearchHit> {
+    // Track the kept ranges per file as (start, end) pairs.
+    let mut kept_ranges: std::collections::HashMap<String, Vec<(usize, usize)>> =
+        std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(hits.len());
+    for h in hits {
+        let ranges = kept_ranges.entry(h.path.clone()).or_default();
+        let overlaps = ranges
+            .iter()
+            .any(|&(s, e)| h.start_line <= e && h.end_line >= s);
+        if !overlaps {
+            ranges.push((h.start_line, h.end_line));
+            out.push(h);
+        }
+    }
+    out
+}
+
 fn tool_result(hits: &[pipeline::SearchHit]) -> Value {
     if hits.is_empty() {
         return json!({
@@ -166,8 +206,8 @@ fn tool_result(hits: &[pipeline::SearchHit]) -> Value {
     let mut text = String::new();
     for h in hits {
         text.push_str(&format!(
-            "{}:{}-{}  (score {:.3})\n{}\n\n",
-            h.path, h.start_line, h.end_line, h.score, h.snippet
+            "{}:{}-{}\n{}\n",
+            h.path, h.start_line, h.end_line, h.snippet
         ));
     }
     json!({
@@ -268,6 +308,63 @@ mod tests {
         let value = tool_result(&hits);
         let text = value["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("a.rs:1-4"));
+        // Score must not appear in the MCP output.
+        assert!(!text.contains("score"));
+        assert!(!text.contains("0.500"));
         assert_eq!(value["isError"], false);
+    }
+
+    fn make_hit(path: &str, start: usize, end: usize, score: f32) -> pipeline::SearchHit {
+        pipeline::SearchHit {
+            path: path.into(),
+            start_line: start,
+            end_line: end,
+            score,
+            snippet: "x".into(),
+        }
+    }
+
+    #[test]
+    fn dedup_overlapping_keeps_higher_scored_hit() {
+        // Two hits in the same file with overlapping ranges: only the first
+        // (higher-scored) should survive.
+        let hits = vec![
+            make_hit("a.rs", 1, 10, 0.9),
+            make_hit("a.rs", 8, 15, 0.7), // overlaps [1,10] at lines 8-10
+        ];
+        let out = dedup_overlapping(hits);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].start_line, 1);
+        assert_eq!(out[0].score, 0.9);
+    }
+
+    #[test]
+    fn dedup_overlapping_keeps_non_overlapping_same_file_hits() {
+        // Two hits in the same file but non-overlapping ranges: both kept.
+        let hits = vec![make_hit("a.rs", 1, 5, 0.9), make_hit("a.rs", 6, 10, 0.7)];
+        let out = dedup_overlapping(hits);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn dedup_overlapping_keeps_different_file_hits() {
+        // Identical ranges but different files: both kept.
+        let hits = vec![make_hit("a.rs", 1, 10, 0.9), make_hit("b.rs", 1, 10, 0.8)];
+        let out = dedup_overlapping(hits);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn mcp_apply_min_score_filters() {
+        let hits = vec![make_hit("a.rs", 1, 2, 0.9), make_hit("a.rs", 3, 4, 0.3)];
+        let kept = apply_min_score(hits, Some(0.5));
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].score, 0.9);
+    }
+
+    #[test]
+    fn mcp_apply_min_score_none_keeps_all() {
+        let hits = vec![make_hit("a.rs", 1, 2, 0.1), make_hit("b.rs", 1, 2, 0.9)];
+        assert_eq!(apply_min_score(hits, None).len(), 2);
     }
 }
