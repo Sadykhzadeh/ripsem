@@ -237,20 +237,29 @@ impl Searcher {
         prefix: Option<&str>,
     ) -> Result<Vec<SearchHit>> {
         let qv = self.embedder.embed_query(query)?;
+        let terms = query_terms(query);
 
         #[cfg(feature = "hnsw")]
         if prefix.is_none() {
             if let Some(blob) = &self.index.ann {
-                if let Some(found) = crate::ann::search(blob, &qv, k) {
-                    return Ok(found
+                // Over-fetch ANN candidates, then re-rank them with the exact
+                // hybrid scoring (vector + lexical boost) the flat scan uses, so
+                // the HNSW path doesn't silently drop the lexical boost or return
+                // a different score scale than `--min-score` expects. The wider
+                // candidate pool also recovers recall the approximate graph loses.
+                const ANN_OVERFETCH: usize = 4;
+                if let Some(found) = crate::ann::search(blob, &qv, k * ANN_OVERFETCH) {
+                    let candidates: Vec<usize> = found.into_iter().map(|(idx, _)| idx).collect();
+                    return Ok(self
+                        .index
+                        .rerank(&candidates, &qv, &terms, self.lexical_boost, k)
                         .into_iter()
-                        .map(|(idx, score)| self.hit(idx, score))
+                        .map(|h| self.hit(h.record_idx, h.score))
                         .collect());
                 }
             }
         }
 
-        let terms = query_terms(query);
         Ok(self
             .index
             .search_hybrid(&qv, &terms, self.lexical_boost, k, prefix)
