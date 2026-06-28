@@ -14,7 +14,7 @@ pub fn serve(config: Config) -> Result<()> {
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();
 
-    let session = pipeline::open(&config).ok();
+    let mut session = pipeline::open(&config).ok();
 
     let mut line = String::new();
     loop {
@@ -30,6 +30,9 @@ pub fn serve(config: Config) -> Result<()> {
             Ok(v) => v,
             Err(_) => continue,
         };
+        if let Some(s) = session.as_mut() {
+            let _ = s.refresh();
+        }
         if let Some(response) = handle(&config, session.as_ref(), &request) {
             writeln!(writer, "{}", serde_json::to_string(&response)?)?;
             writer.flush()?;
@@ -67,7 +70,7 @@ fn tool_schema() -> Value {
             "type": "object",
             "properties": {
                 "query": { "type": "string", "description": "Plain-language description of the code or behavior you want to find." },
-                "path": { "type": "string", "description": "Optional directory to search; defaults to the server's working directory." },
+                "path": { "type": "string", "description": "Optional subdirectory (relative to the repo) to limit results to, e.g. 'src/embed'." },
                 "limit": { "type": "integer", "description": "Maximum number of results (default 10)." }
             },
             "required": ["query"]
@@ -106,13 +109,16 @@ fn handle_call(
         .map(|l| l as usize)
         .unwrap_or(10);
 
-    let result = match args.get("path").and_then(|p| p.as_str()) {
-        Some(p) => Config::load(std::path::Path::new(p))
-            .and_then(|c| pipeline::search(&c, query, limit)),
-        None => match session {
-            Some(s) => s.query(query, limit),
-            None => pipeline::search(config, query, limit),
-        },
+    let prefix = args
+        .get("path")
+        .and_then(|p| p.as_str())
+        .and_then(|p| scope_prefix(p, &config.root));
+
+    let result = match session {
+        Some(s) => s.query_scoped(query, limit, prefix.as_deref()),
+        None => {
+            pipeline::open(config).and_then(|s| s.query_scoped(query, limit, prefix.as_deref()))
+        }
     };
 
     match result {
@@ -124,6 +130,26 @@ fn handle_call(
                 "isError": true
             }),
         ),
+    }
+}
+
+fn scope_prefix(raw: &str, root: &std::path::Path) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "." {
+        return None;
+    }
+    let candidate = std::path::Path::new(raw);
+    let rel = if candidate.is_absolute() {
+        candidate.strip_prefix(root).ok()?
+    } else {
+        candidate
+    };
+    let normalized = rel.to_string_lossy().replace('\\', "/");
+    let trimmed = normalized.trim_matches('/');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -153,4 +179,92 @@ fn ok(id: Value, result: Value) -> Value {
 
 fn error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(method: &str, params: Value) -> Value {
+        json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+    }
+
+    #[test]
+    fn initialize_reports_server_info() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("initialize", json!({}))).unwrap();
+        assert_eq!(resp["result"]["serverInfo"]["name"], "ripsem");
+        assert_eq!(resp["result"]["protocolVersion"], PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn tools_list_exposes_search() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("tools/list", json!({}))).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "search");
+    }
+
+    #[test]
+    fn unknown_method_is_an_error() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("nope", json!({}))).unwrap();
+        assert_eq!(resp["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn notification_without_id_is_ignored() {
+        let cfg = Config::default();
+        let note = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
+        assert!(handle(&cfg, None, &note).is_none());
+    }
+
+    #[test]
+    fn call_without_query_is_rejected() {
+        let cfg = Config::default();
+        let resp = handle(
+            &cfg,
+            None,
+            &req("tools/call", json!({ "name": "search", "arguments": {} })),
+        )
+        .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn call_to_unknown_tool_is_rejected() {
+        let cfg = Config::default();
+        let resp = handle(
+            &cfg,
+            None,
+            &req("tools/call", json!({ "name": "other", "arguments": {} })),
+        )
+        .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn scope_prefix_normalizes_relative_paths() {
+        let root = std::path::Path::new("/repo");
+        assert_eq!(scope_prefix("src/embed", root), Some("src/embed".into()));
+        assert_eq!(scope_prefix("src\\embed\\", root), Some("src/embed".into()));
+        assert_eq!(scope_prefix(".", root), None);
+        assert_eq!(scope_prefix("  ", root), None);
+    }
+
+    #[test]
+    fn result_text_lists_hits() {
+        let hits = vec![pipeline::SearchHit {
+            path: "a.rs".into(),
+            start_line: 1,
+            end_line: 4,
+            score: 0.5,
+            snippet: "fn main() {}".into(),
+        }];
+        let value = tool_result(&hits);
+        let text = value["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("a.rs:1-4"));
+        assert_eq!(value["isError"], false);
+    }
 }

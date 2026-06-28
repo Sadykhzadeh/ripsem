@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
 use crate::config::{Backend, Config};
+use crate::index::Index;
 use crate::{mcp, model, pipeline, watch};
 
 #[derive(Parser)]
@@ -36,6 +37,8 @@ pub enum Command {
     },
     /// Index and keep the index in sync as files change.
     Watch,
+    /// Show index health and configuration for this directory.
+    Status,
     /// Run the MCP server over stdio.
     Mcp,
     /// Inspect and choose the embedding model and backend.
@@ -64,6 +67,8 @@ pub enum ModelCmd {
 pub enum InstallCmd {
     /// Add ripsem to .mcp.json for Claude Code.
     ClaudeCode,
+    /// Add ripsem to .cursor/mcp.json for Cursor.
+    Cursor,
 }
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -73,11 +78,10 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Index { force } => cmd_index(&root, force),
         Command::Search { query, limit, json } => cmd_search(&root, &query, limit, json),
         Command::Watch => watch::run(Config::load(&root)?),
+        Command::Status => cmd_status(&root),
         Command::Mcp => mcp::serve(Config::load(&root)?),
         Command::Model { action } => cmd_model(&root, action),
-        Command::Install {
-            target: InstallCmd::ClaudeCode,
-        } => cmd_install_claude(&root),
+        Command::Install { target } => cmd_install(&root, target),
     }
 }
 
@@ -87,9 +91,75 @@ fn cmd_init(root: &Path) -> Result<()> {
         ..Default::default()
     };
     config.save()?;
-    println!("wrote {}", config.config_path().display());
+    println!("wrote {}", show_path(&config.config_path()));
     println!("model: {} ({:?} backend)", config.model, config.backend);
     Ok(())
+}
+
+fn cmd_status(root: &Path) -> Result<()> {
+    let config = Config::load(root)?;
+    println!(
+        "model:  {} ({:?} backend, {} dims)",
+        config.model,
+        config.backend,
+        config.dims()
+    );
+
+    let path = config.index_path();
+    if !path.exists() {
+        println!("index:  missing — run `ripsem index`");
+        return Ok(());
+    }
+    let index = match Index::load(&path) {
+        Ok(i) => i,
+        Err(e) => {
+            println!("index:  unreadable ({e})");
+            return Ok(());
+        }
+    };
+
+    let files: std::collections::HashSet<&str> =
+        index.records.iter().map(|r| r.path.as_str()).collect();
+    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    println!("index:  {} ({})", show_path(&path), human_size(bytes));
+    println!(
+        "chunks: {} across {} files",
+        index.records.len(),
+        files.len()
+    );
+    if index.ann.is_some() {
+        println!("ann:    present (approximate search)");
+    }
+    if index.model != config.model {
+        println!(
+            "note:   index built with {}, config wants {}; run `ripsem index --force`",
+            index.model, config.model
+        );
+    }
+    Ok(())
+}
+
+fn show_path(path: &Path) -> String {
+    let shown = path.display().to_string();
+    shown
+        .strip_prefix(r"\\?\")
+        .map(str::to_string)
+        .unwrap_or(shown)
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
+    }
 }
 
 fn cmd_index(root: &Path, force: bool) -> Result<()> {
@@ -128,7 +198,10 @@ fn cmd_search(root: &Path, query: &str, limit: usize, as_json: bool) -> Result<(
         return Ok(());
     }
     for h in &hits {
-        println!("{}:{}-{}  ({:.3})", h.path, h.start_line, h.end_line, h.score);
+        println!(
+            "{}:{}-{}  ({:.3})",
+            h.path, h.start_line, h.end_line, h.score
+        );
         for l in h.snippet.lines().take(3) {
             println!("    {l}");
         }
@@ -176,8 +249,16 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
     }
 }
 
-fn cmd_install_claude(root: &Path) -> Result<()> {
-    let path = root.join(".mcp.json");
+fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
+    let (rel, name) = match target {
+        InstallCmd::ClaudeCode => (".mcp.json", "Claude Code"),
+        InstallCmd::Cursor => (".cursor/mcp.json", "Cursor"),
+    };
+    let path = root.join(rel);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
     let mut doc: Value = if path.exists() {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
@@ -186,7 +267,11 @@ fn cmd_install_claude(root: &Path) -> Result<()> {
         json!({})
     };
 
-    if !doc.get("mcpServers").map(|v| v.is_object()).unwrap_or(false) {
+    if !doc
+        .get("mcpServers")
+        .map(|v| v.is_object())
+        .unwrap_or(false)
+    {
         doc["mcpServers"] = json!({});
     }
     doc["mcpServers"]["ripsem"] = json!({
@@ -195,7 +280,53 @@ fn cmd_install_claude(root: &Path) -> Result<()> {
     });
 
     std::fs::write(&path, serde_json::to_string_pretty(&doc)?)?;
-    println!("added ripsem to {}", path.display());
-    println!("restart Claude Code in this directory to pick it up");
+    println!("added ripsem to {}", show_path(&path));
+    println!("restart {name} in this directory to pick it up");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_sizes_by_unit() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(2048), "2.0 KB");
+        assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn strips_the_windows_verbatim_prefix() {
+        assert_eq!(show_path(Path::new(r"\\?\C:\repo")), r"C:\repo");
+        assert_eq!(show_path(Path::new("/home/user/repo")), "/home/user/repo");
+    }
+
+    #[test]
+    fn install_writes_cursor_config_in_a_subdir() {
+        let dir = crate::testutil::TempDir::new();
+        cmd_install(dir.path(), InstallCmd::Cursor).unwrap();
+        let doc: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".cursor/mcp.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
+        assert_eq!(doc["mcpServers"]["ripsem"]["args"][0], "mcp");
+    }
+
+    #[test]
+    fn install_preserves_existing_servers() {
+        let dir = crate::testutil::TempDir::new();
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers":{"other":{"command":"x"}}}"#,
+        )
+        .unwrap();
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        let doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(doc["mcpServers"]["other"]["command"], "x");
+        assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
+    }
 }

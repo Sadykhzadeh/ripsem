@@ -11,12 +11,22 @@ know *what* you want but not the exact words.
 ## Install
 
 ```
-cargo install --path . --features fastembed
+cargo install --path . --features fastembed,treesitter
 ```
 
 The `fastembed` feature pulls in the local embedding runtime. Without it the
 binary still builds and runs on a lightweight lexical backend (useful for tests
 and CI), but real semantic search needs the model.
+
+The `treesitter` feature chunks code on function and type boundaries instead of
+fixed line windows, which keeps each indexed snippet aligned to a logical unit.
+It covers Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP,
+Scala, Kotlin, Bash, HTML, CSS, and JSON; other files fall back to line-window
+chunking.
+
+The `hnsw` feature builds an approximate-nearest-neighbour index for large
+repositories. Below ~20k chunks the exact flat scan is already sub-10 ms, so the
+graph is only built above that size; smaller repos keep exact results.
 
 ## Usage
 
@@ -24,6 +34,7 @@ and CI), but real semantic search needs the model.
 ripsem init                       # write .ripsem/config.toml
 ripsem index                      # build the index (incremental on re-runs)
 ripsem search "where is auth set up?"
+ripsem status                     # show index size, chunk/file counts, model
 ripsem watch                      # index and keep it in sync as files change
 ```
 
@@ -58,7 +69,7 @@ ripsem install claude-code        # writes ripsem into .mcp.json
 
 `ripsem mcp` speaks MCP over stdio and exposes a single `search` tool. After
 `install claude-code`, restart Claude Code in the directory and it can call
-`search` directly.
+`search` directly. `ripsem install cursor` does the same via `.cursor/mcp.json`.
 
 ## Configuration
 
@@ -69,9 +80,29 @@ backend = "fastembed"
 model = "bge-small-en-v1.5"
 chunk_lines = 40
 chunk_overlap = 8
+max_chunk_lines = 50
+lexical_boost = 0.1
 max_file_kb = 1024
 exclude = []
 ```
+
+`chunk_lines`/`chunk_overlap` size the line windows used for plain-text files and
+for languages without a parser. `max_chunk_lines` caps a single semantic chunk;
+larger functions are split. `lexical_boost` nudges results whose text contains the
+query's literal terms above otherwise-equal matches (set it to `0.0` for pure
+semantic ranking). `exclude` takes gitignore-style globs.
+
+## Quality
+
+Retrieval quality is measured by a labelled benchmark over a small multi-domain
+corpus, scored by recall@k and MRR against ground-truth files:
+
+```
+cargo test --release --features fastembed,treesitter \
+  --test retrieval_quality -- --ignored --nocapture
+```
+
+It needs the embedding model, so it is `#[ignore]`d out of the normal run.
 
 ## License
 
