@@ -34,6 +34,10 @@ pub enum Command {
         limit: usize,
         #[arg(long)]
         json: bool,
+        /// Limit results to a subdirectory (relative to the repo root), e.g.
+        /// `--in src/embed`. `.` or empty searches the whole index.
+        #[arg(long = "in", value_name = "PREFIX")]
+        within: Option<String>,
     },
     /// Index and keep the index in sync as files change.
     Watch,
@@ -76,7 +80,12 @@ pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Init => cmd_init(&root),
         Command::Index { force } => cmd_index(&root, force),
-        Command::Search { query, limit, json } => cmd_search(&root, &query, limit, json),
+        Command::Search {
+            query,
+            limit,
+            json,
+            within,
+        } => cmd_search(&root, &query, limit, json, within.as_deref()),
         Command::Watch => watch::run(Config::load(&root)?),
         Command::Status => cmd_status(&root),
         Command::Mcp => mcp::serve(Config::load(&root)?),
@@ -172,9 +181,19 @@ fn cmd_index(root: &Path, force: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_search(root: &Path, query: &str, limit: usize, as_json: bool) -> Result<()> {
+fn cmd_search(
+    root: &Path,
+    query: &str,
+    limit: usize,
+    as_json: bool,
+    within: Option<&str>,
+) -> Result<()> {
     let config = Config::load(root)?;
-    let hits = pipeline::search(&config, query, limit)?;
+    // Normalize the optional --in scope the same way the MCP `search` tool does,
+    // so a relative subdir, an absolute path under the repo, or trailing slashes
+    // all resolve to the same repo-relative prefix.
+    let prefix = within.and_then(|raw| mcp::scope_prefix(raw, &config.root));
+    let hits = pipeline::search_scoped(&config, query, limit, prefix.as_deref())?;
 
     if as_json {
         let rows: Vec<Value> = hits
