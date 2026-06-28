@@ -38,6 +38,11 @@ pub enum Command {
         /// `--in src/embed`. `.` or empty searches the whole index.
         #[arg(long = "in", value_name = "PREFIX")]
         within: Option<String>,
+        /// Number of snippet lines to print per hit in the human output. `0`
+        /// prints just the location header with no snippet body. Ignored by
+        /// `--json`, which always returns the full snippet.
+        #[arg(long, value_name = "LINES", default_value_t = 3)]
+        context: usize,
     },
     /// Index and keep the index in sync as files change.
     Watch,
@@ -91,7 +96,8 @@ pub fn run(cli: Cli) -> Result<()> {
             limit,
             json,
             within,
-        } => cmd_search(&root, &query, limit, json, within.as_deref()),
+            context,
+        } => cmd_search(&root, &query, limit, json, within.as_deref(), context),
         Command::Watch => watch::run(Config::load(&root)?),
         Command::Status { json } => cmd_status(&root, json),
         Command::Mcp => mcp::serve(Config::load(&root)?),
@@ -258,12 +264,20 @@ fn cmd_index(root: &Path, force: bool) -> Result<()> {
     Ok(())
 }
 
+/// First `context` lines of a snippet for the human output. `0` yields an empty
+/// slice (just the location header), and the count is capped at the lines
+/// available, so a short snippet never pads with blanks.
+fn snippet_lines(snippet: &str, context: usize) -> Vec<&str> {
+    snippet.lines().take(context).collect()
+}
+
 fn cmd_search(
     root: &Path,
     query: &str,
     limit: usize,
     as_json: bool,
     within: Option<&str>,
+    context: usize,
 ) -> Result<()> {
     let config = Config::load(root)?;
     // Normalize the optional --in scope the same way the MCP `search` tool does,
@@ -298,7 +312,7 @@ fn cmd_search(
             "{}:{}-{}  ({:.3})",
             h.path, h.start_line, h.end_line, h.score
         );
-        for l in h.snippet.lines().take(3) {
+        for l in snippet_lines(&h.snippet, context) {
             println!("    {l}");
         }
         println!();
@@ -390,6 +404,20 @@ mod tests {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(2048), "2.0 KB");
         assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn snippet_lines_respects_the_context_count() {
+        let snippet = "one\ntwo\nthree\nfour";
+        // N>0 returns the first N lines.
+        assert_eq!(snippet_lines(snippet, 2), vec!["one", "two"]);
+        // 0 returns nothing — just the location header prints.
+        assert!(snippet_lines(snippet, 0).is_empty());
+        // A request beyond the available lines is capped, never padded.
+        assert_eq!(
+            snippet_lines(snippet, 10),
+            vec!["one", "two", "three", "four"]
+        );
     }
 
     #[test]
