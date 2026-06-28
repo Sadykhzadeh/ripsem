@@ -23,16 +23,22 @@ pub fn build(vectors: Vec<Vec<f32>>) -> Option<Vec<u8>> {
     bincode::serialize(&map).ok()
 }
 
-pub fn search(blob: &[u8], query: &[f32], k: usize) -> Option<Vec<(usize, f32)>> {
-    let map: HnswMap<Embedding, u32> = bincode::deserialize(blob).ok()?;
+pub fn load(blob: &[u8]) -> Option<HnswMap<Embedding, u32>> {
+    bincode::deserialize(blob).ok()
+}
+
+pub fn search_map(map: &HnswMap<Embedding, u32>, query: &[f32], k: usize) -> Vec<(usize, f32)> {
     let mut search = Search::default();
     let point = Embedding(query.to_vec());
-    let hits = map
-        .search(&point, &mut search)
+    map.search(&point, &mut search)
         .take(k)
         .map(|item| (*item.value as usize, 1.0 - item.distance))
-        .collect();
-    Some(hits)
+        .collect()
+}
+
+pub fn search(blob: &[u8], query: &[f32], k: usize) -> Option<Vec<(usize, f32)>> {
+    let map = load(blob)?;
+    Some(search_map(&map, query, k))
 }
 
 #[cfg(test)]
@@ -58,5 +64,20 @@ mod tests {
     #[test]
     fn empty_input_builds_nothing() {
         assert!(build(Vec::new()).is_none());
+    }
+
+    #[test]
+    fn load_and_search_map_match_search() {
+        let vectors: Vec<Vec<f32>> = (0..40).map(|i| unit(40, i)).collect();
+        let blob = build(vectors).unwrap();
+
+        let map = load(&blob).unwrap();
+        let hits = search_map(&map, &unit(40, 7), 3);
+        assert_eq!(hits[0].0, 7);
+        assert!(hits[0].1 > 0.9);
+
+        // search() wrapper must produce the same top result
+        let hits2 = search(&blob, &unit(40, 7), 3).unwrap();
+        assert_eq!(hits[0].0, hits2[0].0);
     }
 }
