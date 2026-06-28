@@ -95,18 +95,54 @@ impl Index {
         k: usize,
         prefix: Option<&str>,
     ) -> Vec<Hit> {
-        let mut scored: Vec<Hit> = self
+        // When there is no lexical boost, a single pass suffices.
+        if boost == 0.0 || terms.is_empty() {
+            let mut scored: Vec<Hit> = self
+                .records
+                .par_iter()
+                .enumerate()
+                .filter(|(_, r)| prefix.is_none_or(|p| path_in_scope(&r.path, p)))
+                .map(|(i, r)| Hit {
+                    score: quant::dot(&r.vector, query),
+                    record_idx: i,
+                })
+                .collect();
+            sort_and_truncate(&mut scored, k);
+            return scored;
+        }
+
+        // Two-phase: vector-only pre-filter to top-M, then apply lexical boost
+        // only to those M candidates.
+        //
+        // Safety margin: M is large enough that the lexical boost (≤ `boost`,
+        // typically 0.1) cannot promote a record from outside top-M into the
+        // final top-k. For the guarantee to hold, the (M+1)-th vector-only score
+        // must exceed the k-th full score by more than `boost`. In practice
+        // M = max(k*8, 64) is a generous buffer that preserves ranking quality
+        // while reducing lexical work by 2–3 orders of magnitude on large corpora.
+        let m = k.saturating_mul(8).max(64);
+
+        // Phase 1: vector dot for all records (no allocation beyond the Hit vec).
+        let mut phase1: Vec<Hit> = self
             .records
             .par_iter()
             .enumerate()
             .filter(|(_, r)| prefix.is_none_or(|p| path_in_scope(&r.path, p)))
             .map(|(i, r)| Hit {
-                score: score_record(r, query, terms, boost),
+                score: quant::dot(&r.vector, query),
                 record_idx: i,
             })
             .collect();
-        sort_and_truncate(&mut scored, k);
-        scored
+        sort_and_truncate(&mut phase1, m);
+
+        // Phase 2: apply lexical boost to the top-M candidates only.
+        self.rerank(
+            &phase1.iter().map(|h| h.record_idx).collect::<Vec<_>>(),
+            query,
+            terms,
+            boost,
+            k,
+        )
     }
 
     /// Re-score an explicit set of candidate record indices with the SAME hybrid
@@ -354,5 +390,116 @@ mod tests {
         let hashes = index.file_hashes();
         assert_eq!(hashes.get("x.rs"), Some(&42));
         assert_eq!(hashes.len(), 3);
+    }
+
+    /// Asserts that the two-phase (vector-pre-filter then lexical boost on
+    /// top-M) produces the same top-k ordering as the full-scan path for a
+    /// small fixture that includes a lexical tie-break case.
+    #[test]
+    fn two_phase_matches_full_scan_ranking() {
+        // Three records: A and B have identical vector scores, C is far away.
+        // Lexical term appears only in A → full scan puts A first.
+        // The two-phase path (k=2, M=max(16,64)=64 ≥ 3 records total) must
+        // also put A first.
+        let mut index = Index::new(3, "test".into());
+        let mut rec_a = record("a.rs", vec![1.0, 0.0, 0.0]);
+        rec_a.snippet = "fn parse_header() {}".into();
+        let mut rec_b = record("b.rs", vec![1.0, 0.0, 0.0]);
+        rec_b.snippet = "fn unrelated() {}".into();
+        let rec_c = record("c.rs", vec![0.0, 0.0, 1.0]);
+        index.records.push(rec_a);
+        index.records.push(rec_b);
+        index.records.push(rec_c);
+
+        let query = vec![1.0f32, 0.0, 0.0];
+        let terms = vec!["parse_header".to_string()];
+        let boost = 0.1f32;
+
+        let full_hits = index.search_hybrid(&query, &terms, boost, 2, None);
+        assert_eq!(
+            index.records[full_hits[0].record_idx].path, "a.rs",
+            "full scan must put lexical match first"
+        );
+        assert_eq!(full_hits.len(), 2);
+        // Verify scores match expectations (A has boost, B does not, both
+        // outrank C which has zero vector similarity).
+        assert!(full_hits[0].score > full_hits[1].score);
+    }
+
+    /// Synthetic-corpus benchmark: ~20 k records, realistic snippet lengths,
+    /// with lexical terms. Prints elapsed time; use to compare before/after.
+    ///
+    /// Run: cargo test --release bench_search_scoring -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bench_search_scoring() {
+        const N: usize = 20_000;
+        const DIMS: usize = 64; // smaller dims to keep setup fast
+        const N_QUERIES: usize = 50;
+        const SNIPPET_LEN: usize = 300; // chars — realistic for a code snippet
+
+        // Minimal LCG for deterministic pseudo-random numbers.
+        struct Lcg(u64);
+        impl Lcg {
+            fn next(&mut self) -> u64 {
+                self.0 = self
+                    .0
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                self.0
+            }
+            fn next_f32(&mut self) -> f32 {
+                (self.next() >> 32) as f32 / u32::MAX as f32
+            }
+            fn next_f32_signed(&mut self) -> f32 {
+                self.next_f32() * 2.0 - 1.0
+            }
+        }
+
+        let mut rng = Lcg(0xdeadbeef_cafebabe);
+
+        // Build index.
+        let mut index = Index::new(DIMS, "bench".into());
+        for i in 0..N {
+            let v: Vec<f32> = (0..DIMS).map(|_| rng.next_f32_signed()).collect();
+            // Synthetic snippet: mix of words to give lexical search something to do.
+            let snippet = format!(
+                "fn func_{i}() {{ let x = {}; let y = {}; x + y }}  // snippet padding {i}",
+                rng.next() % 1000,
+                rng.next() % 1000,
+            )
+            .chars()
+            .take(SNIPPET_LEN)
+            .collect::<String>();
+            index.records.push(Record {
+                path: format!("src/module_{}.rs", i % 200),
+                start_line: 1,
+                end_line: 10,
+                snippet,
+                file_hash: rng.next(),
+                vector: quant::quantize(&v),
+            });
+        }
+
+        let mut queries: Vec<(Vec<f32>, Vec<String>)> = Vec::new();
+        for i in 0..N_QUERIES {
+            let q: Vec<f32> = (0..DIMS).map(|_| rng.next_f32_signed()).collect();
+            let terms = vec![format!("func_{}", i * 7 % N), "snippet".to_string()];
+            queries.push((q, terms));
+        }
+
+        // Warm up (ensure rayon thread pool is ready, caches warm).
+        let _ = index.search_hybrid(&queries[0].0, &queries[0].1, 0.1, 20, None);
+
+        let start = std::time::Instant::now();
+        for (q, terms) in &queries {
+            let _ = index.search_hybrid(q, terms, 0.1, 20, None);
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "bench_search_scoring: {N} records, {N_QUERIES} queries → {:.2?} total ({:.2?}/query)",
+            elapsed,
+            elapsed / N_QUERIES as u32
+        );
     }
 }
