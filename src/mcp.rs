@@ -367,4 +367,80 @@ mod tests {
         let hits = vec![make_hit("a.rs", 1, 2, 0.1), make_hit("b.rs", 1, 2, 0.9)];
         assert_eq!(apply_min_score(hits, None).len(), 2);
     }
+
+    // Build a tiny Hash-backend index and drive a real tools/call through handle().
+    #[test]
+    fn search_call_against_real_index() {
+        use crate::config::{Backend, Config};
+        use crate::pipeline;
+        use crate::testutil::TempDir;
+
+        let dir = TempDir::new();
+        dir.write(
+            "auth.rs",
+            "fn authenticate(user) { verify password create session token logout }",
+        );
+        dir.write(
+            "math.rs",
+            "fn add(a, b) { return arithmetic sum product divide remainder }",
+        );
+
+        let config = Config {
+            backend: Backend::Hash,
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        pipeline::index_repo(&config, false).unwrap();
+        let searcher = pipeline::open(&config).unwrap();
+
+        // Query that should match auth.rs and not math.rs.
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": { "query": "verify password session token", "limit": 3 }
+            }
+        });
+
+        let resp = handle(&config, Some(&searcher), &request).unwrap();
+
+        // Must be a successful result, not a JSON-RPC error.
+        assert!(resp.get("error").is_none(), "unexpected error: {resp}");
+        let result = &resp["result"];
+        assert_eq!(result["isError"], false);
+
+        let text = result["content"][0]["text"].as_str().unwrap();
+        // The top hit should be auth.rs.
+        assert!(
+            text.contains("auth.rs"),
+            "expected auth.rs in result, got: {text}"
+        );
+        // Lean format: no score field exposed.
+        assert!(!text.contains("score"), "score should not appear: {text}");
+
+        // Verify limit is honored: at most 3 results.
+        let hit_count = text.matches(':').count();
+        assert!(hit_count <= 3, "too many hits for limit=3: {text}");
+
+        // Verify min_score filtering: a very high threshold should yield no hits.
+        let strict_request = json!({
+            "jsonrpc": "2.0",
+            "id": 43,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": { "query": "verify password session token", "min_score": 0.9999 }
+            }
+        });
+        let strict_resp = handle(&config, Some(&searcher), &strict_request).unwrap();
+        let strict_text = strict_resp["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            strict_text, "No matches.",
+            "expected no matches with min_score=0.9999"
+        );
+    }
 }
