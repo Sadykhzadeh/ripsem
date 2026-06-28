@@ -26,7 +26,10 @@ chunking.
 
 The `hnsw` feature builds an approximate-nearest-neighbour index for large
 repositories. Below ~20k chunks the exact flat scan is already sub-10 ms, so the
-graph is only built above that size; smaller repos keep exact results.
+graph is only built above that size; smaller repos keep exact results. Above it,
+the graph fetches a wider candidate set that is then re-scored with the same
+hybrid ranking (vector similarity plus the literal-term boost) as the flat scan,
+so the lexical boost and `--min-score` behave identically at any repo size.
 
 ## Usage
 

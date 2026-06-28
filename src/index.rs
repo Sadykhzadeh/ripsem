@@ -100,25 +100,60 @@ impl Index {
             .par_iter()
             .enumerate()
             .filter(|(_, r)| prefix.is_none_or(|p| path_in_scope(&r.path, p)))
-            .map(|(i, r)| {
-                let mut score = quant::dot(&r.vector, query);
-                if boost > 0.0 {
-                    score += boost * lexical_fraction(r, terms);
-                }
-                Hit {
-                    score,
-                    record_idx: i,
-                }
+            .map(|(i, r)| Hit {
+                score: score_record(r, query, terms, boost),
+                record_idx: i,
             })
             .collect();
-        scored.sort_unstable_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        scored.truncate(k);
+        sort_and_truncate(&mut scored, k);
         scored
     }
+
+    /// Re-score an explicit set of candidate record indices with the SAME hybrid
+    /// scoring as [`Index::search_hybrid`] (vector dot + lexical boost), best
+    /// first, top `k`. Used to put approximate-nearest-neighbour (HNSW)
+    /// candidates on the exact same ranking and score scale as the flat scan, so
+    /// the lexical boost and a `--min-score` threshold behave identically whether
+    /// or not the ANN index kicked in. Out-of-range indices are skipped.
+    pub fn rerank(
+        &self,
+        candidates: &[usize],
+        query: &[f32],
+        terms: &[String],
+        boost: f32,
+        k: usize,
+    ) -> Vec<Hit> {
+        let mut scored: Vec<Hit> = candidates
+            .iter()
+            .filter_map(|&i| self.records.get(i).map(|r| (i, r)))
+            .map(|(i, r)| Hit {
+                score: score_record(r, query, terms, boost),
+                record_idx: i,
+            })
+            .collect();
+        sort_and_truncate(&mut scored, k);
+        scored
+    }
+}
+
+/// The hybrid relevance score for one record: cosine (int8 dot) plus, when a
+/// boost is set, a fraction for the query's literal terms appearing in the
+/// snippet/path. Single source of truth for the flat scan and the ANN re-rank.
+fn score_record(record: &Record, query: &[f32], terms: &[String], boost: f32) -> f32 {
+    let mut score = quant::dot(&record.vector, query);
+    if boost > 0.0 {
+        score += boost * lexical_fraction(record, terms);
+    }
+    score
+}
+
+fn sort_and_truncate(scored: &mut Vec<Hit>, k: usize) {
+    scored.sort_unstable_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    scored.truncate(k);
 }
 
 fn path_in_scope(path: &str, prefix: &str) -> bool {
@@ -218,6 +253,38 @@ mod tests {
 
         let plain = index.search_scoped(&[1.0, 0.0, 0.0], 2, None);
         assert!((plain[0].score - plain[1].score).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rerank_applies_lexical_boost_and_respects_candidates() {
+        // The ANN re-rank must score candidates with the same hybrid scoring as
+        // the flat scan — so a literal-term match outranks a vector tie — and must
+        // honor the candidate set + k, and skip out-of-range indices.
+        let mut index = Index::new(3, "test".into());
+        let mut with_term = record("a.rs", vec![1.0, 0.0, 0.0]);
+        with_term.snippet = "fn parse_header() {}".into();
+        let mut without = record("b.rs", vec![1.0, 0.0, 0.0]);
+        without.snippet = "fn unrelated() {}".into();
+        index.records.push(with_term); // idx 0
+        index.records.push(without); // idx 1
+
+        let terms = vec!["parse_header".to_string()];
+        // Candidates passed in the "wrong" order with an out-of-range index (99);
+        // the boost must reorder, and 99 must be skipped (not panic).
+        let hits = index.rerank(&[1, 0, 99], &[1.0, 0.0, 0.0], &terms, 0.1, 5);
+        assert_eq!(hits.len(), 2, "out-of-range candidate is skipped");
+        assert_eq!(
+            index.records[hits[0].record_idx].path, "a.rs",
+            "lexical boost lifts the literal-term match to the top"
+        );
+
+        // k truncates the re-ranked set.
+        assert_eq!(
+            index
+                .rerank(&[0, 1], &[1.0, 0.0, 0.0], &terms, 0.1, 1)
+                .len(),
+            1
+        );
     }
 
     #[test]
