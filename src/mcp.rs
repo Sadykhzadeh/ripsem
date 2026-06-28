@@ -133,7 +133,10 @@ fn handle_call(
     }
 }
 
-fn scope_prefix(raw: &str, root: &std::path::Path) -> Option<String> {
+/// Normalize a user-supplied subdirectory into a repo-relative, forward-slash
+/// prefix usable for scoping search results. `.`/empty/whitespace ⇒ no scope.
+/// Shared by the MCP `search` tool and the CLI `search --in` flag.
+pub(crate) fn scope_prefix(raw: &str, root: &std::path::Path) -> Option<String> {
     let raw = raw.trim();
     if raw.is_empty() || raw == "." {
         return None;
