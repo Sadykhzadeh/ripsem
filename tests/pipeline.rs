@@ -178,6 +178,34 @@ fn searcher_hot_reloads_a_rebuilt_index() {
 }
 
 #[test]
+fn searcher_rejects_a_same_dim_different_model_index() {
+    use ripsem::index::Index;
+
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie delta echo");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let mut searcher = pipeline::open(&config).unwrap();
+    let original_model = searcher.model().to_string();
+    let original_records = searcher.record_count();
+
+    // Rewrite the on-disk index with the SAME dimensionality but a different
+    // model (both 384-d). Cross-model vectors are not comparable, so the
+    // long-running searcher must keep its current index.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let mut rebuilt = Index::load(&config.index_path()).unwrap();
+    assert_ne!(rebuilt.model, "all-MiniLM-L6-v2");
+    rebuilt.model = "all-MiniLM-L6-v2".into();
+    rebuilt.records.clear();
+    rebuilt.save(&config.index_path()).unwrap();
+
+    assert!(!searcher.refresh().unwrap());
+    assert_eq!(searcher.model(), original_model);
+    assert_eq!(searcher.record_count(), original_records);
+}
+
+#[test]
 fn empty_repository_indexes_without_error() {
     let dir = TempDir::new();
     let config = config_for(&dir.path);
