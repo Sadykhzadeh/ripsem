@@ -166,7 +166,10 @@ fn flush(
 
 pub struct Searcher {
     index: Index,
-    embedder: Box<dyn embed::Embedder>,
+    // Built on the first query rather than at open time: opening an index to
+    // check its status or refresh it shouldn't pay the model-load cost.
+    config: Config,
+    embedder: std::sync::OnceLock<Box<dyn embed::Embedder>>,
     index_path: std::path::PathBuf,
     index_mtime: Option<std::time::SystemTime>,
     lexical_boost: f32,
@@ -181,14 +184,14 @@ pub fn open(config: &Config) -> Result<Searcher> {
     let index_path = config.index_path();
     let index = Index::load(&index_path)
         .context("no index yet; run `ripsem index` in this directory first")?;
-    let embedder = embed::build(config)?;
     let index_mtime = file_mtime(&index_path);
     let model = index.model.clone();
     #[cfg(feature = "hnsw")]
     let ann_map = index.ann.as_deref().and_then(crate::ann::load);
     Ok(Searcher {
         index,
-        embedder,
+        config: config.clone(),
+        embedder: std::sync::OnceLock::new(),
         index_path,
         index_mtime,
         lexical_boost: config.lexical_boost,
@@ -236,6 +239,18 @@ impl Searcher {
         self.index.records.len()
     }
 
+    /// Build the embedding model on first use and return it. Subsequent calls
+    /// reuse the same instance.
+    fn embedder(&self) -> Result<&dyn embed::Embedder> {
+        if let Some(e) = self.embedder.get() {
+            return Ok(e.as_ref());
+        }
+        let built = embed::build(&self.config)?;
+        // A concurrent caller may have won the race; either way one instance wins.
+        let _ = self.embedder.set(built);
+        Ok(self.embedder.get().expect("embedder set above").as_ref())
+    }
+
     pub fn query(&self, query: &str, k: usize) -> Result<Vec<SearchHit>> {
         self.query_scoped(query, k, None)
     }
@@ -246,7 +261,7 @@ impl Searcher {
         k: usize,
         prefix: Option<&str>,
     ) -> Result<Vec<SearchHit>> {
-        let qv = self.embedder.embed_query(query)?;
+        let qv = self.embedder()?.embed_query(query)?;
         let terms = query_terms(query);
 
         #[cfg(feature = "hnsw")]
