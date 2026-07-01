@@ -329,7 +329,9 @@ fn query_terms(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn relative(root: &Path, path: &Path) -> String {
+/// Display `path` relative to `root` with forward slashes, matching the
+/// repo-relative paths the index and search output use.
+pub(crate) fn relative(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
         .to_string_lossy()
@@ -357,7 +359,22 @@ fn progress(len: u64) -> ProgressBar {
 
 #[cfg(test)]
 mod tests {
-    use super::query_terms;
+    use super::{query_terms, relative};
+    use std::path::Path;
+
+    #[test]
+    fn relative_strips_root_and_uses_forward_slashes() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            relative(root, Path::new("/repo/src/main.rs")),
+            "src/main.rs"
+        );
+        // Backslashes in a component are normalised to forward slashes so the
+        // output matches index/search paths on Windows.
+        assert_eq!(relative(Path::new("a"), Path::new("a/b\\c")), "b/c");
+        // A path outside root is returned as-is (still slash-normalised).
+        assert_eq!(relative(root, Path::new("/other/x.rs")), "/other/x.rs");
+    }
 
     #[test]
     fn keeps_identifiers_and_drops_short_tokens() {

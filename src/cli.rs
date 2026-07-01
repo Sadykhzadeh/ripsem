@@ -278,7 +278,7 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
     if dry_run {
         let files = walk::collect(&config)?;
         for path in &files {
-            println!("{}", relative_to(&config.root, path));
+            println!("{}", pipeline::relative(&config.root, path));
         }
         println!("{} files would be indexed", files.len());
         return Ok(());
@@ -289,15 +289,6 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
         stats.files, stats.embedded, stats.reused, stats.chunks
     );
     Ok(())
-}
-
-/// Display `path` relative to the repo root with forward slashes, matching the
-/// repo-relative paths the index and search output use.
-fn relative_to(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
 }
 
 /// First `context` lines of a snippet for the human output. `0` yields an empty
