@@ -53,6 +53,11 @@ pub enum Command {
         /// human and `--json` output.
         #[arg(long, value_name = "SCORE")]
         min_score: Option<f32>,
+        /// Summarise as one line per file with its hit count (sorted by count),
+        /// instead of listing each hit. Aggregates the top-`k` matches, so pair
+        /// it with a larger `-k` for a wider view. Honoured by `--json` too.
+        #[arg(long)]
+        count_by_file: bool,
     },
     /// Index and keep the index in sync as files change.
     Watch,
@@ -108,6 +113,7 @@ pub fn run(cli: Cli) -> Result<()> {
             within,
             context,
             min_score,
+            count_by_file,
         } => cmd_search(
             &root,
             &query,
@@ -116,6 +122,7 @@ pub fn run(cli: Cli) -> Result<()> {
             within.as_deref(),
             context,
             min_score,
+            count_by_file,
         ),
         Command::Watch => watch::run(Config::load(&root)?),
         Command::Status { json } => cmd_status(&root, json),
@@ -308,6 +315,22 @@ fn apply_min_score(hits: Vec<pipeline::SearchHit>, min: Option<f32>) -> Vec<pipe
     }
 }
 
+/// Aggregate hits into `(path, count)` pairs, sorted by count descending then
+/// path ascending — the "which files matched most" view behind `--count-by-file`.
+fn file_hit_counts(hits: &[pipeline::SearchHit]) -> Vec<(String, usize)> {
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for h in hits {
+        *counts.entry(h.path.as_str()).or_insert(0) += 1;
+    }
+    let mut pairs: Vec<(String, usize)> = counts
+        .into_iter()
+        .map(|(p, c)| (p.to_string(), c))
+        .collect();
+    pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    pairs
+}
+
+#[allow(clippy::too_many_arguments)]
 fn cmd_search(
     root: &Path,
     query: &str,
@@ -316,6 +339,7 @@ fn cmd_search(
     within: Option<&str>,
     context: usize,
     min_score: Option<f32>,
+    count_by_file: bool,
 ) -> Result<()> {
     let config = Config::load(root)?;
     // Normalize the optional --in scope the same way the MCP `search` tool does,
@@ -324,6 +348,24 @@ fn cmd_search(
     let prefix = within.and_then(|raw| mcp::scope_prefix(raw, &config.root));
     let hits = pipeline::search_scoped(&config, query, limit, prefix.as_deref())?;
     let hits = apply_min_score(hits, min_score);
+
+    if count_by_file {
+        let counts = file_hit_counts(&hits);
+        if as_json {
+            let rows: Vec<Value> = counts
+                .into_iter()
+                .map(|(path, count)| json!({ "path": path, "count": count }))
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+        } else if counts.is_empty() {
+            println!("no matches");
+        } else {
+            for (path, count) in counts {
+                println!("{count:>5}  {path}");
+            }
+        }
+        return Ok(());
+    }
 
     if as_json {
         let rows: Vec<Value> = hits
@@ -480,6 +522,34 @@ mod tests {
         assert_eq!(scores, vec![0.9, 0.5]);
         // An empty input stays empty whether or not a threshold is set.
         assert!(apply_min_score(vec![], Some(0.5)).is_empty());
+    }
+
+    #[test]
+    fn file_hit_counts_aggregates_and_sorts() {
+        let hit_at = |path: &str, score: f32| pipeline::SearchHit {
+            path: path.into(),
+            start_line: 1,
+            end_line: 2,
+            score,
+            snippet: String::new(),
+        };
+        let hits = vec![
+            hit_at("src/a.rs", 0.9),
+            hit_at("src/b.rs", 0.8),
+            hit_at("src/a.rs", 0.7),
+            hit_at("src/c.rs", 0.6),
+            hit_at("src/b.rs", 0.5),
+        ];
+        // Sorted by count descending, then path ascending as the tie-break.
+        assert_eq!(
+            file_hit_counts(&hits),
+            vec![
+                ("src/a.rs".to_string(), 2),
+                ("src/b.rs".to_string(), 2),
+                ("src/c.rs".to_string(), 1),
+            ]
+        );
+        assert!(file_hit_counts(&[]).is_empty());
     }
 
     #[test]
