@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::config::{Backend, Config};
 use crate::index::Index;
-use crate::{mcp, model, pipeline, watch};
+use crate::{mcp, model, pipeline, walk, watch};
 
 #[derive(Parser)]
 #[command(name = "ripsem", version, about = "Local semantic code search")]
@@ -26,6 +26,11 @@ pub enum Command {
     Index {
         #[arg(long)]
         force: bool,
+        /// List the files that would be indexed and exit, without building
+        /// embeddings or writing the index. Useful for checking which
+        /// ignore/exclude/config patterns are in effect.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Search the index with a natural-language query.
     Search {
@@ -95,7 +100,7 @@ pub fn run(cli: Cli) -> Result<()> {
     let root = cli.path.canonicalize().unwrap_or(cli.path);
     match cli.command {
         Command::Init => cmd_init(&root),
-        Command::Index { force } => cmd_index(&root, force),
+        Command::Index { force, dry_run } => cmd_index(&root, force, dry_run),
         Command::Search {
             query,
             limit,
@@ -268,14 +273,31 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-fn cmd_index(root: &Path, force: bool) -> Result<()> {
+fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
     let config = Config::load(root)?;
+    if dry_run {
+        let files = walk::collect(&config)?;
+        for path in &files {
+            println!("{}", relative_to(&config.root, path));
+        }
+        println!("{} files would be indexed", files.len());
+        return Ok(());
+    }
     let stats = pipeline::index_repo(&config, force)?;
     println!(
         "{} files: {} embedded, {} unchanged -> {} chunks",
         stats.files, stats.embedded, stats.reused, stats.chunks
     );
     Ok(())
+}
+
+/// Display `path` relative to the repo root with forward slashes, matching the
+/// repo-relative paths the index and search output use.
+fn relative_to(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 /// First `context` lines of a snippet for the human output. `0` yields an empty
