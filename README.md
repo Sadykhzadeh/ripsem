@@ -72,9 +72,9 @@ ripsem index --force              # rebuild after switching
 
 | Model | Dims | Disk | Notes |
 | --- | --- | --- | --- |
-| bge-small-en-v1.5 | 384 | ~133 MB | default, strong quality/size balance |
-| all-MiniLM-L6-v2 | 384 | ~90 MB | fastest, lower recall |
-| bge-base-en-v1.5 | 768 | ~436 MB | higher quality, heavier |
+| bge-small-en-v1.5 | 384 | ~133 MB | default, and the best of the three measured |
+| all-MiniLM-L6-v2 | 384 | ~90 MB | fastest, measurably lower recall |
+| bge-base-en-v1.5 | 768 | ~436 MB | better alone, worse merged — see Quality |
 | multilingual-e5-small | 384 | ~470 MB | multilingual |
 | nomic-embed-text-v1.5 | 768 | ~550 MB | long context |
 
@@ -160,6 +160,22 @@ So the case for merging is not that it wins every corpus; on `requests` it costs
 which arm a given repository and a given question will need, and merging is ahead
 of both wherever it is not ahead of one of them: +0.10 on the aggregate, and ahead
 on three shapes out of four.
+
+The default model is a measurement, not a guess. Three models over the same 73
+questions:
+
+| model | dims | disk | vector only | merged |
+| --- | --- | --- | --- | --- |
+| all-MiniLM-L6-v2 | 384 | ~90 MB | 0.537 | 0.647 |
+| bge-small-en-v1.5 | 384 | ~133 MB | 0.547 | **0.679** |
+| bge-base-en-v1.5 | 768 | ~436 MB | **0.564** | 0.628 |
+
+The larger model is the better retriever on its own and the worse one merged, and
+it is worst exactly on descriptions — the shape a stronger language model should
+help most. Its advantage shows up only on the Rust corpus (0.774 against 0.754)
+and it loses on the other three. Why a model that ranks better alone merges worse
+is not explained here, only measured; three times the disk for less accuracy is
+reason enough to keep the smaller default and not to invent a story about it.
 
 The same run measures what reaching the answer costs to read. Counting the
 snippets up to and including the first correct hit, a caller takes in **587 bytes
