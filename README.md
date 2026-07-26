@@ -50,7 +50,10 @@ ripsem watch                      # index and keep it in sync as files change
 ```
 
 Search respects `.gitignore` and an optional `.ripsemignore`. Results print as
-`path:start-end` with a snippet, ordered by the merged ranking. The number shown
+`path:start-end` with a snippet, ordered by the merged ranking. Two records can
+cover the same lines — a declaration and the documentation above it, or the
+overlap between adjacent windows — and only the better-ranked one is returned, so
+`-k 5` means five distinct places rather than five records. The number shown
 is confidence in 0–1: semantic similarity, or the share of the query's terms
 found literally, whichever is higher. Order comes from how strongly both
 retrievers back a chunk, so confidence does not have to fall down the list — a
@@ -136,18 +139,18 @@ run.
 
 | corpus | language | chunks | vector only | lexical only | merged |
 | --- | --- | --- | --- | --- | --- |
-| ripsem | Rust | 146 | 0.611 | 0.675 | **0.774** |
+| ripsem | Rust | 146 | 0.611 | 0.675 | **0.778** |
 | requests v2.34.2 | Python | 909 | 0.700 | 0.610 | **0.771** |
-| mux v1.8.1 | Go | 398 | 0.576 | 0.736 | **0.799** |
+| mux v1.8.1 | Go | 398 | 0.576 | 0.736 | **0.806** |
 | got v14.4.5 | TypeScript | 851 | 0.600 | 0.542 | **0.613** |
-| all | | 2304 | 0.627 | 0.631 | **0.733** |
+| all | | 2304 | 0.627 | 0.631 | **0.735** |
 
 | query shape | vector only | lexical only | merged |
 | --- | --- | --- | --- |
 | description (28) | 0.438 | 0.373 | **0.545** |
 | identifier (22) | 0.826 | 0.856 | **0.913** |
 | message (9) | 0.537 | **1.000** | 0.944 |
-| recalled name (14) | **0.750** | 0.554 | 0.690 |
+| recalled name (14) | **0.750** | 0.554 | 0.702 |
 
 The per-corpus column is why more than one project is measured. Which arm is
 stronger *reverses* between them: BM25 wins on Go and on Rust, the embedding model
@@ -157,7 +160,7 @@ false in general.
 
 Merging is ahead on every corpus, by 0.04 to 0.06, and ahead on three query shapes
 of four. It is not free: on a name remembered wrong the vector arm alone scores
-0.750 against the merge's 0.690, because the lexical arm has little to say about a
+0.750 against the merge's 0.702, because the lexical arm has little to say about a
 paraphrase and still gets a vote. Nothing tells you in advance which arm a given
 repository and a given question will need, which is the whole case for not having
 to choose.
@@ -214,9 +217,9 @@ lexical arm already answers well and hurts the shape where the model is the only
 arm that can answer at all, and descriptions are 28 of the 73 questions.
 
 The same run measures what reaching the answer costs to read. Counting the
-snippets up to and including the first correct hit, a caller takes in **489 bytes
+snippets up to and including the first correct hit, a caller takes in **479 bytes
 to reach the answer, against 14 733 bytes for the whole file that answer lives in
-— 30× less**. Read that narrowly: it is the 63 of 73 questions answered inside the
+— 31× less**. Read that narrowly: it is the 63 of 73 questions answered inside the
 top five, and the comparison is against reading one file end to end, which is what
 happens when a search can only name a filename. It is not a model of what an agent
 really does, and it says nothing about the 10 questions no arm answered.
