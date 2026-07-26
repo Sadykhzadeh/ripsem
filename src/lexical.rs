@@ -87,8 +87,16 @@ pub struct TermVector {
 }
 
 impl TermVector {
-    pub fn new(text: &str, path: &str) -> Self {
+    /// The declared name is added as a term of its own. For most chunks it is
+    /// already in the text, but a fragment of a function too large to be one
+    /// chunk does not contain the name of the function it came from, and without
+    /// this it cannot be found by that name at all.
+    pub fn new(text: &str, path: &str, symbol: Option<&str>) -> Self {
         let mut hashes = document_terms(text, path);
+        if let Some(name) = symbol {
+            let mut buffer = String::new();
+            collect_terms(name, &mut buffer, &mut hashes);
+        }
         let length = hashes.len() as u32;
         hashes.sort_unstable();
         let mut terms: Vec<(TermHash, u8)> = Vec::with_capacity(hashes.len());
@@ -250,26 +258,42 @@ mod tests {
 
     #[test]
     fn path_terms_are_searchable() {
-        let vector = TermVector::new("fn nothing() {}", "src/embed/fastembed.rs");
+        let vector = TermVector::new("fn nothing() {}", "src/embed/fastembed.rs", None);
         assert!(vector.presence(&terms_of("fastembed")) != 0);
         assert!(vector.presence(&terms_of("embed")) != 0);
     }
 
+    /// A function larger than the chunk budget is cut into pieces whose text
+    /// never mentions the function. Carrying the declared name is what keeps
+    /// those pieces reachable by it.
+    #[test]
+    fn a_fragment_is_reachable_by_the_name_of_its_function() {
+        let terms = terms_of("evict_least_recently_used");
+        let fragment = TermVector::new(
+            "map.remove(oldest);",
+            "cache.rs",
+            Some("evict_least_recently_used"),
+        );
+        let anonymous = TermVector::new("map.remove(oldest);", "cache.rs", None);
+        assert_eq!(fragment.presence(&terms).count_ones() as usize, terms.len());
+        assert_eq!(anonymous.presence(&terms), 0);
+    }
+
     #[test]
     fn repeated_terms_accumulate_frequency() {
-        let vector = TermVector::new("cache cache cache", "x.rs");
+        let vector = TermVector::new("cache cache cache", "x.rs", None);
         let cache = terms_of("cache")[0];
         assert_eq!(vector.frequency(cache), Some(3));
     }
 
     #[test]
     fn presence_marks_the_query_term_positions() {
-        let vector = TermVector::new("fn evict_least_recently_used() {}", "cache.rs");
+        let vector = TermVector::new("fn evict_least_recently_used() {}", "cache.rs", None);
         let terms = terms_of("evict_least_recently_used");
         let bits = vector.presence(&terms);
         assert_eq!(bits.count_ones() as usize, terms.len());
         assert!(
-            TermVector::new("fn unrelated() {}", "other.rs")
+            TermVector::new("fn unrelated() {}", "other.rs", None)
                 .presence(&terms)
                 .count_ones()
                 < terms.len() as u32
@@ -278,9 +302,9 @@ mod tests {
 
     fn corpus() -> Vec<TermVector> {
         vec![
-            TermVector::new("fn evict_least_recently_used(cache) {}", "cache.rs"),
-            TermVector::new("fn sign_in(name, secret) {}", "auth.rs"),
-            TermVector::new("fn rectangle_area(w, h) {}", "geometry.rs"),
+            TermVector::new("fn evict_least_recently_used(cache) {}", "cache.rs", None),
+            TermVector::new("fn sign_in(name, secret) {}", "auth.rs", None),
+            TermVector::new("fn rectangle_area(w, h) {}", "geometry.rs", None),
         ]
     }
 
