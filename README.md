@@ -136,46 +136,73 @@ run.
 
 | corpus | language | chunks | vector only | lexical only | merged |
 | --- | --- | --- | --- | --- | --- |
-| ripsem | Rust | 109 | 0.587 | 0.718 | **0.754** |
-| requests v2.34.2 | Python | 612 | **0.747** | 0.531 | 0.713 |
-| mux v1.8.1 | Go | 257 | 0.326 | 0.590 | **0.681** |
-| got v14.4.5 | TypeScript | 757 | 0.438 | 0.458 | **0.567** |
-| all | | 1735 | 0.547 | 0.575 | **0.679** |
+| ripsem | Rust | 146 | 0.611 | 0.675 | **0.774** |
+| requests v2.34.2 | Python | 909 | 0.700 | 0.610 | **0.771** |
+| mux v1.8.1 | Go | 398 | 0.576 | 0.736 | **0.799** |
+| got v14.4.5 | TypeScript | 851 | 0.600 | 0.542 | **0.613** |
+| all | | 2304 | 0.627 | 0.631 | **0.733** |
 
 | query shape | vector only | lexical only | merged |
 | --- | --- | --- | --- |
-| description (28) | 0.429 | 0.354 | **0.551** |
-| identifier (22) | 0.731 | 0.714 | **0.811** |
-| message (9) | 0.519 | **1.000** | 0.870 |
-| recalled name (14) | 0.514 | 0.524 | **0.607** |
+| description (28) | 0.438 | 0.373 | **0.545** |
+| identifier (22) | 0.826 | 0.856 | **0.913** |
+| message (9) | 0.537 | **1.000** | 0.944 |
+| recalled name (14) | **0.750** | 0.554 | 0.690 |
 
 The per-corpus column is why more than one project is measured. Which arm is
 stronger *reverses* between them: BM25 wins on Go and on Rust, the embedding model
-wins decisively on Python, and on TypeScript they are level. An earlier version of
-this file claimed BM25 beats the model on real code — that held for the one
-repository being measured and is false in general.
+wins on Python and TypeScript. An earlier version of this file claimed BM25 beats
+the model on real code — that held for the one repository being measured and is
+false in general.
 
-So the case for merging is not that it wins every corpus; on `requests` it costs
-0.034 against the vector arm alone. The case is that nothing tells you in advance
-which arm a given repository and a given question will need, and merging is ahead
-of both wherever it is not ahead of one of them: +0.10 on the aggregate, and ahead
-on three shapes out of four.
+Merging is ahead on every corpus, by 0.04 to 0.06, and ahead on three query shapes
+of four. It is not free: on a name remembered wrong the vector arm alone scores
+0.750 against the merge's 0.690, because the lexical arm has little to say about a
+paraphrase and still gets a vote. Nothing tells you in advance which arm a given
+repository and a given question will need, which is the whole case for not having
+to choose.
 
 The default model is a measurement, not a guess. Three models over the same 73
 questions:
 
 | model | dims | disk | vector only | merged |
 | --- | --- | --- | --- | --- |
-| all-MiniLM-L6-v2 | 384 | ~90 MB | 0.537 | 0.647 |
-| bge-small-en-v1.5 | 384 | ~133 MB | 0.547 | **0.679** |
-| bge-base-en-v1.5 | 768 | ~436 MB | **0.564** | 0.628 |
+| all-MiniLM-L6-v2 | 384 | ~90 MB | 0.604 | 0.718 |
+| bge-small-en-v1.5 | 384 | ~133 MB | 0.627 | **0.733** |
+| bge-base-en-v1.5 | 768 | ~436 MB | **0.637** | 0.689 |
 
-The larger model is the better retriever on its own and the worse one merged, and
-it is worst exactly on descriptions — the shape a stronger language model should
-help most. Its advantage shows up only on the Rust corpus (0.774 against 0.754)
-and it loses on the other three. Why a model that ranks better alone merges worse
-is not explained here, only measured; three times the disk for less accuracy is
-reason enough to keep the smaller default and not to invent a story about it.
+The larger model is the better retriever on its own and the worse one merged. The
+ordering held before doc records were added and after, so it is not an accident of
+one configuration. Why a model that ranks better alone merges worse is not
+explained here, only measured; three times the disk for less accuracy settles the
+default without an explanation.
+
+Documentation is indexed as records of its own. A doc comment or docstring is
+turned into a second record for the same declaration — the same file, the same
+line range, so a hit still points at code — carrying the author's prose instead of
+the code. It is the only change measured here that improved every corpus at once:
+merged MRR 0.679 to **0.733**, and 0.681 to 0.799 on Go, the largest single move
+in this table.
+
+It did not improve what it was aimed at. The idea was that a description-shaped
+query would find the sentence explaining a function; descriptions did not move
+(0.551 to 0.545). What moved was identifiers (0.811 to 0.913), messages (0.870 to
+0.944) and remembered names (0.607 to 0.690).
+
+The reason is an interaction, and it took a two-by-two to see it:
+
+| | length normalisation on | off |
+| --- | --- | --- |
+| without doc records | 0.679 | 0.670 |
+| with doc records | **0.733** | 0.679 |
+
+Neither on its own is worth anything — doc records add 0.009 without length
+normalisation, and length normalisation adds 0.009 without doc records. Together
+they add 0.054. A doc record is a *short* document that names the declaration and
+says what it is for, and BM25's length term exists precisely to say that a term in
+a short document is stronger evidence than the same term in a long one. The gain
+is that rule finally having something to work with, not the prose being read for
+its meaning.
 
 Giving the model more context to embed was tried twice and is not in the code.
 Prepending each chunk's path and declaration to the text sent for embedding —
@@ -187,16 +214,16 @@ lexical arm already answers well and hurts the shape where the model is the only
 arm that can answer at all, and descriptions are 28 of the 73 questions.
 
 The same run measures what reaching the answer costs to read. Counting the
-snippets up to and including the first correct hit, a caller takes in **587 bytes
-to reach the answer, against 14 887 bytes for the whole file that answer lives in
-— 25× less**. Read that narrowly: it is the 61 of 73 questions answered inside the
+snippets up to and including the first correct hit, a caller takes in **489 bytes
+to reach the answer, against 14 733 bytes for the whole file that answer lives in
+— 30× less**. Read that narrowly: it is the 63 of 73 questions answered inside the
 top five, and the comparison is against reading one file end to end, which is what
 happens when a search can only name a filename. It is not a model of what an agent
-really does, and it says nothing about the 12 questions no arm answered.
+really does, and it says nothing about the 10 questions no arm answered.
 
 A second benchmark compares what the two `skip_generated` settings return.
 Indexing the lock file put a machine-written chunk in 6 of 105 result slots, and
-cost 291 chunks against 167, 386 KB against 237 KB, and 16.4 s against 10.0 s to
+cost 380 chunks against 256, 484 KB against 335 KB, and 21.5 s against 14.6 s to
 build. Ranking is deliberately not part of that claim: `crates.io-index` occurs
 409 times in `Cargo.lock`, so indexing it hands the word `index` the document
 frequency of a stopword, and one corpus cannot separate that accident from the
