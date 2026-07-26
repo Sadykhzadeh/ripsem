@@ -256,6 +256,11 @@ impl Candidate {
                     .partial_cmp(&a.agreement)
                     .unwrap_or(Ordering::Equal)
             })
+            .then_with(|| {
+                b.confidence()
+                    .partial_cmp(&a.confidence())
+                    .unwrap_or(Ordering::Equal)
+            })
             .then(a.record_idx.cmp(&b.record_idx))
     }
 }
