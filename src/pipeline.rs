@@ -102,6 +102,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
                 snippet: truncate(&c.text, 400),
                 file_hash: hash,
                 terms: crate::lexical::TermVector::new(&c.text, &rel),
+                symbol: c.symbol,
             });
             texts.push(c.text);
             if texts.len() >= EMBED_BATCH {
@@ -140,6 +141,7 @@ struct Pending {
     snippet: String,
     file_hash: u64,
     terms: crate::lexical::TermVector,
+    symbol: Option<crate::symbol::Symbol>,
 }
 
 fn flush(
@@ -161,6 +163,7 @@ fn flush(
             file_hash: p.file_hash,
             vector: crate::quant::quantize(&vector),
             terms: p.terms,
+            symbol: p.symbol,
         });
     }
     texts.clear();
