@@ -564,6 +564,43 @@ fn rank_of(index: &Index, hits: &[Hit], targets: &[&str]) -> Option<usize> {
         .map(|p| p + 1)
 }
 
+/// What reaching the answer costs to read. `context` counts the snippets up to
+/// and including the first correct hit — everything a caller has to take in
+/// before it has the answer. `whole_files` counts the file that answer lives in,
+/// which is what gets read instead when a search only points at a filename.
+#[derive(Default)]
+struct Cost {
+    answered: usize,
+    context: u64,
+    whole_files: u64,
+}
+
+impl Cost {
+    fn record(&mut self, index: &Index, hits: &[Hit], root: &Path, rank: Option<usize>) {
+        let Some(rank) = rank else { return };
+        self.answered += 1;
+        self.context += hits[..rank]
+            .iter()
+            .map(|h| index.records[h.record_idx].snippet.len() as u64)
+            .sum::<u64>();
+        let answer = &index.records[hits[rank - 1].record_idx].path;
+        self.whole_files += std::fs::metadata(root.join(answer))
+            .map(|m| m.len())
+            .unwrap_or(0);
+    }
+
+    fn line(&self) -> String {
+        let answered = self.answered.max(1) as f64;
+        let context = self.context as f64 / answered;
+        let whole = self.whole_files as f64 / answered;
+        format!(
+            "{context:.0} bytes read to the answer against {whole:.0} for the file it is in ({:.1}x less, {} answered)",
+            whole / context.max(1.0),
+            self.answered
+        )
+    }
+}
+
 const ARMS: [&str; 3] = ["vector only", "lexical only", "fused"];
 const FUSED: usize = 2;
 
@@ -576,12 +613,14 @@ fn fusion_beats_either_retriever_alone() {
         .map(|_| SHAPES.iter().map(|&s| (s, Score::default())).collect())
         .collect();
     let mut report = Vec::new();
+    let mut cost = Cost::default();
 
     for corpus in CORPORA {
         let materialized = materialize(&corpus.source, corpus.name);
+        let root = materialized.root();
         let config = Config {
             backend: Backend::Fastembed,
-            root: materialized.root(),
+            root: root.clone(),
             ..Default::default()
         };
         pipeline::index_repo(&config, true).unwrap();
@@ -617,11 +656,14 @@ fn fusion_beats_either_retriever_alone() {
                     .find(|(s, _)| *s == query.shape)
                     .unwrap();
                 slot.1.record(rank);
-                if arm == FUSED && rank.is_none() {
-                    eprintln!(
-                        "  miss [{}] {:?} (expected {:?})",
-                        corpus.name, query.text, query.targets
-                    );
+                if arm == FUSED {
+                    cost.record(&index, hits, &root, rank);
+                    if rank.is_none() {
+                        eprintln!(
+                            "  miss [{}] {:?} (expected {:?})",
+                            corpus.name, query.text, query.targets
+                        );
+                    }
                 }
             }
         }
@@ -642,6 +684,12 @@ fn fusion_beats_either_retriever_alone() {
         }
     }
 
+    eprintln!("cost         {}", cost.line());
+
+    assert!(
+        cost.context < cost.whole_files,
+        "reading the results is not cheaper than reading the files they point at"
+    );
     let fused = overall[FUSED].mrr();
     assert!(
         fused >= overall[0].mrr(),
