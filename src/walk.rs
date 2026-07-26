@@ -62,10 +62,7 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
             continue;
         }
         let path = entry.into_path();
-        if path
-            .components()
-            .any(|c| matches!(c.as_os_str().to_str(), Some(".ripsem") | Some(".git")))
-        {
+        if is_internal(&path, &config.root) {
             continue;
         }
         if is_indexable(&path, max_bytes) {
@@ -73,6 +70,17 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(out)
+}
+
+/// ripsem's own index and git's object store are never source. The check is
+/// against the path *below the root*: an absolute-path check would refuse to
+/// index a repository that merely happens to live inside a directory called
+/// `.ripsem` or `.git`.
+fn is_internal(path: &Path, root: &Path) -> bool {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .any(|c| matches!(c.as_os_str().to_str(), Some(".ripsem") | Some(".git")))
 }
 
 fn is_indexable(path: &Path, max_bytes: u64) -> bool {
@@ -140,6 +148,27 @@ mod tests {
                 .all(|p| !p.components().any(|c| c.as_os_str() == ".git"))
         );
         assert_eq!(collected.len(), 1);
+    }
+
+    #[test]
+    fn indexes_a_repository_that_lives_under_a_dot_ripsem_directory() {
+        let dir = TempDir::new();
+        dir.write(".ripsem/corpora/project/main.rs", "fn main() {}\n");
+        let root = dir.path().join(".ripsem/corpora/project");
+
+        assert_eq!(names(&collect(&config_at(&root)).unwrap()), ["main.rs"]);
+    }
+
+    #[test]
+    fn skips_the_index_directory_inside_the_root() {
+        let dir = TempDir::new();
+        dir.write("main.rs", "fn main() {}\n");
+        dir.write(".ripsem/config.toml", "model = \"x\"\n");
+
+        assert_eq!(
+            names(&collect(&config_at(dir.path())).unwrap()),
+            ["main.rs"]
+        );
     }
 
     #[test]
