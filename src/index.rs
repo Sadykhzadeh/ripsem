@@ -10,7 +10,7 @@ use crate::lexical::{TermHash, TermVector, Weights};
 use crate::quant::{self, QuantizedVector};
 use crate::symbol::Symbol;
 
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 
 const RRF_DAMPING: f32 = 60.0;
 const CANDIDATES_PER_RESULT: usize = 8;
