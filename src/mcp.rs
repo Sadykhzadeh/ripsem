@@ -205,10 +205,11 @@ fn tool_result(hits: &[pipeline::SearchHit]) -> Value {
     }
     let mut text = String::new();
     for h in hits {
-        text.push_str(&format!(
-            "{}:{}-{}\n{}\n",
-            h.path, h.start_line, h.end_line, h.snippet
-        ));
+        text.push_str(&format!("{}:{}-{}", h.path, h.start_line, h.end_line));
+        if let Some(symbol) = &h.symbol {
+            text.push_str(&format!(" {}", symbol.label()));
+        }
+        text.push_str(&format!("\n{}\n", h.snippet));
     }
     json!({
         "content": [{ "type": "text", "text": text.trim_end() }],
@@ -304,6 +305,7 @@ mod tests {
             end_line: 4,
             score: 0.5,
             snippet: "fn main() {}".into(),
+            symbol: None,
         }];
         let value = tool_result(&hits);
         let text = value["content"][0]["text"].as_str().unwrap();
@@ -314,6 +316,29 @@ mod tests {
         assert_eq!(value["isError"], false);
     }
 
+    #[test]
+    fn result_text_names_the_declaration_when_known() {
+        let hits = vec![pipeline::SearchHit {
+            path: "src/pipeline.rs".into(),
+            start_line: 258,
+            end_line: 293,
+            score: 0.8,
+            snippet: "let qv = self.embedder()?".into(),
+            symbol: Some(crate::symbol::Symbol {
+                kind: "fn".into(),
+                name: "Searcher::query_scoped".into(),
+            }),
+        }];
+        let text = tool_result(&hits)["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            text.contains("src/pipeline.rs:258-293 fn Searcher::query_scoped"),
+            "got: {text}"
+        );
+    }
+
     fn make_hit(path: &str, start: usize, end: usize, score: f32) -> pipeline::SearchHit {
         pipeline::SearchHit {
             path: path.into(),
@@ -321,6 +346,7 @@ mod tests {
             end_line: end,
             score,
             snippet: "x".into(),
+            symbol: None,
         }
     }
 
