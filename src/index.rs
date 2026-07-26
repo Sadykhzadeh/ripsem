@@ -208,14 +208,36 @@ impl Index {
             })
             .collect();
         candidates.sort_unstable_by(Candidate::rank);
-        candidates.truncate(k);
-        candidates
-            .into_iter()
-            .map(|c| Hit {
-                score: c.confidence(),
-                record_idx: c.record_idx,
-            })
-            .collect()
+        self.best_of_each_place(candidates, k)
+    }
+
+    /// Two records can describe the same lines — a declaration and the
+    /// documentation written above it, or the overlap between adjacent windows —
+    /// and returning both spends a result on nothing. Only the better-ranked one
+    /// is kept, and because this happens before the cut to `k` rather than after
+    /// it, the caller still gets `k` distinct places.
+    fn best_of_each_place(&self, ranked: Vec<Candidate>, k: usize) -> Vec<Hit> {
+        let mut taken: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+        let mut out = Vec::with_capacity(k);
+        for candidate in ranked {
+            if out.len() == k {
+                break;
+            }
+            let record = &self.records[candidate.record_idx];
+            let places = taken.entry(record.path.as_str()).or_default();
+            if places
+                .iter()
+                .any(|&(start, end)| record.start_line <= end && record.end_line >= start)
+            {
+                continue;
+            }
+            places.push((record.start_line, record.end_line));
+            out.push(Hit {
+                score: candidate.confidence(),
+                record_idx: candidate.record_idx,
+            });
+        }
+        out
     }
 
     fn average_term_count(&self) -> f32 {
@@ -440,6 +462,63 @@ mod tests {
             "the lexical arm must carry the literal match to the top"
         );
         assert_eq!(fused[0].score, 1.0, "full term coverage reports as certain");
+    }
+
+    fn placed(path: &str, start: usize, end: usize, vector: Vec<f32>) -> Record {
+        Record {
+            start_line: start,
+            end_line: end,
+            ..text_record(path, path, vector)
+        }
+    }
+
+    #[test]
+    fn two_records_describing_the_same_lines_yield_one_result() {
+        let mut index = Index::new(3, "test".into());
+        index
+            .records
+            .push(placed("a.rs", 1, 10, vec![1.0, 0.0, 0.0]));
+        index
+            .records
+            .push(placed("a.rs", 8, 15, vec![0.9, 0.1, 0.0]));
+        index
+            .records
+            .push(placed("a.rs", 20, 30, vec![0.8, 0.2, 0.0]));
+
+        let hits = index.search(&[1.0, 0.0, 0.0], 10);
+        assert_eq!(hits.len(), 2, "the overlapping pair collapses into one");
+        assert_eq!(index.records[hits[0].record_idx].start_line, 1);
+        assert_eq!(index.records[hits[1].record_idx].start_line, 20);
+    }
+
+    #[test]
+    fn the_same_lines_in_different_files_are_both_kept() {
+        let mut index = Index::new(3, "test".into());
+        index
+            .records
+            .push(placed("a.rs", 1, 10, vec![1.0, 0.0, 0.0]));
+        index
+            .records
+            .push(placed("b.rs", 1, 10, vec![0.9, 0.1, 0.0]));
+
+        assert_eq!(index.search(&[1.0, 0.0, 0.0], 10).len(), 2);
+    }
+
+    /// Collapsing duplicates before the cut, not after it, is what keeps a
+    /// request for `k` results from quietly returning fewer.
+    #[test]
+    fn a_full_set_of_results_survives_the_duplicates() {
+        let mut index = Index::new(3, "test".into());
+        for i in 0..10 {
+            let line = i * 10 + 1;
+            let vector = vec![1.0 - i as f32 * 0.01, 0.0, 0.0];
+            index
+                .records
+                .push(placed("a.rs", line, line + 5, vector.clone()));
+            index.records.push(placed("a.rs", line, line + 5, vector));
+        }
+
+        assert_eq!(index.search(&[1.0, 0.0, 0.0], 5).len(), 5);
     }
 
     #[test]
