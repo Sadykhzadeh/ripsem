@@ -161,6 +161,14 @@ which arm a given repository and a given question will need, and merging is ahea
 of both wherever it is not ahead of one of them: +0.10 on the aggregate, and ahead
 on three shapes out of four.
 
+The same run measures what reaching the answer costs to read. Counting the
+snippets up to and including the first correct hit, a caller takes in **587 bytes
+to reach the answer, against 14 887 bytes for the whole file that answer lives in
+— 25× less**. Read that narrowly: it is the 61 of 73 questions answered inside the
+top five, and the comparison is against reading one file end to end, which is what
+happens when a search can only name a filename. It is not a model of what an agent
+really does, and it says nothing about the 12 questions no arm answered.
+
 A second benchmark compares what the two `skip_generated` settings return.
 Indexing the lock file put a machine-written chunk in 6 of 105 result slots, and
 cost 291 chunks against 167, 386 KB against 237 KB, and 16.4 s against 10.0 s to
@@ -172,8 +180,12 @@ change being measured.
 The honest gaps. A message seen in output is still served better by the lexical
 arm alone, 1.000 against 0.870: when several chunks contain every word of the
 query the merge falls back to how much the two arms agree, which gives the vector
-arm a vote it has not earned. A name remembered wrong is the weakest shape for
-every retriever. `models` does not find `ModelInfo` because nothing folds plurals —
+arm a vote it has not earned. Letting BM25 order that group instead was tried — it
+lifts messages to 0.926 and drops identifiers from 0.811 to 0.714, because a
+one-word query reaches full coverage in dozens of chunks and the tier stops
+meaning anything. Aggregate 0.652 against 0.679, so it is not in the code, and the
+gap stays open rather than being closed with a threshold tuned on nine queries.
+A name remembered wrong is the weakest shape for every retriever. `models` does not find `ModelInfo` because nothing folds plurals —
 a trailing-`s` rule was tried and measured worse. Weighting the declared name
 above the rest of a chunk moved a single query in and out of first place and was
 dropped as a bump rather than a trend.
