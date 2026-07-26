@@ -2,11 +2,14 @@ use std::path::Path;
 
 use crate::config::Config;
 
+use crate::symbol::Symbol;
+
 #[derive(Debug, Clone)]
 pub struct Chunk {
     pub start_line: usize,
     pub end_line: usize,
     pub text: String,
+    pub symbol: Option<Symbol>,
 }
 
 pub fn chunk_source(path: &Path, text: &str, config: &Config) -> Vec<Chunk> {
@@ -43,6 +46,7 @@ pub fn chunk_file(text: &str, chunk_lines: usize, overlap: usize) -> Vec<Chunk> 
                 start_line: start + 1,
                 end_line: end,
                 text: body,
+                symbol: None,
             });
         }
         if end == lines.len() {

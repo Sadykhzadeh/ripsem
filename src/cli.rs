@@ -150,6 +150,7 @@ struct IndexFacts {
     size_bytes: u64,
     chunks: usize,
     files: usize,
+    named: usize,
     ann: bool,
     index_model: String,
     stale: bool,
@@ -173,6 +174,7 @@ fn status_json(
             "size_bytes": f.size_bytes,
             "chunks": f.chunks,
             "files": f.files,
+            "named": f.named,
             "ann": f.ann,
             "model": f.index_model,
             "stale": f.stale,
@@ -208,6 +210,7 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
                     size_bytes: size,
                     chunks: index.records.len(),
                     files: files.len(),
+                    named: index.records.iter().filter(|r| r.symbol.is_some()).count(),
                     ann: index.ann.is_some(),
                     index_model: index.model.clone(),
                     stale: index.model != config.model,
@@ -244,6 +247,7 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
         (Some(f), _) => {
             println!("index:  {} ({})", f.path, human_size(f.size_bytes));
             println!("chunks: {} across {} files", f.chunks, f.files);
+            println!("named:  {} chunks carry a declaration", f.named);
             if f.ann {
                 println!("ann:    present (approximate search)");
             }
@@ -580,6 +584,7 @@ mod tests {
             size_bytes: 2048,
             chunks: 12,
             files: 3,
+            named: 9,
             ann: true,
             index_model: "bge-small-en-v1.5".into(),
             stale: false,
@@ -593,6 +598,7 @@ mod tests {
         assert_eq!(v["index"]["present"], true);
         assert_eq!(v["index"]["chunks"], 12);
         assert_eq!(v["index"]["files"], 3);
+        assert_eq!(v["index"]["named"], 9);
         assert_eq!(v["index"]["ann"], true);
         assert_eq!(v["index"]["stale"], false);
     }
