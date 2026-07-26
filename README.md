@@ -48,7 +48,10 @@ ripsem watch                      # index and keep it in sync as files change
 Search respects `.gitignore` and an optional `.ripsemignore`. Results print as
 `path:start-end` with a snippet, ordered by the merged ranking. The number shown
 is confidence in 0–1: semantic similarity, or the share of the query's terms
-found literally, whichever is higher. Add `--json` for machine-readable output,
+found literally, whichever is higher. Order comes from how strongly both
+retrievers back a chunk, so confidence does not have to fall down the list — a
+hit ranked lower can still carry every word you typed. Add `--json` for
+machine-readable output,
 or `--in <subdir>` to limit results to a subdirectory (e.g. `ripsem search
 "where is auth set up?" --in src/auth`). Use `--context <N>` to control how many
 snippet lines print per hit (default 3; `0` prints just the locations). Pass
