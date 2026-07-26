@@ -737,11 +737,11 @@ fn fusion_beats_either_retriever_alone() {
         "fusion must not rank worse than the lexical arm alone"
     );
     assert!(
-        overall[FUSED].recall_at_depth() >= 0.82,
+        overall[FUSED].recall_at_depth() >= 0.86,
         "recall@{DEPTH} too low: {:.2}",
         overall[FUSED].recall_at_depth()
     );
-    assert!(fused >= 0.68, "MRR too low: {fused:.3}");
+    assert!(fused >= 0.74, "MRR too low: {fused:.3}");
 }
 
 /// The catalogue describes one model as the best balance and another as lower
@@ -778,6 +778,83 @@ fn a_larger_model_has_to_earn_its_cost() {
         .map(|(model, _)| *model)
         .unwrap();
     eprintln!("best measured: {best}");
+}
+
+/// Prints, for every question the merge does not answer in the top five, whether
+/// the answer was anywhere in either arm's deep pool. A wanted file that no arm
+/// surfaces at any depth is a retrieval failure and needs different indexing; one
+/// that sits at rank 40 is a ranking failure and needs different scoring. The two
+/// look identical in an aggregate and are not the same problem.
+#[test]
+#[ignore = "diagnostic; run with --ignored --nocapture misses"]
+fn misses() {
+    exclusively(|| {
+        const DEEP: usize = 200;
+        for corpus in CORPORA {
+            let materialized = materialize(&corpus.source, corpus.name);
+            let root = materialized.root();
+            let config = Config {
+                backend: Backend::Fastembed,
+                root: root.clone(),
+                ..Default::default()
+            };
+            let index = match Index::load(&config.index_path()) {
+                Ok(index) => index,
+                Err(_) => {
+                    pipeline::index_repo(&config, true).unwrap();
+                    Index::load(&config.index_path()).unwrap()
+                }
+            };
+            let embedder = ripsem::embed::build(&config).unwrap();
+
+            for query in corpus.queries {
+                let vector = embedder.embed_query(query.text).unwrap();
+                let terms = ripsem::lexical::query_terms(query.text);
+                let shown = index.search_fused(&vector, &terms, DEPTH, None);
+                if rank_of(&index, &shown, query.targets).is_some() {
+                    continue;
+                }
+                let deep = [
+                    ("dense", index.dense_ranking(&vector, DEEP, None)),
+                    (
+                        "lexical",
+                        index.lexical_ranking(&terms, DEEP, None).hits().to_vec(),
+                    ),
+                    ("fused", index.search_fused(&vector, &terms, DEEP, None)),
+                ];
+                let reach: Vec<String> = deep
+                    .iter()
+                    .map(|(arm, hits)| match rank_of(&index, hits, query.targets) {
+                        Some(rank) => format!("{arm}={rank}"),
+                        None => format!("{arm}=beyond {DEEP}"),
+                    })
+                    .collect();
+                eprintln!(
+                    "\n[{}] {:?} {:?}\n  want {:?}  {}",
+                    corpus.name,
+                    query.shape,
+                    query.text,
+                    query.targets,
+                    reach.join("  ")
+                );
+                for (position, hit) in shown.iter().enumerate() {
+                    let record = &index.records[hit.record_idx];
+                    eprintln!(
+                        "  got {}. {}:{}-{} {}",
+                        position + 1,
+                        record.path,
+                        record.start_line,
+                        record.end_line,
+                        record
+                            .symbol
+                            .as_ref()
+                            .map(ripsem::symbol::Symbol::label)
+                            .unwrap_or_default()
+                    );
+                }
+            }
+        }
+    })
 }
 
 struct Outcome {
