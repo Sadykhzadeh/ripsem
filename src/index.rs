@@ -337,7 +337,7 @@ mod tests {
             snippet: text.into(),
             file_hash: 0,
             vector: quant::quantize(&vector),
-            terms: TermVector::new(text, path),
+            terms: TermVector::new(text, path, None),
             symbol: None,
         }
     }
