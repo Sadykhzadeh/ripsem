@@ -65,14 +65,14 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
 fn tool_schema() -> Value {
     json!({
         "name": "search",
-        "description": "Semantic search over this codebase; describe what you want in plain language and get back ranked code snippets with file paths and line ranges.",
+        "description": "Find code in this repository. Handles both exact terms (identifiers, error strings, constants) and plain-language descriptions of behaviour in the same call, and returns ranked snippets with file paths and line ranges. Prefer this over grepping and reading whole files: it costs one call instead of guessing at the author's wording.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": { "type": "string", "description": "Plain-language description of the code or behavior you want to find." },
+                "query": { "type": "string", "description": "What you are looking for: an identifier, an error message, or a description of the behaviour." },
                 "path": { "type": "string", "description": "Optional subdirectory (relative to the repo) to limit results to, e.g. 'src/embed'." },
                 "limit": { "type": "integer", "description": "Maximum number of results (default 5)." },
-                "min_score": { "type": "number", "description": "Drop hits scoring below this (0–1). Default: no filter." }
+                "min_score": { "type": "number", "description": "Drop hits below this confidence (0–1): semantic similarity, or the share of query terms found literally, whichever is higher. Default: no filter." }
             },
             "required": ["query"]
         }
@@ -424,23 +424,48 @@ mod tests {
         let hit_count = text.matches(':').count();
         assert!(hit_count <= 3, "too many hits for limit=3: {text}");
 
-        // Verify min_score filtering: a very high threshold should yield no hits.
-        let strict_request = json!({
-            "jsonrpc": "2.0",
-            "id": 43,
-            "method": "tools/call",
-            "params": {
-                "name": "search",
-                "arguments": { "query": "verify password session token", "min_score": 0.9999 }
-            }
-        });
-        let strict_resp = handle(&config, Some(&searcher), &strict_request).unwrap();
-        let strict_text = strict_resp["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap();
+        // min_score gates on confidence, so a chunk holding every query term
+        // survives even the strictest threshold.
+        let certain = handle(
+            &config,
+            Some(&searcher),
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 43,
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": { "query": "verify password session token", "min_score": 1.0 }
+                }
+            }),
+        )
+        .unwrap();
+        assert!(
+            certain["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("auth.rs"),
+            "a chunk containing every query term is a certain match"
+        );
+
+        // A query the corpus cannot answer is filtered out instead.
+        let unrelated = handle(
+            &config,
+            Some(&searcher),
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 44,
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": { "query": "quantum chromodynamics lattice", "min_score": 0.5 }
+                }
+            }),
+        )
+        .unwrap();
         assert_eq!(
-            strict_text, "No matches.",
-            "expected no matches with min_score=0.9999"
+            unrelated["result"]["content"][0]["text"].as_str().unwrap(),
+            "No matches."
         );
     }
 }

@@ -101,6 +101,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
                 end_line: c.end_line,
                 snippet: truncate(&c.text, 400),
                 file_hash: hash,
+                terms: crate::lexical::TermVector::new(&c.text, &rel),
             });
             texts.push(c.text);
             if texts.len() >= EMBED_BATCH {
@@ -138,6 +139,7 @@ struct Pending {
     end_line: usize,
     snippet: String,
     file_hash: u64,
+    terms: crate::lexical::TermVector,
 }
 
 fn flush(
@@ -158,6 +160,7 @@ fn flush(
             snippet: p.snippet,
             file_hash: p.file_hash,
             vector: crate::quant::quantize(&vector),
+            terms: p.terms,
         });
     }
     texts.clear();
@@ -172,7 +175,6 @@ pub struct Searcher {
     embedder: std::sync::OnceLock<Box<dyn embed::Embedder>>,
     index_path: std::path::PathBuf,
     index_mtime: Option<std::time::SystemTime>,
-    lexical_boost: f32,
     // The embedder is built once for the model the index was opened with; a
     // hot-reload that swapped in a different same-dim model would be incomparable.
     model: String,
@@ -194,7 +196,6 @@ pub fn open(config: &Config) -> Result<Searcher> {
         embedder: std::sync::OnceLock::new(),
         index_path,
         index_mtime,
-        lexical_boost: config.lexical_boost,
         model,
         #[cfg(feature = "hnsw")]
         ann_map,
@@ -262,22 +263,19 @@ impl Searcher {
         prefix: Option<&str>,
     ) -> Result<Vec<SearchHit>> {
         let qv = self.embedder()?.embed_query(query)?;
-        let terms = query_terms(query);
+        let terms = crate::lexical::query_terms(query);
 
         #[cfg(feature = "hnsw")]
         if prefix.is_none() {
             if let Some(map) = &self.ann_map {
-                // Over-fetch ANN candidates, then re-rank them with the exact
-                // hybrid scoring (vector + lexical boost) the flat scan uses, so
-                // the HNSW path doesn't silently drop the lexical boost or return
-                // a different score scale than `--min-score` expects. The wider
-                // candidate pool also recovers recall the approximate graph loses.
-                const ANN_OVERFETCH: usize = 4;
-                let found = crate::ann::search_map(map, &qv, k * ANN_OVERFETCH);
-                let candidates: Vec<usize> = found.into_iter().map(|(idx, _)| idx).collect();
+                let depth = crate::index::candidate_depth(k);
+                let dense: Vec<crate::index::Hit> = crate::ann::search_map(map, &qv, depth)
+                    .into_iter()
+                    .map(|(record_idx, score)| crate::index::Hit { score, record_idx })
+                    .collect();
                 return Ok(self
                     .index
-                    .rerank(&candidates, &qv, &terms, self.lexical_boost, k)
+                    .search_fused_with(&dense, &qv, &terms, k)
                     .into_iter()
                     .map(|h| self.hit(h.record_idx, h.score))
                     .collect());
@@ -286,7 +284,7 @@ impl Searcher {
 
         Ok(self
             .index
-            .search_hybrid(&qv, &terms, self.lexical_boost, k, prefix)
+            .search_fused(&qv, &terms, k, prefix)
             .into_iter()
             .map(|h| self.hit(h.record_idx, h.score))
             .collect())
@@ -319,16 +317,6 @@ pub fn search_scoped(
     open(config)?.query_scoped(query, k, prefix)
 }
 
-fn query_terms(query: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    query
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|t| t.len() >= 3)
-        .map(|t| t.to_lowercase())
-        .filter(|t| seen.insert(t.clone()))
-        .collect()
-}
-
 /// Display `path` relative to `root` with forward slashes, matching the
 /// repo-relative paths the index and search output use.
 pub(crate) fn relative(root: &Path, path: &Path) -> String {
@@ -359,7 +347,7 @@ fn progress(len: u64) -> ProgressBar {
 
 #[cfg(test)]
 mod tests {
-    use super::{query_terms, relative};
+    use super::relative;
     use std::path::Path;
 
     #[test]
@@ -374,20 +362,5 @@ mod tests {
         assert_eq!(relative(Path::new("a"), Path::new("a/b\\c")), "b/c");
         // A path outside root is returned as-is (still slash-normalised).
         assert_eq!(relative(root, Path::new("/other/x.rs")), "/other/x.rs");
-    }
-
-    #[test]
-    fn keeps_identifiers_and_drops_short_tokens() {
-        let terms = query_terms("Where is parse_header defined, an x?");
-        assert!(terms.contains(&"parse_header".to_string()));
-        assert!(terms.contains(&"where".to_string()));
-        assert!(!terms.contains(&"is".to_string()));
-        assert!(!terms.contains(&"x".to_string()));
-    }
-
-    #[test]
-    fn deduplicates_terms() {
-        let terms = query_terms("cache cache CACHE");
-        assert_eq!(terms, vec!["cache".to_string()]);
     }
 }
