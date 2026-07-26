@@ -15,6 +15,7 @@ pub fn chunk(text: &str, spec: &LangSpec, max_lines: usize, overlap: usize) -> O
         out: Vec::new(),
     };
     emitter.walk(tree.root_node(), None);
+    emitter.documentation(tree.root_node(), None);
     Some(emitter.out)
 }
 
@@ -131,6 +132,38 @@ impl Emitter<'_> {
             .find_map(|child| self.declaration_within(child, enclosing))
     }
 
+    /// A declaration's documentation is indexed as a record of its own, spanning
+    /// the declaration rather than the comment, so a hit still points at code.
+    /// The body of a function rarely contains the words its author would use to
+    /// explain it — `is_indexable` says nothing about files or binaries — but the
+    /// sentence above it does, and until now that sentence was dissolved into the
+    /// same vector as the code it describes.
+    fn documentation(&mut self, node: Node, enclosing: Option<&Symbol>) {
+        let declared = symbol::declaration(&node, self.text, enclosing);
+        if let Some(symbol) = &declared {
+            if let Some(prose) = self.prose_for(&node) {
+                self.out.push(Chunk {
+                    start_line: node.start_position().row + 1,
+                    end_line: node.end_position().row + 1,
+                    text: prose,
+                    symbol: Some(symbol.clone()),
+                });
+            }
+        }
+        let scope = declared.as_ref().or(enclosing);
+        let mut cursor = node.walk();
+        let children: Vec<Node> = node.named_children(&mut cursor).collect();
+        for child in children {
+            self.documentation(child, scope);
+        }
+    }
+
+    fn prose_for(&self, node: &Node) -> Option<String> {
+        let raw = comment_above(node, self.text).or_else(|| leading_string(node, self.text))?;
+        let prose = as_prose(&raw);
+        (!prose.is_empty()).then_some(prose)
+    }
+
     fn push_windows(&mut self, node: &Node, enclosing: Option<&Symbol>) {
         let base = node.start_position().row;
         let slice = &self.text[node.start_byte()..node.end_byte()];
@@ -143,6 +176,90 @@ impl Emitter<'_> {
             });
         }
     }
+}
+
+/// Doc comments sit in front of what they describe, so they are gathered by
+/// walking backwards. A comment separated by a blank line is somebody else's —
+/// a licence header, a section divider — so adjacency is required.
+fn comment_above(node: &Node, text: &str) -> Option<String> {
+    let mut lines: Vec<&str> = Vec::new();
+    let mut below = past_prefixes(node);
+    while let Some(previous) = below.prev_named_sibling() {
+        if previous.end_position().row + 1 < below.start_position().row {
+            break;
+        }
+        let kind = previous.kind();
+        if kind.contains("attribute") || kind.contains("decorator") || kind.contains("modifier") {
+            below = previous;
+            continue;
+        }
+        if !kind.contains("comment") {
+            break;
+        }
+        lines.push(&text[previous.start_byte()..previous.end_byte()]);
+        below = previous;
+    }
+    (!lines.is_empty()).then(|| {
+        lines.reverse();
+        lines.join("\n")
+    })
+}
+
+/// `export`, `public` and their kind wrap a declaration without adding a line, so
+/// the comment above sits beside the wrapper rather than beside the declaration.
+/// Climbing is limited to wrappers that start on the same line, which stops the
+/// walk short of the file itself.
+fn past_prefixes<'tree>(node: &Node<'tree>) -> Node<'tree> {
+    let mut current = *node;
+    while let Some(parent) = current.parent() {
+        if parent.end_byte() != current.end_byte()
+            || parent.start_position().row != current.start_position().row
+        {
+            break;
+        }
+        current = parent;
+    }
+    current
+}
+
+/// Python and its relatives put the documentation inside the declaration, as the
+/// first thing in its body, where a comment-based search will never find it.
+fn leading_string(node: &Node, text: &str) -> Option<String> {
+    let body = node.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    let first = body.named_children(&mut cursor).next()?;
+    let string = match first.kind().contains("string") {
+        true => first,
+        false => {
+            let mut inner = first.walk();
+            first
+                .named_children(&mut inner)
+                .next()
+                .filter(|n| n.kind().contains("string"))?
+        }
+    };
+    Some(text[string.start_byte()..string.end_byte()].to_string())
+}
+
+/// Comment and string markers carry no meaning for a language model, so they are
+/// stripped and the remaining sentences joined into one run of prose.
+fn as_prose(raw: &str) -> String {
+    let mut out = String::new();
+    for line in raw.lines() {
+        let cleaned = line
+            .trim()
+            .trim_start_matches(['/', '*', '#', '!', '"', '\'', '-'])
+            .trim_end_matches(['/', '*', '"', '\''])
+            .trim();
+        if cleaned.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(cleaned);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -318,6 +435,86 @@ mod tests {
             assert!(
                 !chunk_source(file, src, 40).is_empty(),
                 "no chunks for {file}"
+            );
+        }
+    }
+
+    fn holds_prose(chunks: &[Chunk], expected: &str) -> bool {
+        chunks.iter().any(|c| c.text == expected)
+    }
+
+    #[test]
+    fn a_doc_comment_becomes_a_record_pointing_at_its_declaration() {
+        let src = "/// Decides whether a file is text rather than binary.\nfn is_indexable() {}\n";
+        let chunks = chunk_rust(src, 1);
+        let doc = chunks
+            .iter()
+            .find(|c| c.text.starts_with("Decides"))
+            .expect("no documentation chunk");
+        assert_eq!(
+            doc.text,
+            "Decides whether a file is text rather than binary."
+        );
+        assert_eq!(
+            doc.symbol.as_ref().map(Symbol::label),
+            Some("fn is_indexable".to_string())
+        );
+        assert_eq!(doc.start_line, 2, "the range must point at the declaration");
+    }
+
+    #[test]
+    fn several_comment_lines_join_into_one_run_of_prose() {
+        let src = "// First sentence.\n// Second sentence.\nfn thing() {}\n";
+        assert!(holds_prose(
+            &chunk_rust(src, 1),
+            "First sentence. Second sentence."
+        ));
+    }
+
+    #[test]
+    fn a_comment_separated_by_a_blank_line_belongs_to_nobody() {
+        let src = "// Copyright somebody.\n\nfn thing() {}\n";
+        assert!(!holds_prose(&chunk_rust(src, 1), "Copyright somebody."));
+    }
+
+    #[test]
+    fn a_python_docstring_is_found_inside_the_declaration() {
+        let src = "def load(path):\n    \"\"\"Read the settings from disk.\"\"\"\n    return 1\n";
+        let chunks = chunk_source("m.py", src, 1);
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.text == "Read the settings from disk."),
+            "got {:?}",
+            chunks.iter().map(|c| &c.text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn documentation_is_found_across_comment_styles() {
+        let cases = [
+            (
+                "t.ts",
+                "/** Joins a base url and a path. */\nexport function combineURLs() {}\n",
+                "Joins a base url and a path.",
+            ),
+            (
+                "g.go",
+                "// Match reports whether the request matches.\nfunc Match() bool { return true }\n",
+                "Match reports whether the request matches.",
+            ),
+            (
+                "r.rb",
+                "# Computes the total.\ndef compute\n  1\nend\n",
+                "Computes the total.",
+            ),
+        ];
+        for (file, src, expected) in cases {
+            let chunks = chunk_source(file, src, 1);
+            assert!(
+                chunks.iter().any(|c| c.text == expected),
+                "{file}: expected {expected:?}, got {:?}",
+                chunks.iter().map(|c| &c.text).collect::<Vec<_>>()
             );
         }
     }
