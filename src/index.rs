@@ -36,6 +36,7 @@ pub struct Index {
     pub ann: Option<Vec<u8>>,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct Hit {
     pub score: f32,
     pub record_idx: usize,
@@ -178,42 +179,41 @@ impl Index {
         query: &[f32],
         k: usize,
     ) -> Vec<Hit> {
-        let mut fused: HashMap<usize, f32> = HashMap::new();
+        let mut agreement: HashMap<usize, f32> = HashMap::new();
         for ranking in [dense, &lexical.ranked] {
             for (position, hit) in ranking.iter().enumerate() {
-                *fused.entry(hit.record_idx).or_insert(0.0) +=
-                    1.0 / (RRF_DAMPING + position as f32 + 1.0);
+                if hit.record_idx < self.records.len() {
+                    *agreement.entry(hit.record_idx).or_insert(0.0) +=
+                        1.0 / (RRF_DAMPING + position as f32 + 1.0);
+                }
             }
         }
-        let mut order: Vec<(usize, f32)> = fused
+        let mut candidates: Vec<Candidate> = agreement
             .into_iter()
-            .filter(|&(i, _)| i < self.records.len())
+            .map(|(record_idx, agreement)| {
+                let record = &self.records[record_idx];
+                Candidate {
+                    record_idx,
+                    agreement,
+                    cosine: quant::dot(&record.vector, query),
+                    coverage: match lexical.terms.is_empty() {
+                        true => 0.0,
+                        false => lexical
+                            .weights
+                            .coverage(record.terms.presence(&lexical.terms)),
+                    },
+                }
+            })
             .collect();
-        order.sort_unstable_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(Ordering::Equal)
-                .then(a.0.cmp(&b.0))
-        });
-        order.truncate(k);
-        order
+        candidates.sort_unstable_by(Candidate::rank);
+        candidates.truncate(k);
+        candidates
             .into_iter()
-            .map(|(record_idx, _)| Hit {
-                score: self.confidence(record_idx, query, lexical),
-                record_idx,
+            .map(|c| Hit {
+                score: c.confidence(),
+                record_idx: c.record_idx,
             })
             .collect()
-    }
-
-    fn confidence(&self, record_idx: usize, query: &[f32], lexical: &LexicalRanking) -> f32 {
-        let record = &self.records[record_idx];
-        let cosine = quant::dot(&record.vector, query);
-        if lexical.terms.is_empty() {
-            return cosine;
-        }
-        let coverage = lexical
-            .weights
-            .coverage(record.terms.presence(&lexical.terms));
-        cosine.max(coverage)
     }
 
     fn average_term_count(&self) -> f32 {
@@ -226,9 +226,42 @@ impl Index {
     }
 }
 
-/// The two rankings are merged by reciprocal rank fusion, so each arm needs a
-/// pool deeper than `k` for its own strong hits to survive the other arm's
-/// disagreement.
+const COMPLETE_COVERAGE: f32 = 0.999;
+
+struct Candidate {
+    record_idx: usize,
+    agreement: f32,
+    cosine: f32,
+    coverage: f32,
+}
+
+impl Candidate {
+    /// A chunk holding every informative term of the query is not a guess: it is
+    /// what an exact search would have returned, and nothing lacking those terms
+    /// may outrank it. Below that bar neither arm is authoritative, so ordering
+    /// falls back to how strongly the two of them agree.
+    fn holds_every_term(&self) -> bool {
+        self.coverage >= COMPLETE_COVERAGE
+    }
+
+    fn confidence(&self) -> f32 {
+        self.cosine.max(self.coverage)
+    }
+
+    fn rank(a: &Self, b: &Self) -> Ordering {
+        b.holds_every_term()
+            .cmp(&a.holds_every_term())
+            .then_with(|| {
+                b.agreement
+                    .partial_cmp(&a.agreement)
+                    .unwrap_or(Ordering::Equal)
+            })
+            .then(a.record_idx.cmp(&b.record_idx))
+    }
+}
+
+/// Each arm needs a pool deeper than `k`, so a chunk only one of them ranks
+/// highly still reaches the merge.
 pub fn candidate_depth(k: usize) -> usize {
     k.saturating_mul(CANDIDATES_PER_RESULT).max(MIN_CANDIDATES)
 }
@@ -240,6 +273,10 @@ pub struct LexicalRanking {
 }
 
 impl LexicalRanking {
+    pub fn hits(&self) -> &[Hit] {
+        &self.ranked
+    }
+
     fn empty() -> Self {
         Self {
             ranked: Vec::new(),
