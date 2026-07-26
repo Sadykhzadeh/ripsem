@@ -232,15 +232,23 @@ build. Ranking is deliberately not part of that claim: `crates.io-index` occurs
 frequency of a stopword, and one corpus cannot separate that accident from the
 change being measured.
 
-The honest gaps. A message seen in output is still served better by the lexical
-arm alone, 1.000 against 0.870: when several chunks contain every word of the
-query the merge falls back to how much the two arms agree, which gives the vector
-arm a vote it has not earned. Letting BM25 order that group instead was tried — it
-lifts messages to 0.926 and drops identifiers from 0.811 to 0.714, because a
-one-word query reaches full coverage in dozens of chunks and the tier stops
-meaning anything. Aggregate 0.652 against 0.679, so it is not in the code, and the
-gap stays open rather than being closed with a threshold tuned on nine queries.
-A name remembered wrong is the weakest shape for every retriever. `models` does not find `ModelInfo` because nothing folds plurals —
+The honest gaps. On two shapes the merge is beaten by one arm on its own: messages
+by the lexical arm, 1.000 against 0.944, and remembered names by the vector arm,
+0.750 against 0.702. Rank fusion counts a hit's absence from an arm as evidence
+against it, so an arm with nothing to say still votes down what the other found.
+
+Two repairs were measured and neither is in the code. Ordering the
+complete-coverage group by BM25 lifts messages and drops identifiers from 0.811 to
+0.714, because a one-word query reaches full coverage in dozens of chunks and the
+group stops meaning anything. Weighting the lexical arm by how much of the query
+it could anchor anywhere in the corpus does exactly what it was predicted to do —
+identifiers and messages unchanged, since their coverage is complete by
+construction, and remembered names up from 0.702 to 0.726 — and then loses the same
+amount on descriptions, 0.545 to 0.524, for a net 0.732 against 0.735. Partial
+coverage turns out to be evidence rather than ignorance: a description whose words
+half-match is still being helped by the lexical arm, and no measure taken from one
+arm alone separates that from a paraphrase the arm cannot follow. The gap stays
+open rather than being closed with a floor fitted to 73 queries. `models` does not find `ModelInfo` because nothing folds plurals —
 a trailing-`s` rule was tried and measured worse. Weighting the declared name
 above the rest of a chunk moved a single query in and out of first place and was
 dropped as a bump rather than a trend.
