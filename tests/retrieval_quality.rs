@@ -1,12 +1,16 @@
 #![cfg(feature = "fastembed")]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ripsem::config::{Backend, Config};
+use ripsem::index::{Hit, Index};
 use ripsem::pipeline;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+const DEPTH: usize = 5;
 
 struct TempDir {
     path: PathBuf,
@@ -19,10 +23,6 @@ impl TempDir {
         std::fs::create_dir_all(&path).unwrap();
         Self { path }
     }
-
-    fn write(&self, rel: &str, contents: &str) {
-        std::fs::write(self.path.join(rel), contents).unwrap();
-    }
 }
 
 impl Drop for TempDir {
@@ -31,89 +31,227 @@ impl Drop for TempDir {
     }
 }
 
-const CORPUS: &[(&str, &str)] = &[
+/// The corpus is ripsem's own source tree: real code with real identifiers, and
+/// files whose purpose a person would describe in words the code never uses.
+///
+/// It is taken from the last commit rather than the working tree. The tree under
+/// development is also the thing being measured, so reading it live would move
+/// the corpus with every edit and make two runs incomparable — which is the one
+/// thing a benchmark exists to allow.
+fn corpus() -> TempDir {
+    let dir = TempDir::new();
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let archive = dir.path.join("src.tar");
+    let status = Command::new("git")
+        .args(["archive", "--format=tar", "HEAD", "src"])
+        .arg("-o")
+        .arg(&archive)
+        .current_dir(repository)
+        .status()
+        .expect("git is required to snapshot the benchmark corpus");
+    assert!(status.success(), "git archive HEAD src failed");
+    extract(&archive, &dir.path);
+    std::fs::remove_file(&archive).unwrap();
+    dir
+}
+
+/// Minimal tar reader: the archive holds only ripsem's own text files, so the
+/// header fields that matter are the path and the size.
+fn extract(archive: &Path, into: &Path) {
+    let bytes = std::fs::read(archive).unwrap();
+    let mut offset = 0;
+    while offset + 512 <= bytes.len() {
+        let header = &bytes[offset..offset + 512];
+        let name = String::from_utf8_lossy(&header[..100])
+            .trim_end_matches('\0')
+            .to_string();
+        if name.is_empty() {
+            break;
+        }
+        let size = usize::from_str_radix(
+            String::from_utf8_lossy(&header[124..136]).trim_matches(['\0', ' ']),
+            8,
+        )
+        .unwrap();
+        offset += 512;
+        let target = into.join(&name);
+        if header[156] == b'5' || name.ends_with('/') {
+            std::fs::create_dir_all(&target).unwrap();
+        } else {
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(&target, &bytes[offset..offset + size]).unwrap();
+        }
+        offset += size.div_ceil(512) * 512;
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Shape {
+    Described,
+    Identifier,
+    Message,
+    Recalled,
+}
+
+use Shape::{Described, Identifier, Message, Recalled};
+
+/// A description asks in words the file may not contain. An identifier is typed
+/// from memory. A message is a string the developer saw in output. A recalled
+/// query is a name remembered wrong — the shape that defeats exact search and
+/// plain similarity alike.
+const QUERIES: &[(Shape, &str, &str)] = &[
     (
-        "auth.rs",
-        "fn sign_in(name, secret) {\n    let stored = lookup_account(name);\n    if hash(secret) != stored.password_hash { return Err(Denied); }\n    let token = issue_session(name);\n    set_cookie(token);\n}\nfn sign_out(token) { revoke_session(token); }\n",
+        Described,
+        "how do we decide a file is text rather than binary",
+        "src/walk.rs",
     ),
     (
-        "database.rs",
-        "fn checkout_connection(pool) {\n    let conn = pool.acquire();\n    conn\n}\nfn run_transaction(pool, work) {\n    let tx = begin();\n    match work(tx) { Ok(v) => commit(tx), Err(e) => rollback(tx) }\n}\n",
+        Described,
+        "keep the index up to date while the developer edits files",
+        "src/watch.rs",
     ),
     (
-        "http_client.rs",
-        "fn fetch(url) {\n    let socket = connect(url.host, 443);\n    send_request(socket, \"GET\", url.path);\n    let response = read_response(socket);\n    response.body\n}\n",
+        Described,
+        "shrink the stored vectors so the index takes less disk",
+        "src/quant.rs",
     ),
     (
-        "cache.rs",
-        "struct Lru { map, capacity }\nfn remember(cache, key, compute) {\n    if let Some(v) = cache.map.get(key) { return v; }\n    let v = compute();\n    if cache.map.len() >= cache.capacity { evict_least_recently_used(cache); }\n    cache.map.insert(key, v);\n}\n",
+        Described,
+        "cut a source file along function boundaries",
+        "src/semantic.rs",
     ),
     (
-        "settings.rs",
-        "fn load_settings() {\n    let host = read_env(\"APP_HOST\").unwrap_or(\"localhost\");\n    let port = read_env(\"APP_PORT\").unwrap_or(\"8080\");\n    Settings { host, port }\n}\n",
+        Described,
+        "which embedding models can be chosen and how big are they",
+        "src/model.rs",
     ),
     (
-        "logging.rs",
-        "enum Level { Debug, Info, Warn, Error }\nfn emit(level, message) {\n    let line = format(\"[{level}] {message}\");\n    append_to_logfile(line);\n}\n",
+        Described,
+        "speak to a coding agent over standard input and output",
+        "src/mcp.rs",
     ),
     (
-        "geometry.rs",
-        "fn rectangle_area(width, height) { width * height }\nfn circle_area(radius) { 3.14159 * radius * radius }\nfn perimeter(width, height) { 2 * (width + height) }\n",
+        Described,
+        "avoid redoing work for files that have not changed",
+        "src/pipeline.rs",
     ),
     (
-        "json.rs",
-        "fn to_json(value) {\n    let mut out = String::new();\n    encode_value(value, out);\n    out\n}\nfn from_json(text) { decode_value(parse_tokens(text)) }\n",
+        Described,
+        "map a file extension to a language parser",
+        "src/lang.rs",
+    ),
+    (Identifier, "content_hash", "src/fingerprint.rs"),
+    (Identifier, "QuantizedVector", "src/quant.rs"),
+    (Identifier, "scope_prefix", "src/mcp.rs"),
+    (Identifier, "split_identifier", "src/lexical.rs"),
+    (Identifier, "OverrideBuilder", "src/walk.rs"),
+    (Identifier, "human_size", "src/cli.rs"),
+    (
+        Message,
+        "index is unreadable or corrupt; run ripsem index --force to rebuild",
+        "src/index.rs",
     ),
     (
-        "retry.rs",
-        "fn with_backoff(action) {\n    let mut delay = 100;\n    for attempt in 0..5 {\n        match action() { Ok(v) => return Ok(v), Err(_) => { sleep(delay); delay = delay * 2; } }\n    }\n}\n",
+        Message,
+        "no index yet; run ripsem index in this directory first",
+        "src/pipeline.rs",
     ),
     (
-        "files.rs",
-        "fn list_directory(dir) {\n    let mut names = Vec::new();\n    for entry in read_dir(dir) { names.push(entry.file_name()); }\n    names\n}\n",
+        Message,
+        "unknown backend, expected hash or fastembed",
+        "src/cli.rs",
+    ),
+    (
+        Recalled,
+        "checksum of the file contents",
+        "src/fingerprint.rs",
+    ),
+    (
+        Recalled,
+        "inverse document frequency term weighting",
+        "src/lexical.rs",
+    ),
+    (
+        Recalled,
+        "approximate nearest neighbour graph",
+        "src/ann.rs",
+    ),
+    (
+        Recalled,
+        "atomic rename so a half written index is never read",
+        "src/index.rs",
     ),
 ];
 
-const QUERIES: &[(&str, &str)] = &[
-    ("how do users sign in to their account", "auth.rs"),
-    ("where is the password verified before access", "auth.rs"),
-    ("grab a pooled connection to the database", "database.rs"),
-    ("commit or roll back a unit of database work", "database.rs"),
-    (
-        "send a web request and read the response body",
-        "http_client.rs",
-    ),
-    ("store results so we avoid recomputing them", "cache.rs"),
-    ("drop the least recently used entry when full", "cache.rs"),
-    (
-        "read configuration from environment variables",
-        "settings.rs",
-    ),
-    ("compute the area of a rectangle", "geometry.rs"),
-    ("convert a value into a json string", "json.rs"),
-    (
-        "write messages to a log file with severity levels",
-        "logging.rs",
-    ),
-    ("wait longer after each failed attempt", "retry.rs"),
-    ("list the file names inside a folder", "files.rs"),
-    ("evict_least_recently_used", "cache.rs"),
-    ("with_backoff", "retry.rs"),
-    ("run_transaction rollback", "database.rs"),
-];
+const SHAPES: [Shape; 4] = [Described, Identifier, Message, Recalled];
 
-fn rank_of(hits: &[pipeline::SearchHit], expected: &str) -> Option<usize> {
-    hits.iter().position(|h| h.path == expected).map(|p| p + 1)
+#[derive(Default)]
+struct Score {
+    queries: usize,
+    first: usize,
+    within_depth: usize,
+    reciprocal: f64,
+}
+
+impl Score {
+    fn record(&mut self, rank: Option<usize>) {
+        self.queries += 1;
+        match rank {
+            Some(1) => {
+                self.first += 1;
+                self.within_depth += 1;
+                self.reciprocal += 1.0;
+            }
+            Some(r) => {
+                self.within_depth += 1;
+                self.reciprocal += 1.0 / r as f64;
+            }
+            None => {}
+        }
+    }
+
+    fn recall_at_1(&self) -> f64 {
+        self.first as f64 / self.queries.max(1) as f64
+    }
+
+    fn recall_at_depth(&self) -> f64 {
+        self.within_depth as f64 / self.queries.max(1) as f64
+    }
+
+    fn mrr(&self) -> f64 {
+        self.reciprocal / self.queries.max(1) as f64
+    }
+}
+
+fn rank_of(index: &Index, hits: &[Hit], expected: &str) -> Option<usize> {
+    hits.iter()
+        .position(|h| index.records[h.record_idx].path == expected)
+        .map(|p| p + 1)
+}
+
+fn report(label: &str, overall: &Score, by_shape: &[(Shape, Score)]) {
+    eprintln!(
+        "{label:<14} recall@1={:.2}  recall@{DEPTH}={:.2}  MRR={:.3}",
+        overall.recall_at_1(),
+        overall.recall_at_depth(),
+        overall.mrr()
+    );
+    for (shape, score) in by_shape {
+        eprintln!(
+            "  {:<12} recall@1={:.2}  recall@{DEPTH}={:.2}  MRR={:.3}  ({} queries)",
+            format!("{shape:?}"),
+            score.recall_at_1(),
+            score.recall_at_depth(),
+            score.mrr(),
+            score.queries
+        );
+    }
 }
 
 #[test]
 #[ignore = "downloads the embedding model; run with --ignored --nocapture"]
-fn retrieval_quality_meets_thresholds() {
-    let dir = TempDir::new();
-    for (name, body) in CORPUS {
-        dir.write(name, body);
-    }
-
+fn fusion_beats_either_retriever_alone() {
+    let dir = corpus();
     let config = Config {
         backend: Backend::Fastembed,
         root: dir.path.clone(),
@@ -121,38 +259,59 @@ fn retrieval_quality_meets_thresholds() {
     };
     pipeline::index_repo(&config, true).unwrap();
 
-    let mut hit_at_1 = 0;
-    let mut hit_at_3 = 0;
-    let mut reciprocal = 0.0;
-    for (query, expected) in QUERIES {
-        let hits = pipeline::search(&config, query, 5).unwrap();
-        match rank_of(&hits, expected) {
-            Some(1) => {
-                hit_at_1 += 1;
-                hit_at_3 += 1;
-                reciprocal += 1.0;
+    let index = Index::load(&config.index_path()).unwrap();
+    let embedder = ripsem::embed::build(&config).unwrap();
+    for (_, _, expected) in QUERIES {
+        assert!(
+            index.records.iter().any(|r| r.path == *expected),
+            "corpus is missing {expected}; the labels need updating"
+        );
+    }
+
+    let arms = ["vector only", "lexical only", "fused"];
+    let mut overall: Vec<Score> = arms.iter().map(|_| Score::default()).collect();
+    let mut by_shape: Vec<Vec<(Shape, Score)>> = arms
+        .iter()
+        .map(|_| SHAPES.iter().map(|&s| (s, Score::default())).collect())
+        .collect();
+
+    for (shape, query, expected) in QUERIES {
+        let vector = embedder.embed_query(query).unwrap();
+        let terms = ripsem::lexical::query_terms(query);
+        let ranked = [
+            index.dense_ranking(&vector, DEPTH, None),
+            index.lexical_ranking(&terms, DEPTH, None).hits().to_vec(),
+            index.search_fused(&vector, &terms, DEPTH, None),
+        ];
+        for (arm, hits) in ranked.iter().enumerate() {
+            let rank = rank_of(&index, hits, expected);
+            overall[arm].record(rank);
+            let slot = by_shape[arm].iter_mut().find(|(s, _)| s == shape).unwrap();
+            slot.1.record(rank);
+            if arm == 2 && rank.is_none() {
+                eprintln!("  miss: {query:?} (expected {expected})");
             }
-            Some(r) if r <= 3 => {
-                hit_at_3 += 1;
-                reciprocal += 1.0 / r as f64;
-            }
-            Some(r) => reciprocal += 1.0 / r as f64,
-            None => eprintln!("  miss: {query:?} (expected {expected})"),
         }
     }
 
-    let n = QUERIES.len() as f64;
-    let recall_1 = hit_at_1 as f64 / n;
-    let recall_3 = hit_at_3 as f64 / n;
-    let mrr = reciprocal / n;
-    eprintln!(
-        "retrieval over {} queries: recall@1={:.2} recall@3={:.2} MRR={:.3}",
-        QUERIES.len(),
-        recall_1,
-        recall_3,
-        mrr
-    );
+    eprintln!("corpus: {} chunks", index.records.len());
+    for (arm, label) in arms.iter().enumerate() {
+        report(label, &overall[arm], &by_shape[arm]);
+    }
 
-    assert!(recall_3 >= 0.75, "recall@3 too low: {recall_3:.2}");
-    assert!(mrr >= 0.65, "MRR too low: {mrr:.3}");
+    let fused = overall[2].mrr();
+    assert!(
+        fused >= overall[0].mrr(),
+        "fusion must not rank worse than the vector arm alone"
+    );
+    assert!(
+        fused >= overall[1].mrr(),
+        "fusion must not rank worse than the lexical arm alone"
+    );
+    assert!(
+        overall[2].recall_at_depth() >= 0.8,
+        "recall@{DEPTH} too low: {:.2}",
+        overall[2].recall_at_depth()
+    );
+    assert!(fused >= 0.7, "MRR too low: {fused:.3}");
 }
