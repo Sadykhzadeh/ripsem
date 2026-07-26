@@ -15,6 +15,7 @@ pub mod pipeline;
 pub mod quant;
 #[cfg(feature = "treesitter")]
 pub mod semantic;
+pub mod symbol;
 pub mod walk;
 pub mod watch;
 
