@@ -102,7 +102,11 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
                 end_line: c.end_line,
                 snippet: truncate(&c.text, 400),
                 file_hash: hash,
-                terms: crate::lexical::TermVector::new(&c.text, &rel),
+                terms: crate::lexical::TermVector::new(
+                    &c.text,
+                    &rel,
+                    c.symbol.as_ref().map(|s| s.name.as_str()),
+                ),
                 symbol: c.symbol,
             });
             texts.push(c.text);
