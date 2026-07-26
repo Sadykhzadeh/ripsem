@@ -117,9 +117,10 @@ cargo test --release --features fastembed,treesitter \
   --test retrieval_quality -- --ignored --nocapture
 ```
 
-The corpus is ripsem's own source at the last commit, snapshotted with `git
-archive` so a run is not moved by uncommitted edits. It needs the embedding
-model, so it is `#[ignore]`d out of the normal run.
+The corpus is ripsem's own source pinned to the `corpus/v1` tag and materialised
+with `git archive`, so it does not move as the code does and two runs differ only
+by what changed in retrieval. It needs the embedding model, so it is `#[ignore]`d
+out of the normal run.
 
 | retriever | MRR | description | identifier | message | recalled name |
 | --- | --- | --- | --- | --- | --- |
