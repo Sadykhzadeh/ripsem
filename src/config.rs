@@ -36,6 +36,8 @@ pub struct Config {
     pub max_chunk_lines: usize,
     #[serde(default = "default_max_file_kb")]
     pub max_file_kb: u64,
+    #[serde(default = "enabled")]
+    pub skip_generated: bool,
     #[serde(default)]
     pub exclude: Vec<String>,
     #[serde(skip)]
@@ -57,6 +59,9 @@ fn default_max_chunk_lines() -> usize {
 fn default_max_file_kb() -> u64 {
     1024
 }
+fn enabled() -> bool {
+    true
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -67,6 +72,7 @@ impl Default for Config {
             chunk_overlap: default_chunk_overlap(),
             max_chunk_lines: default_max_chunk_lines(),
             max_file_kb: default_max_file_kb(),
+            skip_generated: enabled(),
             exclude: Vec::new(),
             root: PathBuf::from("."),
         }

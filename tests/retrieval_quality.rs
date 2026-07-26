@@ -1,5 +1,6 @@
 #![cfg(feature = "fastembed")]
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,20 +43,25 @@ const CORPUS_REVISION: &str = "corpus/v1";
 /// for reasons that have nothing to do with retrieval, which is the one thing a
 /// benchmark exists to rule out. Pinning also keeps the labels below true
 /// forever instead of rotting as the code moves.
-fn corpus() -> TempDir {
+fn corpus(pathspec: Option<&str>) -> TempDir {
     let dir = TempDir::new();
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let archive = dir.path.join("src.tar");
-    let status = Command::new("git")
-        .args(["archive", "--format=tar", CORPUS_REVISION, "src"])
+    let archive = dir.path.join("corpus.tar");
+    let mut command = Command::new("git");
+    command
+        .args(["archive", "--format=tar", CORPUS_REVISION])
         .arg("-o")
         .arg(&archive)
-        .current_dir(repository)
+        .current_dir(repository);
+    if let Some(pathspec) = pathspec {
+        command.arg(pathspec);
+    }
+    let status = command
         .status()
         .expect("git is required to snapshot the benchmark corpus");
     assert!(
         status.success(),
-        "git archive {CORPUS_REVISION} src failed; the tag pins the corpus and must be fetched"
+        "git archive {CORPUS_REVISION} failed; the tag pins the corpus and must be fetched"
     );
     extract(&archive, &dir.path);
     std::fs::remove_file(&archive).unwrap();
@@ -258,7 +264,7 @@ fn report(label: &str, overall: &Score, by_shape: &[(Shape, Score)]) {
 #[test]
 #[ignore = "downloads the embedding model; run with --ignored --nocapture"]
 fn fusion_beats_either_retriever_alone() {
-    let dir = corpus();
+    let dir = corpus(Some("src"));
     let config = Config {
         backend: Backend::Fastembed,
         root: dir.path.clone(),
@@ -321,4 +327,118 @@ fn fusion_beats_either_retriever_alone() {
         overall[2].recall_at_depth()
     );
     assert!(fused >= 0.7, "MRR too low: {fused:.3}");
+}
+
+struct Outcome {
+    score: Score,
+    chunks: usize,
+    wasted_results: usize,
+    total_results: usize,
+}
+
+fn measure(config: &Config, generated: &HashSet<String>) -> Outcome {
+    pipeline::index_repo(config, true).unwrap();
+    let index = Index::load(&config.index_path()).unwrap();
+    let embedder = ripsem::embed::build(config).unwrap();
+    let mut outcome = Outcome {
+        score: Score::default(),
+        chunks: index.records.len(),
+        wasted_results: 0,
+        total_results: 0,
+    };
+    for (_, query, expected) in QUERIES {
+        let vector = embedder.embed_query(query).unwrap();
+        let terms = ripsem::lexical::query_terms(query);
+        let hits = index.search_fused(&vector, &terms, DEPTH, None);
+        outcome.score.record(rank_of(&index, &hits, expected));
+        outcome.total_results += hits.len();
+        outcome.wasted_results += hits
+            .iter()
+            .filter(|h| generated.contains(&index.records[h.record_idx].path))
+            .count();
+    }
+    outcome
+}
+
+/// What the two configurations return is compared, not how they rank. Ranking on
+/// this corpus cannot settle the question: `crates.io-index` occurs 409 times in
+/// `Cargo.lock`, so indexing it happens to give the word `index` the document
+/// frequency of a stopword, and dropping the file makes the word rare again. That
+/// is an artefact of a corpus this small, and it moves two queries by one place
+/// in either direction depending on which way you look at it.
+///
+/// The claim that does hold is the one the tool is for: a lock file is never the
+/// answer to a question about behaviour, and any slot it takes in a result set is
+/// context an agent pays for and cannot use.
+#[test]
+#[ignore = "downloads the embedding model; run with --ignored --nocapture"]
+fn skipping_generated_files_stops_them_reaching_results() {
+    let dir = corpus(None);
+    let everything = Config {
+        backend: Backend::Fastembed,
+        root: dir.path.clone(),
+        skip_generated: false,
+        ..Default::default()
+    };
+    let generated = files_only_the_defaults_drop(&everything);
+    assert!(
+        !generated.is_empty(),
+        "the corpus has no generated files to skip"
+    );
+
+    let before = measure(&everything, &generated);
+    let after = measure(
+        &Config {
+            skip_generated: true,
+            ..everything
+        },
+        &generated,
+    );
+
+    for (label, outcome) in [("everything", &before), ("skipped", &after)] {
+        eprintln!(
+            "{label:<11} {} chunks  {} of {} result slots generated  recall@{DEPTH}={:.2}  MRR={:.3}",
+            outcome.chunks,
+            outcome.wasted_results,
+            outcome.total_results,
+            outcome.score.recall_at_depth(),
+            outcome.score.mrr()
+        );
+    }
+
+    assert!(
+        before.wasted_results > 0,
+        "generated files never surfaced, so skipping them saves nothing"
+    );
+    assert_eq!(
+        after.wasted_results, 0,
+        "a generated file still reached the results"
+    );
+    assert!(after.chunks < before.chunks);
+    assert!(
+        after.score.recall_at_depth() >= before.score.recall_at_depth(),
+        "skipping generated files lost a target file"
+    );
+}
+
+/// The exclusion set, taken from the walker itself rather than restated here, so
+/// the test cannot drift from the patterns it is checking.
+fn files_only_the_defaults_drop(config: &Config) -> HashSet<String> {
+    let indexed = |config: &Config| -> HashSet<String> {
+        ripsem::walk::collect(config)
+            .unwrap()
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&config.root)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect()
+    };
+    let kept = indexed(&Config {
+        skip_generated: true,
+        ..config.clone()
+    });
+    indexed(config).difference(&kept).cloned().collect()
 }

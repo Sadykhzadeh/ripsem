@@ -102,12 +102,19 @@ chunk_lines = 40
 chunk_overlap = 8
 max_chunk_lines = 50
 max_file_kb = 1024
+skip_generated = true
 exclude = []
 ```
 
 `chunk_lines`/`chunk_overlap` size the line windows used for plain-text files and
 for languages without a parser. `max_chunk_lines` caps a single semantic chunk;
 larger functions are split. `exclude` takes gitignore-style globs.
+
+`skip_generated` leaves out files that are committed but written by a machine —
+lock files, `*.min.js`, `*.min.css` and source maps. `.gitignore` does not cover
+them because they are committed on purpose, and one of them can outweigh
+everything written by hand: in this repository `Cargo.lock` alone accounted for
+124 of 291 chunks. Set it to `false` to index them anyway.
 
 ## Quality
 
@@ -136,6 +143,15 @@ Two things are worth reading off this table. BM25 alone beats the embedding mode
 alone on real code, so a search built only on vectors is leaving the stronger
 signal on the floor. And neither arm is enough: vectors win where the words don't
 match, lexical wins where they do, and only merging them is good at both.
+
+A second benchmark indexes the whole repository at that revision instead of `src`
+alone, and compares what the two `skip_generated` settings return. Indexing the
+lock file put a machine-written chunk in 6 of 105 result slots, and cost 291
+chunks against 167, 386 KB against 237 KB, and 16.4 s against 10.0 s to build.
+Ranking is deliberately not part of that claim: `crates.io-index` occurs 409 times
+in `Cargo.lock`, so indexing it hands the word `index` the document frequency of a
+stopword, and a corpus this small cannot separate that accident from the change
+being measured.
 
 The honest gaps: a name remembered wrong is still served better by the lexical
 arm alone, and `models` does not find `ModelInfo` because nothing folds plurals.
