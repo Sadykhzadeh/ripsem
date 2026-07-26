@@ -177,6 +177,15 @@ and it loses on the other three. Why a model that ranks better alone merges wors
 is not explained here, only measured; three times the disk for less accuracy is
 reason enough to keep the smaller default and not to invent a story about it.
 
+Giving the model more context to embed was tried twice and is not in the code.
+Prepending each chunk's path and declaration to the text sent for embedding —
+standard advice for retrieval over code — measured 0.644 raw and 0.661 with the
+identifiers spelled out as words (`url-to-options` as `url to options`), against
+0.679 for the bare body. Both forms lift identifiers, to 0.835 at best; both push
+descriptions down, to 0.487 at best from 0.551. The header helps the shape the
+lexical arm already answers well and hurts the shape where the model is the only
+arm that can answer at all, and descriptions are 28 of the 73 questions.
+
 The same run measures what reaching the answer costs to read. Counting the
 snippets up to and including the first correct hit, a caller takes in **587 bytes
 to reach the answer, against 14 887 bytes for the whole file that answer lives in
