@@ -31,25 +31,32 @@ impl Drop for TempDir {
     }
 }
 
-/// The corpus is ripsem's own source tree: real code with real identifiers, and
-/// files whose purpose a person would describe in words the code never uses.
+const CORPUS_REVISION: &str = "corpus/v1";
+
+/// The corpus is ripsem's own source: real code with real identifiers, and files
+/// whose purpose a person would describe in words the code never uses.
 ///
-/// It is taken from the last commit rather than the working tree. The tree under
-/// development is also the thing being measured, so reading it live would move
-/// the corpus with every edit and make two runs incomparable — which is the one
-/// thing a benchmark exists to allow.
+/// It is pinned to a tagged revision, not the current tree. ripsem's source is
+/// both the thing being measured and the thing being changed, so a corpus that
+/// followed development would move under every commit — two runs would differ
+/// for reasons that have nothing to do with retrieval, which is the one thing a
+/// benchmark exists to rule out. Pinning also keeps the labels below true
+/// forever instead of rotting as the code moves.
 fn corpus() -> TempDir {
     let dir = TempDir::new();
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
     let archive = dir.path.join("src.tar");
     let status = Command::new("git")
-        .args(["archive", "--format=tar", "HEAD", "src"])
+        .args(["archive", "--format=tar", CORPUS_REVISION, "src"])
         .arg("-o")
         .arg(&archive)
         .current_dir(repository)
         .status()
         .expect("git is required to snapshot the benchmark corpus");
-    assert!(status.success(), "git archive HEAD src failed");
+    assert!(
+        status.success(),
+        "git archive {CORPUS_REVISION} src failed; the tag pins the corpus and must be fetched"
+    );
     extract(&archive, &dir.path);
     std::fs::remove_file(&archive).unwrap();
     dir
