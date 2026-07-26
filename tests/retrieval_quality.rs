@@ -604,9 +604,14 @@ impl Cost {
 const ARMS: [&str; 3] = ["vector only", "lexical only", "fused"];
 const FUSED: usize = 2;
 
-#[test]
-#[ignore = "clones pinned repositories and downloads the embedding model; run with --ignored --nocapture"]
-fn fusion_beats_either_retriever_alone() {
+struct Evaluation {
+    arms: Vec<Score>,
+    shapes: Vec<Vec<(Shape, Score)>>,
+    per_corpus: Vec<(&'static str, &'static str, usize, Vec<Score>)>,
+    cost: Cost,
+}
+
+fn evaluate(model: &str, announce_misses: bool) -> Evaluation {
     let mut overall: Vec<Score> = ARMS.iter().map(|_| Score::default()).collect();
     let mut by_shape: Vec<Vec<(Shape, Score)>> = ARMS
         .iter()
@@ -620,6 +625,7 @@ fn fusion_beats_either_retriever_alone() {
         let root = materialized.root();
         let config = Config {
             backend: Backend::Fastembed,
+            model: model.to_string(),
             root: root.clone(),
             ..Default::default()
         };
@@ -658,7 +664,7 @@ fn fusion_beats_either_retriever_alone() {
                 slot.1.record(rank);
                 if arm == FUSED {
                     cost.record(&index, hits, &root, rank);
-                    if rank.is_none() {
+                    if announce_misses && rank.is_none() {
                         eprintln!(
                             "  miss [{}] {:?} (expected {:?})",
                             corpus.name, query.text, query.targets
@@ -667,11 +673,30 @@ fn fusion_beats_either_retriever_alone() {
                 }
             }
         }
-        report.push((corpus, index.records.len(), here));
+        report.push((corpus.name, corpus.language, index.records.len(), here));
     }
 
-    for (corpus, chunks, scores) in &report {
-        eprintln!("{} ({}, {chunks} chunks)", corpus.name, corpus.language);
+    Evaluation {
+        arms: overall,
+        shapes: by_shape,
+        per_corpus: report,
+        cost,
+    }
+}
+
+#[test]
+#[ignore = "clones pinned repositories and downloads the embedding model; run with --ignored --nocapture"]
+fn fusion_beats_either_retriever_alone() {
+    let run = evaluate(ripsem::model::DEFAULT_MODEL, true);
+    let Evaluation {
+        arms: overall,
+        shapes: by_shape,
+        per_corpus,
+        cost,
+    } = run;
+
+    for (name, language, chunks, scores) in &per_corpus {
+        eprintln!("{name} ({language}, {chunks} chunks)");
         for (arm, label) in ARMS.iter().enumerate() {
             eprintln!("  {label:<14} {}", scores[arm].line());
         }
@@ -705,6 +730,42 @@ fn fusion_beats_either_retriever_alone() {
         overall[FUSED].recall_at_depth()
     );
     assert!(fused >= 0.62, "MRR too low: {fused:.3}");
+}
+
+/// The catalogue describes one model as the best balance and another as lower
+/// recall, and until now nothing checked either statement. Cheapest first, so a
+/// larger model has to earn its download and its indexing time rather than being
+/// assumed better for having more dimensions.
+#[test]
+#[ignore = "downloads several embedding models; run with --ignored --nocapture"]
+fn a_larger_model_has_to_earn_its_cost() {
+    let candidates = ["all-MiniLM-L6-v2", "bge-small-en-v1.5", "bge-base-en-v1.5"];
+    let mut results = Vec::new();
+    for model in candidates {
+        let info = ripsem::model::find(model).unwrap();
+        let run = evaluate(model, false);
+        eprintln!(
+            "{model:<20} {}d ~{}MB  fused MRR={:.3}  vector-only MRR={:.3}",
+            info.dims,
+            info.disk_mb,
+            run.arms[FUSED].mrr(),
+            run.arms[0].mrr()
+        );
+        for (name, _, _, scores) in &run.per_corpus {
+            eprintln!("  {name:<10} fused={:.3}", scores[FUSED].mrr());
+        }
+        for (shape, score) in &run.shapes[FUSED] {
+            eprintln!("  {:<10} fused={:.3}", format!("{shape:?}"), score.mrr());
+        }
+        results.push((model, run));
+    }
+
+    let best = results
+        .iter()
+        .max_by(|a, b| a.1.arms[FUSED].mrr().total_cmp(&b.1.arms[FUSED].mrr()))
+        .map(|(model, _)| *model)
+        .unwrap();
+    eprintln!("best measured: {best}");
 }
 
 struct Outcome {
