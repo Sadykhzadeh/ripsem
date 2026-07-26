@@ -79,21 +79,56 @@ impl Emitter<'_> {
         }
     }
 
+    /// A chunk that groups several small declarations is named after the first
+    /// of them, which is where its line range starts. Naming it after the
+    /// enclosing block instead would answer `mod tests` to every question about
+    /// a test, which is true and useless.
     fn push(&mut self, start: &Node, end: &Node, enclosing: Option<&Symbol>) {
         let body = &self.text[start.start_byte()..end.end_byte()];
         if body.trim().is_empty() {
             return;
         }
-        let own = match start.id() == end.id() {
-            true => symbol::declaration(start, self.text, enclosing),
-            false => None,
-        };
+        let own = self.first_declaration(start, end, enclosing);
         self.out.push(Chunk {
             start_line: start.start_position().row + 1,
             end_line: end.end_position().row + 1,
             text: body.to_string(),
             symbol: own.or_else(|| enclosing.cloned()),
         });
+    }
+
+    /// Attributes, decorators, export wrappers and import lists all sit between
+    /// the start of a chunk and the declaration it is really about, so finding
+    /// that declaration means scanning forward and downward, not just asking the
+    /// first node.
+    fn first_declaration(
+        &self,
+        start: &Node,
+        end: &Node,
+        enclosing: Option<&Symbol>,
+    ) -> Option<Symbol> {
+        let mut node = Some(*start);
+        while let Some(current) = node {
+            if current.start_byte() > end.end_byte() {
+                return None;
+            }
+            if let Some(found) = self.declaration_within(&current, enclosing) {
+                return Some(found);
+            }
+            node = current.next_named_sibling();
+        }
+        None
+    }
+
+    fn declaration_within(&self, node: &Node, enclosing: Option<&Symbol>) -> Option<Symbol> {
+        if let Some(found) = symbol::declaration(node, self.text, enclosing) {
+            return Some(found);
+        }
+        let mut cursor = node.walk();
+        let children: Vec<Node> = node.named_children(&mut cursor).collect();
+        children
+            .iter()
+            .find_map(|child| self.declaration_within(child, enclosing))
     }
 
     fn push_windows(&mut self, node: &Node, enclosing: Option<&Symbol>) {
@@ -253,7 +288,7 @@ mod tests {
             ),
         ];
         for (file, src, expected) in cases {
-            let chunks = chunk_source(file, src, 1);
+            let chunks = chunk_source(file, src, 40);
             assert!(
                 labels(&chunks).iter().any(|l| l == expected),
                 "{file}: expected {expected:?}, got {:?}",
