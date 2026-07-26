@@ -24,6 +24,7 @@ pub struct SearchHit {
     pub end_line: usize,
     pub score: f32,
     pub snippet: String,
+    pub symbol: Option<crate::symbol::Symbol>,
 }
 
 pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
@@ -101,7 +102,12 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
                 end_line: c.end_line,
                 snippet: truncate(&c.text, 400),
                 file_hash: hash,
-                terms: crate::lexical::TermVector::new(&c.text, &rel),
+                terms: crate::lexical::TermVector::new(
+                    &c.text,
+                    &rel,
+                    c.symbol.as_ref().map(|s| s.name.as_str()),
+                ),
+                symbol: c.symbol,
             });
             texts.push(c.text);
             if texts.len() >= EMBED_BATCH {
@@ -140,6 +146,7 @@ struct Pending {
     snippet: String,
     file_hash: u64,
     terms: crate::lexical::TermVector,
+    symbol: Option<crate::symbol::Symbol>,
 }
 
 fn flush(
@@ -161,6 +168,7 @@ fn flush(
             file_hash: p.file_hash,
             vector: crate::quant::quantize(&vector),
             terms: p.terms,
+            symbol: p.symbol,
         });
     }
     texts.clear();
@@ -298,6 +306,7 @@ impl Searcher {
             end_line: r.end_line,
             score,
             snippet: r.snippet.clone(),
+            symbol: r.symbol.clone(),
         }
     }
 }

@@ -22,10 +22,14 @@ binary still builds and runs on a lightweight lexical backend (useful for tests
 and CI), but real semantic search needs the model.
 
 The `treesitter` feature chunks code on function and type boundaries instead of
-fixed line windows, which keeps each indexed snippet aligned to a logical unit.
-It covers Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP,
-Scala, Kotlin, Bash, HTML, CSS, and JSON; other files fall back to line-window
-chunking.
+fixed line windows, which keeps each indexed snippet aligned to a logical unit,
+and names each chunk after the declaration it belongs to — results arrive as
+`src/pipeline.rs:258-293 fn Searcher::query_scoped`, so a caller can tell a
+definition from a call site without opening the file. A function too large to be
+one chunk passes its name to every piece it is cut into. It covers Rust, Python,
+JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Scala, Kotlin, Bash,
+HTML, CSS, and JSON; other files fall back to line-window chunking without
+names.
 
 The `hnsw` feature builds an approximate-nearest-neighbour index for large
 repositories. Below ~20k chunks the exact flat scan is already sub-10 ms, so the
@@ -117,9 +121,10 @@ cargo test --release --features fastembed,treesitter \
   --test retrieval_quality -- --ignored --nocapture
 ```
 
-The corpus is ripsem's own source at the last commit, snapshotted with `git
-archive` so a run is not moved by uncommitted edits. It needs the embedding
-model, so it is `#[ignore]`d out of the normal run.
+The corpus is ripsem's own source pinned to the `corpus/v1` tag and materialised
+with `git archive`, so it does not move as the code does and two runs differ only
+by what changed in retrieval. It needs the embedding model, so it is `#[ignore]`d
+out of the normal run.
 
 | retriever | MRR | description | identifier | message | recalled name |
 | --- | --- | --- | --- | --- | --- |
@@ -134,8 +139,11 @@ match, lexical wins where they do, and only merging them is good at both.
 
 The honest gaps: a name remembered wrong is still served better by the lexical
 arm alone, and `models` does not find `ModelInfo` because nothing folds plurals.
-A trailing-`s` rule was tried and measured slightly worse (MRR 0.746), so it is
-not in the code.
+Two ideas were tried and are not in the code: a trailing-`s` plural rule measured
+worse (0.746), and weighting the declared name above the rest of a chunk moved a
+single query in and out of first place (0.754 at weights 1–3, 0.778 at 6–10,
+0.754 again at 20–40) — a bump, not a trend, and not enough to tune a constant
+on.
 
 ## License
 
