@@ -11,6 +11,18 @@ use ripsem::pipeline;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// The corpora are cached on disk and each measurement rebuilds their index in
+/// place, so two of these tests running at once overwrite each other's index and
+/// report numbers for a corpus neither of them built. `cargo test` runs tests in
+/// parallel by default, which made that the normal case rather than the unlucky
+/// one, and the numbers it produced looked plausible.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn exclusively<T>(measurement: impl FnOnce() -> T) -> T {
+    let _guard = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    measurement()
+}
+
 const DEPTH: usize = 5;
 const OWN_REVISION: &str = "corpus/v1";
 
@@ -687,7 +699,7 @@ fn evaluate(model: &str, announce_misses: bool) -> Evaluation {
 #[test]
 #[ignore = "clones pinned repositories and downloads the embedding model; run with --ignored --nocapture"]
 fn fusion_beats_either_retriever_alone() {
-    let run = evaluate(ripsem::model::DEFAULT_MODEL, true);
+    let run = exclusively(|| evaluate(ripsem::model::DEFAULT_MODEL, true));
     let Evaluation {
         arms: overall,
         shapes: by_shape,
@@ -725,11 +737,11 @@ fn fusion_beats_either_retriever_alone() {
         "fusion must not rank worse than the lexical arm alone"
     );
     assert!(
-        overall[FUSED].recall_at_depth() >= 0.78,
+        overall[FUSED].recall_at_depth() >= 0.82,
         "recall@{DEPTH} too low: {:.2}",
         overall[FUSED].recall_at_depth()
     );
-    assert!(fused >= 0.62, "MRR too low: {fused:.3}");
+    assert!(fused >= 0.68, "MRR too low: {fused:.3}");
 }
 
 /// The catalogue describes one model as the best balance and another as lower
@@ -743,7 +755,7 @@ fn a_larger_model_has_to_earn_its_cost() {
     let mut results = Vec::new();
     for model in candidates {
         let info = ripsem::model::find(model).unwrap();
-        let run = evaluate(model, false);
+        let run = exclusively(|| evaluate(model, false));
         eprintln!(
             "{model:<20} {}d ~{}MB  fused MRR={:.3}  vector-only MRR={:.3}",
             info.dims,
@@ -810,6 +822,7 @@ fn measure(config: &Config, queries: &[Query], generated: &HashSet<String>) -> O
 #[test]
 #[ignore = "downloads the embedding model; run with --ignored --nocapture"]
 fn skipping_generated_files_stops_them_reaching_results() {
+    let _sequential = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new();
     let archive = dir.path.join("corpus.tar");
     run(
