@@ -48,9 +48,10 @@ pub enum Command {
         /// `--json`, which always returns the full snippet.
         #[arg(long, value_name = "LINES", default_value_t = 3)]
         context: usize,
-        /// Drop hits whose cosine score is below this threshold, keeping only
-        /// confident matches. Absent means no filtering. Applies to both the
-        /// human and `--json` output.
+        /// Drop hits whose confidence is below this threshold, keeping only
+        /// strong matches. Confidence is 0–1: semantic similarity, or the share
+        /// of the query's terms found literally, whichever is higher. Absent
+        /// means no filtering. Applies to both the human and `--json` output.
         #[arg(long, value_name = "SCORE")]
         min_score: Option<f32>,
         /// Summarise as one line per file with its hit count (sorted by count),
