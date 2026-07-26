@@ -104,15 +104,35 @@ larger functions are split. `exclude` takes gitignore-style globs.
 
 ## Quality
 
-Retrieval quality is measured by a labelled benchmark over a small multi-domain
-corpus, scored by recall@k and MRR against ground-truth files:
+The benchmark asks the same corpus 21 labelled questions in four shapes — a
+description in the reader's own words, an identifier typed from memory, a message
+seen in output, and a name remembered wrong — and scores each retriever against
+ground-truth files:
 
 ```
 cargo test --release --features fastembed,treesitter \
   --test retrieval_quality -- --ignored --nocapture
 ```
 
-It needs the embedding model, so it is `#[ignore]`d out of the normal run.
+The corpus is ripsem's own source at the last commit, snapshotted with `git
+archive` so a run is not moved by uncommitted edits. It needs the embedding
+model, so it is `#[ignore]`d out of the normal run.
+
+| retriever | MRR | description | identifier | message | recalled name |
+| --- | --- | --- | --- | --- | --- |
+| vector only | 0.587 | 0.573 | 0.792 | 0.444 | 0.417 |
+| lexical only | 0.718 | 0.469 | 1.000 | 1.000 | 0.583 |
+| merged | **0.754** | **0.688** | 1.000 | 0.778 | 0.500 |
+
+Two things are worth reading off this table. BM25 alone beats the embedding model
+alone on real code, so a search built only on vectors is leaving the stronger
+signal on the floor. And neither arm is enough: vectors win where the words don't
+match, lexical wins where they do, and only merging them is good at both.
+
+The honest gaps: a name remembered wrong is still served better by the lexical
+arm alone, and `models` does not find `ModelInfo` because nothing folds plurals.
+A trailing-`s` rule was tried and measured slightly worse (MRR 0.746), so it is
+not in the code.
 
 ## License
 
