@@ -129,7 +129,6 @@ fn handle_call(
     match result {
         Ok(hits) => {
             let hits = apply_min_score(hits, min_score);
-            let hits = dedup_overlapping(hits);
             ok(id, tool_result(&hits))
         }
         Err(e) => ok(
@@ -171,29 +170,6 @@ fn apply_min_score(hits: Vec<pipeline::SearchHit>, min: Option<f32>) -> Vec<pipe
         Some(min) => hits.into_iter().filter(|h| h.score >= min).collect(),
         None => hits,
     }
-}
-
-/// Remove lower-scored hits that overlap with a higher-scored hit from the same
-/// file. Two hits overlap when their `[start_line, end_line]` ranges share at
-/// least one line. Hits are expected to arrive in descending score order; the
-/// first (highest-scored) hit for any overlapping pair wins. Non-overlapping
-/// hits from the same file and hits from different files are always kept.
-fn dedup_overlapping(hits: Vec<pipeline::SearchHit>) -> Vec<pipeline::SearchHit> {
-    // Track the kept ranges per file as (start, end) pairs.
-    let mut kept_ranges: std::collections::HashMap<String, Vec<(usize, usize)>> =
-        std::collections::HashMap::new();
-    let mut out = Vec::with_capacity(hits.len());
-    for h in hits {
-        let ranges = kept_ranges.entry(h.path.clone()).or_default();
-        let overlaps = ranges
-            .iter()
-            .any(|&(s, e)| h.start_line <= e && h.end_line >= s);
-        if !overlaps {
-            ranges.push((h.start_line, h.end_line));
-            out.push(h);
-        }
-    }
-    out
 }
 
 fn tool_result(hits: &[pipeline::SearchHit]) -> Value {
@@ -348,36 +324,6 @@ mod tests {
             snippet: "x".into(),
             symbol: None,
         }
-    }
-
-    #[test]
-    fn dedup_overlapping_keeps_higher_scored_hit() {
-        // Two hits in the same file with overlapping ranges: only the first
-        // (higher-scored) should survive.
-        let hits = vec![
-            make_hit("a.rs", 1, 10, 0.9),
-            make_hit("a.rs", 8, 15, 0.7), // overlaps [1,10] at lines 8-10
-        ];
-        let out = dedup_overlapping(hits);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].start_line, 1);
-        assert_eq!(out[0].score, 0.9);
-    }
-
-    #[test]
-    fn dedup_overlapping_keeps_non_overlapping_same_file_hits() {
-        // Two hits in the same file but non-overlapping ranges: both kept.
-        let hits = vec![make_hit("a.rs", 1, 5, 0.9), make_hit("a.rs", 6, 10, 0.7)];
-        let out = dedup_overlapping(hits);
-        assert_eq!(out.len(), 2);
-    }
-
-    #[test]
-    fn dedup_overlapping_keeps_different_file_hits() {
-        // Identical ranges but different files: both kept.
-        let hits = vec![make_hit("a.rs", 1, 10, 0.9), make_hit("b.rs", 1, 10, 0.8)];
-        let out = dedup_overlapping(hits);
-        assert_eq!(out.len(), 2);
     }
 
     #[test]
