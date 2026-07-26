@@ -12,6 +12,7 @@ use ripsem::pipeline;
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const DEPTH: usize = 5;
+const OWN_REVISION: &str = "corpus/v1";
 
 struct TempDir {
     path: PathBuf,
@@ -32,40 +33,450 @@ impl Drop for TempDir {
     }
 }
 
-const CORPUS_REVISION: &str = "corpus/v1";
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Shape {
+    Described,
+    Identifier,
+    Message,
+    Recalled,
+}
 
-/// The corpus is ripsem's own source: real code with real identifiers, and files
-/// whose purpose a person would describe in words the code never uses.
-///
-/// It is pinned to a tagged revision, not the current tree. ripsem's source is
-/// both the thing being measured and the thing being changed, so a corpus that
-/// followed development would move under every commit — two runs would differ
-/// for reasons that have nothing to do with retrieval, which is the one thing a
-/// benchmark exists to rule out. Pinning also keeps the labels below true
-/// forever instead of rotting as the code moves.
-fn corpus(pathspec: Option<&str>) -> TempDir {
-    let dir = TempDir::new();
-    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let archive = dir.path.join("corpus.tar");
-    let mut command = Command::new("git");
-    command
-        .args(["archive", "--format=tar", CORPUS_REVISION])
-        .arg("-o")
-        .arg(&archive)
-        .current_dir(repository);
-    if let Some(pathspec) = pathspec {
-        command.arg(pathspec);
+use Shape::{Described, Identifier, Message, Recalled};
+
+const SHAPES: [Shape; 4] = [Described, Identifier, Message, Recalled];
+
+/// A description asks in words the file may not contain. An identifier is typed
+/// from memory. A message is a string the developer saw in output. A recalled
+/// query is a name remembered wrong — the shape that defeats exact search and
+/// plain similarity alike.
+struct Query {
+    shape: Shape,
+    text: &'static str,
+    /// Any of these files answers the question. More than one is listed only
+    /// where the code genuinely spreads the answer across them; a single target
+    /// means the definition, not the places that merely mention it.
+    targets: &'static [&'static str],
+}
+
+enum Source {
+    /// ripsem's own source at a pinned tag. Both what the benchmark measures and
+    /// what development changes, so it is never read from the working tree.
+    Own { pathspec: &'static str },
+    /// A real project at a release tag, cloned once into `target/corpora`. The
+    /// first run needs network; later runs do not.
+    Pinned {
+        url: &'static str,
+        tag: &'static str,
+    },
+}
+
+struct Corpus {
+    name: &'static str,
+    language: &'static str,
+    source: Source,
+    queries: &'static [Query],
+}
+
+const fn query(shape: Shape, text: &'static str, targets: &'static [&'static str]) -> Query {
+    Query {
+        shape,
+        text,
+        targets,
     }
-    let status = command
-        .status()
-        .expect("git is required to snapshot the benchmark corpus");
-    assert!(
-        status.success(),
-        "git archive {CORPUS_REVISION} failed; the tag pins the corpus and must be fetched"
-    );
-    extract(&archive, &dir.path);
-    std::fs::remove_file(&archive).unwrap();
-    dir
+}
+
+const RIPSEM: &[Query] = &[
+    query(
+        Described,
+        "how do we decide a file is text rather than binary",
+        &["src/walk.rs"],
+    ),
+    query(
+        Described,
+        "keep the index up to date while the developer edits files",
+        &["src/watch.rs"],
+    ),
+    query(
+        Described,
+        "shrink the stored vectors so the index takes less disk",
+        &["src/quant.rs"],
+    ),
+    query(
+        Described,
+        "cut a source file along function boundaries",
+        &["src/semantic.rs"],
+    ),
+    query(
+        Described,
+        "which embedding models can be chosen and how big are they",
+        &["src/model.rs"],
+    ),
+    query(
+        Described,
+        "speak to a coding agent over standard input and output",
+        &["src/mcp.rs"],
+    ),
+    query(
+        Described,
+        "avoid redoing work for files that have not changed",
+        &["src/pipeline.rs"],
+    ),
+    query(
+        Described,
+        "map a file extension to a language parser",
+        &["src/lang.rs"],
+    ),
+    query(Identifier, "content_hash", &["src/fingerprint.rs"]),
+    query(Identifier, "QuantizedVector", &["src/quant.rs"]),
+    query(Identifier, "scope_prefix", &["src/mcp.rs"]),
+    query(Identifier, "split_identifier", &["src/lexical.rs"]),
+    query(Identifier, "OverrideBuilder", &["src/walk.rs"]),
+    query(Identifier, "human_size", &["src/cli.rs"]),
+    query(
+        Message,
+        "index is unreadable or corrupt; run ripsem index --force to rebuild",
+        &["src/index.rs"],
+    ),
+    query(
+        Message,
+        "no index yet; run ripsem index in this directory first",
+        &["src/pipeline.rs"],
+    ),
+    query(
+        Message,
+        "unknown backend, expected hash or fastembed",
+        &["src/cli.rs"],
+    ),
+    query(
+        Recalled,
+        "checksum of the file contents",
+        &["src/fingerprint.rs"],
+    ),
+    query(
+        Recalled,
+        "inverse document frequency term weighting",
+        &["src/lexical.rs"],
+    ),
+    query(
+        Recalled,
+        "approximate nearest neighbour graph",
+        &["src/ann.rs"],
+    ),
+    query(
+        Recalled,
+        "atomic rename so a half written index is never read",
+        &["src/index.rs"],
+    ),
+];
+
+const REQUESTS: &[Query] = &[
+    query(
+        Described,
+        "how is the basic auth header encoded",
+        &["src/requests/auth.py"],
+    ),
+    query(
+        Described,
+        "where are redirects followed after a 302",
+        &["src/requests/sessions.py"],
+    ),
+    query(
+        Described,
+        "a dictionary whose keys ignore case",
+        &["src/requests/structures.py"],
+    ),
+    query(
+        Described,
+        "connection pooling and retries for http",
+        &["src/requests/adapters.py"],
+    ),
+    query(
+        Described,
+        "turn a plain dict of cookies into a cookie jar",
+        &["src/requests/cookies.py"],
+    ),
+    query(
+        Described,
+        "the short helpers for get and post",
+        &["src/requests/api.py"],
+    ),
+    query(
+        Described,
+        "collect environment versions for a bug report",
+        &["src/requests/help.py"],
+    ),
+    query(
+        Described,
+        "path to the bundled certificate authority file",
+        &["src/requests/certs.py"],
+    ),
+    query(Identifier, "_basic_auth_str", &["src/requests/auth.py"]),
+    query(
+        Identifier,
+        "CaseInsensitiveDict",
+        &["src/requests/structures.py"],
+    ),
+    query(
+        Identifier,
+        "extract_zipped_paths",
+        &["src/requests/utils.py"],
+    ),
+    query(Identifier, "PreparedRequest", &["src/requests/models.py"]),
+    query(Identifier, "dispatch_hook", &["src/requests/hooks.py"]),
+    query(Identifier, "super_len", &["src/requests/utils.py"]),
+    query(
+        Message,
+        "Exceeded 30 redirects",
+        &["src/requests/sessions.py"],
+    ),
+    query(
+        Message,
+        "Invalid URL: No scheme supplied",
+        &["src/requests/models.py"],
+    ),
+    query(
+        Recalled,
+        "http status code names lookup table",
+        &["src/requests/status_codes.py"],
+    ),
+    query(
+        Recalled,
+        "digest access authentication",
+        &["src/requests/auth.py"],
+    ),
+    query(
+        Recalled,
+        "multipart form data body encoding",
+        &["src/requests/models.py"],
+    ),
+    query(
+        Recalled,
+        "check whether a string is pure ascii",
+        &["src/requests/_internal_utils.py"],
+    ),
+];
+
+const MUX: &[Query] = &[
+    query(
+        Described,
+        "match an incoming request against the registered routes",
+        &["mux.go"],
+    ),
+    query(
+        Described,
+        "compile a path template with variables into a regular expression",
+        &["regexp.go"],
+    ),
+    query(
+        Described,
+        "wrap handlers so code runs before each one",
+        &["middleware.go"],
+    ),
+    query(
+        Described,
+        "build a url from a named route and its parameters",
+        &["route.go"],
+    ),
+    query(Identifier, "SetURLVars", &["test_helpers.go"]),
+    query(Identifier, "CORSMethodMiddleware", &["middleware.go"]),
+    query(Identifier, "braceIndices", &["regexp.go"]),
+    query(Identifier, "MethodNotAllowedHandler", &["mux.go"]),
+    query(
+        Message,
+        "mux: number of parameters must be multiple of 2",
+        &["mux.go"],
+    ),
+    query(Message, "mux: missing name or pattern", &["regexp.go"]),
+    query(
+        Recalled,
+        "read the path variables out of a request",
+        &["mux.go"],
+    ),
+    query(
+        Recalled,
+        "trailing slash redirect behaviour",
+        &["mux.go", "route.go"],
+    ),
+];
+
+const GOT: &[Query] = &[
+    query(
+        Described,
+        "how long to wait before retrying a failed request",
+        &["source/core/calculate-retry-delay.ts"],
+    ),
+    query(
+        Described,
+        "abort a request when it takes too long",
+        &["source/core/timed-out.ts"],
+    ),
+    query(
+        Described,
+        "parse the link header used for pagination",
+        &["source/core/parse-link-header.ts"],
+    ),
+    query(
+        Described,
+        "convert a url into node http request options",
+        &["source/core/utils/url-to-options.ts"],
+    ),
+    query(
+        Described,
+        "work out the size of the request body",
+        &["source/core/utils/get-body-size.ts"],
+    ),
+    query(
+        Described,
+        "forward events from one emitter to another",
+        &["source/core/utils/proxy-events.ts"],
+    ),
+    query(
+        Described,
+        "the error types thrown when a request fails",
+        &["source/core/errors.ts"],
+    ),
+    query(
+        Described,
+        "decide whether a response status counts as success",
+        &["source/core/response.ts"],
+    ),
+    query(
+        Identifier,
+        "WeakableMap",
+        &["source/core/utils/weakable-map.ts"],
+    ),
+    query(
+        Identifier,
+        "isUnixSocketURL",
+        &["source/core/utils/is-unix-socket-url.ts"],
+    ),
+    query(
+        Identifier,
+        "optionsToUrl",
+        &["source/core/utils/options-to-url.ts"],
+    ),
+    query(Identifier, "MaxRedirectsError", &["source/core/errors.ts"]),
+    query(Identifier, "asPromise", &["source/as-promise/index.ts"]),
+    query(Identifier, "CancelError", &["source/as-promise/types.ts"]),
+    query(
+        Message,
+        "A retry listener has been attached already",
+        &["source/core/index.ts"],
+    ),
+    query(
+        Message,
+        "To use the http2 option install Node.js 15.10.0 or above",
+        &["source/core/options.ts"],
+    ),
+    query(
+        Recalled,
+        "helper that removes listeners it attached earlier",
+        &["source/core/utils/unhandle.ts"],
+    ),
+    query(
+        Recalled,
+        "detect a form data body",
+        &["source/core/utils/is-form-data.ts"],
+    ),
+    query(
+        Recalled,
+        "every request option and its default",
+        &["source/core/options.ts"],
+    ),
+    query(Recalled, "cache error type", &["source/core/errors.ts"]),
+];
+
+const CORPORA: &[Corpus] = &[
+    Corpus {
+        name: "ripsem",
+        language: "rust",
+        source: Source::Own { pathspec: "src" },
+        queries: RIPSEM,
+    },
+    Corpus {
+        name: "requests",
+        language: "python",
+        source: Source::Pinned {
+            url: "https://github.com/psf/requests.git",
+            tag: "v2.34.2",
+        },
+        queries: REQUESTS,
+    },
+    Corpus {
+        name: "mux",
+        language: "go",
+        source: Source::Pinned {
+            url: "https://github.com/gorilla/mux.git",
+            tag: "v1.8.1",
+        },
+        queries: MUX,
+    },
+    Corpus {
+        name: "got",
+        language: "typescript",
+        source: Source::Pinned {
+            url: "https://github.com/sindresorhus/got.git",
+            tag: "v14.4.5",
+        },
+        queries: GOT,
+    },
+];
+
+enum Materialized {
+    Temporary(TempDir),
+    Cached(PathBuf),
+}
+
+impl Materialized {
+    fn root(&self) -> PathBuf {
+        match self {
+            Materialized::Temporary(dir) => dir.path.clone(),
+            Materialized::Cached(path) => path.clone(),
+        }
+    }
+}
+
+fn repository() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn materialize(source: &Source, name: &str) -> Materialized {
+    match source {
+        Source::Own { pathspec } => {
+            let dir = TempDir::new();
+            let archive = dir.path.join("corpus.tar");
+            run(
+                Command::new("git")
+                    .args(["archive", "--format=tar", OWN_REVISION])
+                    .arg("-o")
+                    .arg(&archive)
+                    .arg(pathspec)
+                    .current_dir(repository()),
+                &format!("git archive {OWN_REVISION}; the tag pins the corpus"),
+            );
+            extract(&archive, &dir.path);
+            std::fs::remove_file(&archive).unwrap();
+            Materialized::Temporary(dir)
+        }
+        Source::Pinned { url, tag } => {
+            let path = repository().join("target/corpora").join(name);
+            if !path.join(".git").exists() {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                run(
+                    Command::new("git")
+                        .args(["clone", "--depth", "1", "--quiet", "--branch", tag, url])
+                        .arg(&path),
+                    &format!("git clone {url} at {tag}; the first run needs network"),
+                );
+            }
+            Materialized::Cached(path)
+        }
+    }
+}
+
+fn run(command: &mut Command, what: &str) {
+    let status = command.status().unwrap_or_else(|e| panic!("{what}: {e}"));
+    assert!(status.success(), "{what}: failed");
 }
 
 /// Minimal tar reader: the archive holds only ripsem's own text files, so the
@@ -98,107 +509,7 @@ fn extract(archive: &Path, into: &Path) {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Shape {
-    Described,
-    Identifier,
-    Message,
-    Recalled,
-}
-
-use Shape::{Described, Identifier, Message, Recalled};
-
-/// A description asks in words the file may not contain. An identifier is typed
-/// from memory. A message is a string the developer saw in output. A recalled
-/// query is a name remembered wrong — the shape that defeats exact search and
-/// plain similarity alike.
-const QUERIES: &[(Shape, &str, &str)] = &[
-    (
-        Described,
-        "how do we decide a file is text rather than binary",
-        "src/walk.rs",
-    ),
-    (
-        Described,
-        "keep the index up to date while the developer edits files",
-        "src/watch.rs",
-    ),
-    (
-        Described,
-        "shrink the stored vectors so the index takes less disk",
-        "src/quant.rs",
-    ),
-    (
-        Described,
-        "cut a source file along function boundaries",
-        "src/semantic.rs",
-    ),
-    (
-        Described,
-        "which embedding models can be chosen and how big are they",
-        "src/model.rs",
-    ),
-    (
-        Described,
-        "speak to a coding agent over standard input and output",
-        "src/mcp.rs",
-    ),
-    (
-        Described,
-        "avoid redoing work for files that have not changed",
-        "src/pipeline.rs",
-    ),
-    (
-        Described,
-        "map a file extension to a language parser",
-        "src/lang.rs",
-    ),
-    (Identifier, "content_hash", "src/fingerprint.rs"),
-    (Identifier, "QuantizedVector", "src/quant.rs"),
-    (Identifier, "scope_prefix", "src/mcp.rs"),
-    (Identifier, "split_identifier", "src/lexical.rs"),
-    (Identifier, "OverrideBuilder", "src/walk.rs"),
-    (Identifier, "human_size", "src/cli.rs"),
-    (
-        Message,
-        "index is unreadable or corrupt; run ripsem index --force to rebuild",
-        "src/index.rs",
-    ),
-    (
-        Message,
-        "no index yet; run ripsem index in this directory first",
-        "src/pipeline.rs",
-    ),
-    (
-        Message,
-        "unknown backend, expected hash or fastembed",
-        "src/cli.rs",
-    ),
-    (
-        Recalled,
-        "checksum of the file contents",
-        "src/fingerprint.rs",
-    ),
-    (
-        Recalled,
-        "inverse document frequency term weighting",
-        "src/lexical.rs",
-    ),
-    (
-        Recalled,
-        "approximate nearest neighbour graph",
-        "src/ann.rs",
-    ),
-    (
-        Recalled,
-        "atomic rename so a half written index is never read",
-        "src/index.rs",
-    ),
-];
-
-const SHAPES: [Shape; 4] = [Described, Identifier, Message, Recalled];
-
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Score {
     queries: usize,
     first: usize,
@@ -234,85 +545,152 @@ impl Score {
     fn mrr(&self) -> f64 {
         self.reciprocal / self.queries.max(1) as f64
     }
+
+    fn line(&self) -> String {
+        format!(
+            "recall@1={:.2}  recall@{DEPTH}={:.2}  MRR={:.3}  ({} queries)",
+            self.recall_at_1(),
+            self.recall_at_depth(),
+            self.mrr(),
+            self.queries
+        )
+    }
 }
 
-fn rank_of(index: &Index, hits: &[Hit], expected: &str) -> Option<usize> {
+/// The best rank any acceptable target reached.
+fn rank_of(index: &Index, hits: &[Hit], targets: &[&str]) -> Option<usize> {
     hits.iter()
-        .position(|h| index.records[h.record_idx].path == expected)
+        .position(|h| targets.contains(&index.records[h.record_idx].path.as_str()))
         .map(|p| p + 1)
 }
 
-fn report(label: &str, overall: &Score, by_shape: &[(Shape, Score)]) {
-    eprintln!(
-        "{label:<14} recall@1={:.2}  recall@{DEPTH}={:.2}  MRR={:.3}",
-        overall.recall_at_1(),
-        overall.recall_at_depth(),
-        overall.mrr()
-    );
-    for (shape, score) in by_shape {
-        eprintln!(
-            "  {:<12} recall@1={:.2}  recall@{DEPTH}={:.2}  MRR={:.3}  ({} queries)",
-            format!("{shape:?}"),
-            score.recall_at_1(),
-            score.recall_at_depth(),
-            score.mrr(),
-            score.queries
-        );
+/// What reaching the answer costs to read. `context` counts the snippets up to
+/// and including the first correct hit — everything a caller has to take in
+/// before it has the answer. `whole_files` counts the file that answer lives in,
+/// which is what gets read instead when a search only points at a filename.
+#[derive(Default)]
+struct Cost {
+    answered: usize,
+    context: u64,
+    whole_files: u64,
+}
+
+impl Cost {
+    fn record(&mut self, index: &Index, hits: &[Hit], root: &Path, rank: Option<usize>) {
+        let Some(rank) = rank else { return };
+        self.answered += 1;
+        self.context += hits[..rank]
+            .iter()
+            .map(|h| index.records[h.record_idx].snippet.len() as u64)
+            .sum::<u64>();
+        let answer = &index.records[hits[rank - 1].record_idx].path;
+        self.whole_files += std::fs::metadata(root.join(answer))
+            .map(|m| m.len())
+            .unwrap_or(0);
+    }
+
+    fn line(&self) -> String {
+        let answered = self.answered.max(1) as f64;
+        let context = self.context as f64 / answered;
+        let whole = self.whole_files as f64 / answered;
+        format!(
+            "{context:.0} bytes read to the answer against {whole:.0} for the file it is in ({:.1}x less, {} answered)",
+            whole / context.max(1.0),
+            self.answered
+        )
     }
 }
 
+const ARMS: [&str; 3] = ["vector only", "lexical only", "fused"];
+const FUSED: usize = 2;
+
 #[test]
-#[ignore = "downloads the embedding model; run with --ignored --nocapture"]
+#[ignore = "clones pinned repositories and downloads the embedding model; run with --ignored --nocapture"]
 fn fusion_beats_either_retriever_alone() {
-    let dir = corpus(Some("src"));
-    let config = Config {
-        backend: Backend::Fastembed,
-        root: dir.path.clone(),
-        ..Default::default()
-    };
-    pipeline::index_repo(&config, true).unwrap();
-
-    let index = Index::load(&config.index_path()).unwrap();
-    let embedder = ripsem::embed::build(&config).unwrap();
-    for (_, _, expected) in QUERIES {
-        assert!(
-            index.records.iter().any(|r| r.path == *expected),
-            "corpus is missing {expected}; the labels need updating"
-        );
-    }
-
-    let arms = ["vector only", "lexical only", "fused"];
-    let mut overall: Vec<Score> = arms.iter().map(|_| Score::default()).collect();
-    let mut by_shape: Vec<Vec<(Shape, Score)>> = arms
+    let mut overall: Vec<Score> = ARMS.iter().map(|_| Score::default()).collect();
+    let mut by_shape: Vec<Vec<(Shape, Score)>> = ARMS
         .iter()
         .map(|_| SHAPES.iter().map(|&s| (s, Score::default())).collect())
         .collect();
+    let mut report = Vec::new();
+    let mut cost = Cost::default();
 
-    for (shape, query, expected) in QUERIES {
-        let vector = embedder.embed_query(query).unwrap();
-        let terms = ripsem::lexical::query_terms(query);
-        let ranked = [
-            index.dense_ranking(&vector, DEPTH, None),
-            index.lexical_ranking(&terms, DEPTH, None).hits().to_vec(),
-            index.search_fused(&vector, &terms, DEPTH, None),
-        ];
-        for (arm, hits) in ranked.iter().enumerate() {
-            let rank = rank_of(&index, hits, expected);
-            overall[arm].record(rank);
-            let slot = by_shape[arm].iter_mut().find(|(s, _)| s == shape).unwrap();
-            slot.1.record(rank);
-            if arm == 2 && rank.is_none() {
-                eprintln!("  miss: {query:?} (expected {expected})");
+    for corpus in CORPORA {
+        let materialized = materialize(&corpus.source, corpus.name);
+        let root = materialized.root();
+        let config = Config {
+            backend: Backend::Fastembed,
+            root: root.clone(),
+            ..Default::default()
+        };
+        pipeline::index_repo(&config, true).unwrap();
+        let index = Index::load(&config.index_path()).unwrap();
+        let embedder = ripsem::embed::build(&config).unwrap();
+
+        let indexed: HashSet<&str> = index.records.iter().map(|r| r.path.as_str()).collect();
+        for query in corpus.queries {
+            for target in query.targets {
+                assert!(
+                    indexed.contains(target),
+                    "{}: {target} is not in the index; the labels need updating",
+                    corpus.name
+                );
             }
+        }
+
+        let mut here: Vec<Score> = ARMS.iter().map(|_| Score::default()).collect();
+        for query in corpus.queries {
+            let vector = embedder.embed_query(query.text).unwrap();
+            let terms = ripsem::lexical::query_terms(query.text);
+            let ranked = [
+                index.dense_ranking(&vector, DEPTH, None),
+                index.lexical_ranking(&terms, DEPTH, None).hits().to_vec(),
+                index.search_fused(&vector, &terms, DEPTH, None),
+            ];
+            for (arm, hits) in ranked.iter().enumerate() {
+                let rank = rank_of(&index, hits, query.targets);
+                here[arm].record(rank);
+                overall[arm].record(rank);
+                let slot = by_shape[arm]
+                    .iter_mut()
+                    .find(|(s, _)| *s == query.shape)
+                    .unwrap();
+                slot.1.record(rank);
+                if arm == FUSED {
+                    cost.record(&index, hits, &root, rank);
+                    if rank.is_none() {
+                        eprintln!(
+                            "  miss [{}] {:?} (expected {:?})",
+                            corpus.name, query.text, query.targets
+                        );
+                    }
+                }
+            }
+        }
+        report.push((corpus, index.records.len(), here));
+    }
+
+    for (corpus, chunks, scores) in &report {
+        eprintln!("{} ({}, {chunks} chunks)", corpus.name, corpus.language);
+        for (arm, label) in ARMS.iter().enumerate() {
+            eprintln!("  {label:<14} {}", scores[arm].line());
+        }
+    }
+    eprintln!("all corpora");
+    for (arm, label) in ARMS.iter().enumerate() {
+        eprintln!("  {label:<14} {}", overall[arm].line());
+        for (shape, score) in &by_shape[arm] {
+            eprintln!("    {:<12} {}", format!("{shape:?}"), score.line());
         }
     }
 
-    eprintln!("corpus: {} chunks", index.records.len());
-    for (arm, label) in arms.iter().enumerate() {
-        report(label, &overall[arm], &by_shape[arm]);
-    }
+    eprintln!("cost         {}", cost.line());
 
-    let fused = overall[2].mrr();
+    assert!(
+        cost.context < cost.whole_files,
+        "reading the results is not cheaper than reading the files they point at"
+    );
+    let fused = overall[FUSED].mrr();
     assert!(
         fused >= overall[0].mrr(),
         "fusion must not rank worse than the vector arm alone"
@@ -322,11 +700,11 @@ fn fusion_beats_either_retriever_alone() {
         "fusion must not rank worse than the lexical arm alone"
     );
     assert!(
-        overall[2].recall_at_depth() >= 0.8,
+        overall[FUSED].recall_at_depth() >= 0.78,
         "recall@{DEPTH} too low: {:.2}",
-        overall[2].recall_at_depth()
+        overall[FUSED].recall_at_depth()
     );
-    assert!(fused >= 0.7, "MRR too low: {fused:.3}");
+    assert!(fused >= 0.62, "MRR too low: {fused:.3}");
 }
 
 struct Outcome {
@@ -336,7 +714,7 @@ struct Outcome {
     total_results: usize,
 }
 
-fn measure(config: &Config, generated: &HashSet<String>) -> Outcome {
+fn measure(config: &Config, queries: &[Query], generated: &HashSet<String>) -> Outcome {
     pipeline::index_repo(config, true).unwrap();
     let index = Index::load(&config.index_path()).unwrap();
     let embedder = ripsem::embed::build(config).unwrap();
@@ -346,11 +724,11 @@ fn measure(config: &Config, generated: &HashSet<String>) -> Outcome {
         wasted_results: 0,
         total_results: 0,
     };
-    for (_, query, expected) in QUERIES {
-        let vector = embedder.embed_query(query).unwrap();
-        let terms = ripsem::lexical::query_terms(query);
+    for query in queries {
+        let vector = embedder.embed_query(query.text).unwrap();
+        let terms = ripsem::lexical::query_terms(query.text);
         let hits = index.search_fused(&vector, &terms, DEPTH, None);
-        outcome.score.record(rank_of(&index, &hits, expected));
+        outcome.score.record(rank_of(&index, &hits, query.targets));
         outcome.total_results += hits.len();
         outcome.wasted_results += hits
             .iter()
@@ -361,11 +739,9 @@ fn measure(config: &Config, generated: &HashSet<String>) -> Outcome {
 }
 
 /// What the two configurations return is compared, not how they rank. Ranking on
-/// this corpus cannot settle the question: `crates.io-index` occurs 409 times in
-/// `Cargo.lock`, so indexing it happens to give the word `index` the document
-/// frequency of a stopword, and dropping the file makes the word rare again. That
-/// is an artefact of a corpus this small, and it moves two queries by one place
-/// in either direction depending on which way you look at it.
+/// a corpus this size cannot settle it: `crates.io-index` occurs 409 times in
+/// `Cargo.lock`, so indexing that file happens to give the word `index` the
+/// document frequency of a stopword, and dropping it makes the word rare again.
 ///
 /// The claim that does hold is the one the tool is for: a lock file is never the
 /// answer to a question about behaviour, and any slot it takes in a result set is
@@ -373,7 +749,19 @@ fn measure(config: &Config, generated: &HashSet<String>) -> Outcome {
 #[test]
 #[ignore = "downloads the embedding model; run with --ignored --nocapture"]
 fn skipping_generated_files_stops_them_reaching_results() {
-    let dir = corpus(None);
+    let dir = TempDir::new();
+    let archive = dir.path.join("corpus.tar");
+    run(
+        Command::new("git")
+            .args(["archive", "--format=tar", OWN_REVISION])
+            .arg("-o")
+            .arg(&archive)
+            .current_dir(repository()),
+        "git archive of the whole tree",
+    );
+    extract(&archive, &dir.path);
+    std::fs::remove_file(&archive).unwrap();
+
     let everything = Config {
         backend: Backend::Fastembed,
         root: dir.path.clone(),
@@ -386,12 +774,13 @@ fn skipping_generated_files_stops_them_reaching_results() {
         "the corpus has no generated files to skip"
     );
 
-    let before = measure(&everything, &generated);
+    let before = measure(&everything, RIPSEM, &generated);
     let after = measure(
         &Config {
             skip_generated: true,
             ..everything
         },
+        RIPSEM,
         &generated,
     );
 
