@@ -118,48 +118,77 @@ everything written by hand: in this repository `Cargo.lock` alone accounted for
 
 ## Quality
 
-The benchmark asks the same corpus 21 labelled questions in four shapes — a
-description in the reader's own words, an identifier typed from memory, a message
-seen in output, and a name remembered wrong — and scores each retriever against
-ground-truth files:
+The benchmark asks 73 labelled questions across four real projects in four
+languages, in four shapes — a description in the reader's own words, an identifier
+typed from memory, a message seen in output, and a name remembered wrong — and
+scores each retriever against ground-truth files:
 
 ```
 cargo test --release --features fastembed,treesitter \
   --test retrieval_quality -- --ignored --nocapture
 ```
 
-The corpus is ripsem's own source pinned to the `corpus/v1` tag and materialised
-with `git archive`, so it does not move as the code does and two runs differ only
-by what changed in retrieval. It needs the embedding model, so it is `#[ignore]`d
-out of the normal run.
+Every corpus is pinned: ripsem's own source at the `corpus/v1` tag, and three
+projects at release tags, cloned once into `target/corpora`. Nothing moves as the
+code moves, so two runs differ only by what changed in retrieval. The first run
+needs network and the embedding model, so it is `#[ignore]`d out of the normal
+run.
 
-| retriever | MRR | description | identifier | message | recalled name |
+| corpus | language | chunks | vector only | lexical only | merged |
 | --- | --- | --- | --- | --- | --- |
-| vector only | 0.587 | 0.573 | 0.792 | 0.444 | 0.417 |
-| lexical only | 0.718 | 0.469 | 1.000 | 1.000 | 0.583 |
-| merged | **0.754** | **0.688** | 1.000 | 0.778 | 0.500 |
+| ripsem | Rust | 109 | 0.587 | 0.718 | **0.754** |
+| requests v2.34.2 | Python | 612 | **0.747** | 0.531 | 0.713 |
+| mux v1.8.1 | Go | 257 | 0.326 | 0.590 | **0.681** |
+| got v14.4.5 | TypeScript | 757 | 0.438 | 0.458 | **0.567** |
+| all | | 1735 | 0.547 | 0.575 | **0.679** |
 
-Two things are worth reading off this table. BM25 alone beats the embedding model
-alone on real code, so a search built only on vectors is leaving the stronger
-signal on the floor. And neither arm is enough: vectors win where the words don't
-match, lexical wins where they do, and only merging them is good at both.
+| query shape | vector only | lexical only | merged |
+| --- | --- | --- | --- |
+| description (28) | 0.429 | 0.354 | **0.551** |
+| identifier (22) | 0.731 | 0.714 | **0.811** |
+| message (9) | 0.519 | **1.000** | 0.870 |
+| recalled name (14) | 0.514 | 0.524 | **0.607** |
 
-A second benchmark indexes the whole repository at that revision instead of `src`
-alone, and compares what the two `skip_generated` settings return. Indexing the
-lock file put a machine-written chunk in 6 of 105 result slots, and cost 291
-chunks against 167, 386 KB against 237 KB, and 16.4 s against 10.0 s to build.
-Ranking is deliberately not part of that claim: `crates.io-index` occurs 409 times
-in `Cargo.lock`, so indexing it hands the word `index` the document frequency of a
-stopword, and a corpus this small cannot separate that accident from the change
-being measured.
+The per-corpus column is why more than one project is measured. Which arm is
+stronger *reverses* between them: BM25 wins on Go and on Rust, the embedding model
+wins decisively on Python, and on TypeScript they are level. An earlier version of
+this file claimed BM25 beats the model on real code — that held for the one
+repository being measured and is false in general.
 
-The honest gaps: a name remembered wrong is still served better by the lexical
-arm alone, and `models` does not find `ModelInfo` because nothing folds plurals.
-Two ideas were tried and are not in the code: a trailing-`s` plural rule measured
-worse (0.746), and weighting the declared name above the rest of a chunk moved a
-single query in and out of first place (0.754 at weights 1–3, 0.778 at 6–10,
-0.754 again at 20–40) — a bump, not a trend, and not enough to tune a constant
-on.
+So the case for merging is not that it wins every corpus; on `requests` it costs
+0.034 against the vector arm alone. The case is that nothing tells you in advance
+which arm a given repository and a given question will need, and merging is ahead
+of both wherever it is not ahead of one of them: +0.10 on the aggregate, and ahead
+on three shapes out of four.
+
+The same run measures what reaching the answer costs to read. Counting the
+snippets up to and including the first correct hit, a caller takes in **587 bytes
+to reach the answer, against 14 887 bytes for the whole file that answer lives in
+— 25× less**. Read that narrowly: it is the 61 of 73 questions answered inside the
+top five, and the comparison is against reading one file end to end, which is what
+happens when a search can only name a filename. It is not a model of what an agent
+really does, and it says nothing about the 12 questions no arm answered.
+
+A second benchmark compares what the two `skip_generated` settings return.
+Indexing the lock file put a machine-written chunk in 6 of 105 result slots, and
+cost 291 chunks against 167, 386 KB against 237 KB, and 16.4 s against 10.0 s to
+build. Ranking is deliberately not part of that claim: `crates.io-index` occurs
+409 times in `Cargo.lock`, so indexing it hands the word `index` the document
+frequency of a stopword, and one corpus cannot separate that accident from the
+change being measured.
+
+The honest gaps. A message seen in output is still served better by the lexical
+arm alone, 1.000 against 0.870: when several chunks contain every word of the
+query the merge falls back to how much the two arms agree, which gives the vector
+arm a vote it has not earned. Letting BM25 order that group instead was tried — it
+lifts messages to 0.926 and drops identifiers from 0.811 to 0.714, because a
+one-word query reaches full coverage in dozens of chunks and the tier stops
+meaning anything. Aggregate 0.652 against 0.679, so it is not in the code, and the
+gap stays open rather than being closed with a threshold tuned on nine queries.
+A name remembered wrong is the weakest shape for every retriever. `models` does not find `ModelInfo` because nothing folds plurals —
+a trailing-`s` rule was tried and measured worse. Weighting the declared name
+above the rest of a chunk moved a single query in and out of first place and was
+dropped as a bump rather than a trend.
 
 ## License
 
