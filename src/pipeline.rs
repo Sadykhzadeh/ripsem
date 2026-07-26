@@ -24,6 +24,7 @@ pub struct SearchHit {
     pub end_line: usize,
     pub score: f32,
     pub snippet: String,
+    pub symbol: Option<crate::symbol::Symbol>,
 }
 
 pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
@@ -301,6 +302,7 @@ impl Searcher {
             end_line: r.end_line,
             score,
             snippet: r.snippet.clone(),
+            symbol: r.symbol.clone(),
         }
     }
 }

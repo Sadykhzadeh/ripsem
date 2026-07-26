@@ -381,6 +381,8 @@ fn cmd_search(
                     "start_line": h.start_line,
                     "end_line": h.end_line,
                     "score": h.score,
+                    "kind": h.symbol.as_ref().map(|s| &s.kind),
+                    "symbol": h.symbol.as_ref().map(|s| &s.name),
                     "snippet": h.snippet,
                 })
             })
@@ -394,10 +396,20 @@ fn cmd_search(
         return Ok(());
     }
     for h in &hits {
-        println!(
-            "{}:{}-{}  ({:.3})",
-            h.path, h.start_line, h.end_line, h.score
-        );
+        match &h.symbol {
+            Some(s) => println!(
+                "{}:{}-{}  {}  ({:.3})",
+                h.path,
+                h.start_line,
+                h.end_line,
+                s.label(),
+                h.score
+            ),
+            None => println!(
+                "{}:{}-{}  ({:.3})",
+                h.path, h.start_line, h.end_line, h.score
+            ),
+        }
         for l in snippet_lines(&h.snippet, context) {
             println!("    {l}");
         }
@@ -513,6 +525,7 @@ mod tests {
             end_line: 2,
             score,
             snippet: "fn main() {}".into(),
+            symbol: None,
         }
     }
 
@@ -537,6 +550,7 @@ mod tests {
             end_line: 2,
             score,
             snippet: String::new(),
+            symbol: None,
         };
         let hits = vec![
             hit_at("src/a.rs", 0.9),
