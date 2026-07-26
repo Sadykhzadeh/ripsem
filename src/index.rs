@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::lexical::{TermHash, TermVector, Weights};
 use crate::quant::{self, QuantizedVector};
+use crate::symbol::Symbol;
 
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 
 const RRF_DAMPING: f32 = 60.0;
 const CANDIDATES_PER_RESULT: usize = 8;
@@ -24,6 +25,7 @@ pub struct Record {
     pub file_hash: u64,
     pub vector: QuantizedVector,
     pub terms: TermVector,
+    pub symbol: Option<Symbol>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -335,7 +337,8 @@ mod tests {
             snippet: text.into(),
             file_hash: 0,
             vector: quant::quantize(&vector),
-            terms: TermVector::new(text, path),
+            terms: TermVector::new(text, path, None),
+            symbol: None,
         }
     }
 
