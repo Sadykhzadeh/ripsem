@@ -140,17 +140,17 @@ run.
 | corpus | language | chunks | vector only | lexical only | merged |
 | --- | --- | --- | --- | --- | --- |
 | ripsem | Rust | 146 | 0.611 | 0.675 | **0.778** |
-| requests v2.34.2 | Python | 909 | 0.700 | 0.610 | **0.771** |
-| mux v1.8.1 | Go | 398 | 0.576 | 0.736 | **0.806** |
-| got v14.4.5 | TypeScript | 851 | 0.600 | 0.542 | **0.613** |
-| all | | 2304 | 0.627 | 0.631 | **0.735** |
+| requests v2.34.2 | Python | 909 | 0.700 | 0.610 | **0.796** |
+| mux v1.8.1 | Go | 398 | 0.576 | 0.736 | **0.875** |
+| got v14.4.5 | TypeScript | 851 | 0.600 | 0.542 | **0.729** |
+| all | | 2304 | 0.627 | 0.631 | **0.785** |
 
 | query shape | vector only | lexical only | merged |
 | --- | --- | --- | --- |
-| description (28) | 0.438 | 0.373 | **0.545** |
-| identifier (22) | 0.826 | 0.856 | **0.913** |
-| message (9) | 0.537 | **1.000** | 0.944 |
-| recalled name (14) | **0.750** | 0.554 | 0.702 |
+| description (28) | 0.438 | 0.373 | **0.595** |
+| identifier (22) | 0.826 | 0.856 | **0.924** |
+| message (9) | 0.537 | 1.000 | **1.000** |
+| recalled name (14) | 0.750 | 0.554 | **0.810** |
 
 The per-corpus column is why more than one project is measured. Which arm is
 stronger *reverses* between them: BM25 wins on Go and on Rust, the embedding model
@@ -158,12 +158,21 @@ wins on Python and TypeScript. An earlier version of this file claimed BM25 beat
 the model on real code — that held for the one repository being measured and is
 false in general.
 
-Merging is ahead on every corpus, by 0.04 to 0.06, and ahead on three query shapes
-of four. It is not free: on a name remembered wrong the vector arm alone scores
-0.750 against the merge's 0.702, because the lexical arm has little to say about a
-paraphrase and still gets a vote. Nothing tells you in advance which arm a given
-repository and a given question will need, which is the whole case for not having
-to choose.
+Merging is ahead on every corpus and on every query shape. Nothing tells you in
+advance which arm a given repository and a given question will need, which is the
+whole case for not having to choose.
+
+Results that belong to a declaration are ranked above results that do not, and
+that one rule is worth 0.05 of the aggregate on its own. It came out of reading
+the questions the merge got wrong rather than from a theory: on those, more than
+half the returned results were changelogs, documentation, manifests and tests.
+Both retrievers prefer them honestly — a paragraph of prose answers a prose
+question more closely than the function that implements it — and free prose is not
+what a code search is for. Documentation attached to a declaration carries that
+declaration's symbol and is unaffected; a repository the parser cannot read has no
+declarations at all and still gets its results. The caveat to hold onto: every
+label in this benchmark names a source file, so a rule preferring source is
+rewarded partly by construction, and the number overstates how general it is.
 
 The default model is a measurement, not a guess. Three models over the same 73
 questions:
@@ -217,12 +226,12 @@ lexical arm already answers well and hurts the shape where the model is the only
 arm that can answer at all, and descriptions are 28 of the 73 questions.
 
 The same run measures what reaching the answer costs to read. Counting the
-snippets up to and including the first correct hit, a caller takes in **479 bytes
-to reach the answer, against 14 733 bytes for the whole file that answer lives in
-— 31× less**. Read that narrowly: it is the 63 of 73 questions answered inside the
+snippets up to and including the first correct hit, a caller takes in **439 bytes
+to reach the answer, against 14 410 bytes for the whole file that answer lives in
+— 33× less**. Read that narrowly: it is the 65 of 73 questions answered inside the
 top five, and the comparison is against reading one file end to end, which is what
 happens when a search can only name a filename. It is not a model of what an agent
-really does, and it says nothing about the 10 questions no arm answered.
+really does, and it says nothing about the 8 questions no arm answered.
 
 A second benchmark compares what the two `skip_generated` settings return.
 Indexing the lock file put a machine-written chunk in 6 of 105 result slots, and
@@ -232,23 +241,22 @@ build. Ranking is deliberately not part of that claim: `crates.io-index` occurs
 frequency of a stopword, and one corpus cannot separate that accident from the
 change being measured.
 
-The honest gaps. On two shapes the merge is beaten by one arm on its own: messages
-by the lexical arm, 1.000 against 0.944, and remembered names by the vector arm,
-0.750 against 0.702. Rank fusion counts a hit's absence from an arm as evidence
-against it, so an arm with nothing to say still votes down what the other found.
+The honest gaps. A description in the reader's own words remains the weakest shape
+at 0.595, and eight questions are still unanswered inside the top five. Only one
+of those is a retrieval failure — a chunk no arm surfaces at any depth; the rest
+are ranked somewhere below five.
 
-Two repairs were measured and neither is in the code. Ordering the
-complete-coverage group by BM25 lifts messages and drops identifiers from 0.811 to
-0.714, because a one-word query reaches full coverage in dozens of chunks and the
-group stops meaning anything. Weighting the lexical arm by how much of the query
-it could anchor anywhere in the corpus does exactly what it was predicted to do —
-identifiers and messages unchanged, since their coverage is complete by
-construction, and remembered names up from 0.702 to 0.726 — and then loses the same
-amount on descriptions, 0.545 to 0.524, for a net 0.732 against 0.735. Partial
-coverage turns out to be evidence rather than ignorance: a description whose words
-half-match is still being helped by the lexical arm, and no measure taken from one
-arm alone separates that from a paraphrase the arm cannot follow. The gap stays
-open rather than being closed with a floor fitted to 73 queries. `models` does not find `ModelInfo` because nothing folds plurals —
+Two attempts at the ranking are recorded because they failed instructively.
+Ordering the complete-coverage group by BM25 lifts messages and drops identifiers
+from 0.811 to 0.714, because a one-word query reaches full coverage in dozens of
+chunks and the group stops meaning anything. Weighting the lexical arm by how much
+of the query it could anchor did exactly what it was predicted to do — identifiers
+and messages unchanged, remembered names up from 0.702 to 0.726 — and lost the same
+amount on descriptions, 0.545 to 0.524. Partial coverage is evidence rather than
+ignorance: a description whose words half-match is still being helped by the
+lexical arm, and no measure taken from one arm alone separates that from a
+paraphrase the arm cannot follow. Both were reverted; what fixed the shapes they
+were aimed at was reading the failures and finding prose in the results. `models` does not find `ModelInfo` because nothing folds plurals —
 a trailing-`s` rule was tried and measured worse. Weighting the declared name
 above the rest of a chunk moved a single query in and out of first place and was
 dropped as a bump rather than a trend.

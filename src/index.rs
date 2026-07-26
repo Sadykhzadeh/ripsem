@@ -197,6 +197,7 @@ impl Index {
                 Candidate {
                     record_idx,
                     agreement,
+                    declares_something: record.symbol.is_some(),
                     cosine: quant::dot(&record.vector, query),
                     coverage: match lexical.terms.is_empty() {
                         true => 0.0,
@@ -257,6 +258,7 @@ struct Candidate {
     agreement: f32,
     cosine: f32,
     coverage: f32,
+    declares_something: bool,
 }
 
 impl Candidate {
@@ -272,9 +274,17 @@ impl Candidate {
         self.cosine.max(self.coverage)
     }
 
+    /// A chunk that belongs to a declaration outranks one that does not. Asked
+    /// about behaviour, both retrievers legitimately prefer prose — a changelog
+    /// entry or a paragraph of documentation says the words of the question back
+    /// more closely than the function that implements it — and on the questions
+    /// this misses, more than half the results were documentation, manifests and
+    /// tests. Free prose is not what a code search is for. Documentation attached
+    /// to a declaration carries that declaration's symbol and is unaffected.
     fn rank(a: &Self, b: &Self) -> Ordering {
-        b.holds_every_term()
-            .cmp(&a.holds_every_term())
+        b.declares_something
+            .cmp(&a.declares_something)
+            .then_with(|| b.holds_every_term().cmp(&a.holds_every_term()))
             .then_with(|| {
                 b.agreement
                     .partial_cmp(&a.agreement)
@@ -470,6 +480,46 @@ mod tests {
             end_line: end,
             ..text_record(path, path, vector)
         }
+    }
+
+    #[test]
+    fn a_declaration_outranks_free_prose_that_matches_better() {
+        let mut index = Index::new(3, "test".into());
+        let mut prose = text_record("HISTORY.md", "get and post helpers", vec![1.0, 0.0, 0.0]);
+        prose.symbol = None;
+        let mut code = text_record("api.py", "def get(url)", vec![0.6, 0.8, 0.0]);
+        code.symbol = Some(Symbol {
+            kind: "fn".into(),
+            name: "get".into(),
+        });
+        index.records.push(prose);
+        index.records.push(code);
+
+        let hits = index.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(
+            index.records[hits[0].record_idx].path, "api.py",
+            "the closer match is a changelog, and a code search is not for those"
+        );
+    }
+
+    /// Ranking prose below code must not mean losing it: a repository the parser
+    /// cannot read has no declarations at all, and its results still have to come.
+    #[test]
+    fn prose_still_fills_the_results_when_there_is_no_code() {
+        let mut index = Index::new(3, "test".into());
+        for i in 0..4 {
+            let mut record = text_record(
+                "notes.md",
+                "retry backoff",
+                vec![1.0 - i as f32 * 0.1, 0.0, 0.0],
+            );
+            record.symbol = None;
+            record.start_line = i * 10 + 1;
+            record.end_line = i * 10 + 5;
+            index.records.push(record);
+        }
+
+        assert_eq!(index.search(&[1.0, 0.0, 0.0], 3).len(), 3);
     }
 
     #[test]
