@@ -65,14 +65,14 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
 fn tool_schema() -> Value {
     json!({
         "name": "search",
-        "description": "Semantic search over this codebase; describe what you want in plain language and get back ranked code snippets with file paths and line ranges.",
+        "description": "Find code in this repository. Handles both exact terms (identifiers, error strings, constants) and plain-language descriptions of behaviour in the same call, and returns ranked snippets with file paths and line ranges. Prefer this over grepping and reading whole files: it costs one call instead of guessing at the author's wording.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": { "type": "string", "description": "Plain-language description of the code or behavior you want to find." },
+                "query": { "type": "string", "description": "What you are looking for: an identifier, an error message, or a description of the behaviour." },
                 "path": { "type": "string", "description": "Optional subdirectory (relative to the repo) to limit results to, e.g. 'src/embed'." },
                 "limit": { "type": "integer", "description": "Maximum number of results (default 5)." },
-                "min_score": { "type": "number", "description": "Drop hits scoring below this (0–1). Default: no filter." }
+                "min_score": { "type": "number", "description": "Drop hits below this confidence (0–1): semantic similarity, or the share of query terms found literally, whichever is higher. Default: no filter." }
             },
             "required": ["query"]
         }
@@ -129,7 +129,6 @@ fn handle_call(
     match result {
         Ok(hits) => {
             let hits = apply_min_score(hits, min_score);
-            let hits = dedup_overlapping(hits);
             ok(id, tool_result(&hits))
         }
         Err(e) => ok(
@@ -173,29 +172,6 @@ fn apply_min_score(hits: Vec<pipeline::SearchHit>, min: Option<f32>) -> Vec<pipe
     }
 }
 
-/// Remove lower-scored hits that overlap with a higher-scored hit from the same
-/// file. Two hits overlap when their `[start_line, end_line]` ranges share at
-/// least one line. Hits are expected to arrive in descending score order; the
-/// first (highest-scored) hit for any overlapping pair wins. Non-overlapping
-/// hits from the same file and hits from different files are always kept.
-fn dedup_overlapping(hits: Vec<pipeline::SearchHit>) -> Vec<pipeline::SearchHit> {
-    // Track the kept ranges per file as (start, end) pairs.
-    let mut kept_ranges: std::collections::HashMap<String, Vec<(usize, usize)>> =
-        std::collections::HashMap::new();
-    let mut out = Vec::with_capacity(hits.len());
-    for h in hits {
-        let ranges = kept_ranges.entry(h.path.clone()).or_default();
-        let overlaps = ranges
-            .iter()
-            .any(|&(s, e)| h.start_line <= e && h.end_line >= s);
-        if !overlaps {
-            ranges.push((h.start_line, h.end_line));
-            out.push(h);
-        }
-    }
-    out
-}
-
 fn tool_result(hits: &[pipeline::SearchHit]) -> Value {
     if hits.is_empty() {
         return json!({
@@ -205,10 +181,11 @@ fn tool_result(hits: &[pipeline::SearchHit]) -> Value {
     }
     let mut text = String::new();
     for h in hits {
-        text.push_str(&format!(
-            "{}:{}-{}\n{}\n",
-            h.path, h.start_line, h.end_line, h.snippet
-        ));
+        text.push_str(&format!("{}:{}-{}", h.path, h.start_line, h.end_line));
+        if let Some(symbol) = &h.symbol {
+            text.push_str(&format!(" {}", symbol.label()));
+        }
+        text.push_str(&format!("\n{}\n", h.snippet));
     }
     json!({
         "content": [{ "type": "text", "text": text.trim_end() }],
@@ -304,6 +281,7 @@ mod tests {
             end_line: 4,
             score: 0.5,
             snippet: "fn main() {}".into(),
+            symbol: None,
         }];
         let value = tool_result(&hits);
         let text = value["content"][0]["text"].as_str().unwrap();
@@ -314,6 +292,29 @@ mod tests {
         assert_eq!(value["isError"], false);
     }
 
+    #[test]
+    fn result_text_names_the_declaration_when_known() {
+        let hits = vec![pipeline::SearchHit {
+            path: "src/pipeline.rs".into(),
+            start_line: 258,
+            end_line: 293,
+            score: 0.8,
+            snippet: "let qv = self.embedder()?".into(),
+            symbol: Some(crate::symbol::Symbol {
+                kind: "fn".into(),
+                name: "Searcher::query_scoped".into(),
+            }),
+        }];
+        let text = tool_result(&hits)["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            text.contains("src/pipeline.rs:258-293 fn Searcher::query_scoped"),
+            "got: {text}"
+        );
+    }
+
     fn make_hit(path: &str, start: usize, end: usize, score: f32) -> pipeline::SearchHit {
         pipeline::SearchHit {
             path: path.into(),
@@ -321,37 +322,8 @@ mod tests {
             end_line: end,
             score,
             snippet: "x".into(),
+            symbol: None,
         }
-    }
-
-    #[test]
-    fn dedup_overlapping_keeps_higher_scored_hit() {
-        // Two hits in the same file with overlapping ranges: only the first
-        // (higher-scored) should survive.
-        let hits = vec![
-            make_hit("a.rs", 1, 10, 0.9),
-            make_hit("a.rs", 8, 15, 0.7), // overlaps [1,10] at lines 8-10
-        ];
-        let out = dedup_overlapping(hits);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].start_line, 1);
-        assert_eq!(out[0].score, 0.9);
-    }
-
-    #[test]
-    fn dedup_overlapping_keeps_non_overlapping_same_file_hits() {
-        // Two hits in the same file but non-overlapping ranges: both kept.
-        let hits = vec![make_hit("a.rs", 1, 5, 0.9), make_hit("a.rs", 6, 10, 0.7)];
-        let out = dedup_overlapping(hits);
-        assert_eq!(out.len(), 2);
-    }
-
-    #[test]
-    fn dedup_overlapping_keeps_different_file_hits() {
-        // Identical ranges but different files: both kept.
-        let hits = vec![make_hit("a.rs", 1, 10, 0.9), make_hit("b.rs", 1, 10, 0.8)];
-        let out = dedup_overlapping(hits);
-        assert_eq!(out.len(), 2);
     }
 
     #[test]
@@ -424,23 +396,48 @@ mod tests {
         let hit_count = text.matches(':').count();
         assert!(hit_count <= 3, "too many hits for limit=3: {text}");
 
-        // Verify min_score filtering: a very high threshold should yield no hits.
-        let strict_request = json!({
-            "jsonrpc": "2.0",
-            "id": 43,
-            "method": "tools/call",
-            "params": {
-                "name": "search",
-                "arguments": { "query": "verify password session token", "min_score": 0.9999 }
-            }
-        });
-        let strict_resp = handle(&config, Some(&searcher), &strict_request).unwrap();
-        let strict_text = strict_resp["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap();
+        // min_score gates on confidence, so a chunk holding every query term
+        // survives even the strictest threshold.
+        let certain = handle(
+            &config,
+            Some(&searcher),
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 43,
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": { "query": "verify password session token", "min_score": 1.0 }
+                }
+            }),
+        )
+        .unwrap();
+        assert!(
+            certain["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("auth.rs"),
+            "a chunk containing every query term is a certain match"
+        );
+
+        // A query the corpus cannot answer is filtered out instead.
+        let unrelated = handle(
+            &config,
+            Some(&searcher),
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 44,
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": { "query": "quantum chromodynamics lattice", "min_score": 0.5 }
+                }
+            }),
+        )
+        .unwrap();
         assert_eq!(
-            strict_text, "No matches.",
-            "expected no matches with min_score=0.9999"
+            unrelated["result"]["content"][0]["text"].as_str().unwrap(),
+            "No matches."
         );
     }
 }
