@@ -7,6 +7,21 @@ use ignore::overrides::OverrideBuilder;
 
 use crate::config::Config;
 
+/// Committed, but written by a machine. Nobody asking where the code that does
+/// something lives means a lock file or a minified bundle, and a single lock file
+/// can outnumber every hand-written file in the repository put together.
+/// `.gitignore` does not cover these because they are deliberately committed.
+const GENERATED: &[&str] = &[
+    "*.lock",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "packages.lock.json",
+    "go.sum",
+    "*.min.js",
+    "*.min.css",
+    "*.map",
+];
+
 pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
     let max_bytes = config.max_file_kb.saturating_mul(1024);
     let mut builder = WalkBuilder::new(&config.root);
@@ -18,9 +33,18 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
         .git_exclude(true)
         .add_custom_ignore_filename(".ripsemignore");
 
-    if !config.exclude.is_empty() {
+    let defaults = match config.skip_generated {
+        true => GENERATED,
+        false => &[],
+    };
+    if !config.exclude.is_empty() || !defaults.is_empty() {
         let mut overrides = OverrideBuilder::new(&config.root);
-        for pattern in &config.exclude {
+        for pattern in config
+            .exclude
+            .iter()
+            .map(String::as_str)
+            .chain(defaults.iter().copied())
+        {
             overrides
                 .add(&format!("!{pattern}"))
                 .with_context(|| format!("invalid exclude pattern '{pattern}'"))?;
@@ -38,10 +62,7 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
             continue;
         }
         let path = entry.into_path();
-        if path
-            .components()
-            .any(|c| matches!(c.as_os_str().to_str(), Some(".ripsem") | Some(".git")))
-        {
+        if is_internal(&path, &config.root) {
             continue;
         }
         if is_indexable(&path, max_bytes) {
@@ -49,6 +70,17 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(out)
+}
+
+/// ripsem's own index and git's object store are never source. The check is
+/// against the path *below the root*: an absolute-path check would refuse to
+/// index a repository that merely happens to live inside a directory called
+/// `.ripsem` or `.git`.
+fn is_internal(path: &Path, root: &Path) -> bool {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .any(|c| matches!(c.as_os_str().to_str(), Some(".ripsem") | Some(".git")))
 }
 
 fn is_indexable(path: &Path, max_bytes: u64) -> bool {
@@ -82,6 +114,13 @@ mod tests {
         }
     }
 
+    fn names(paths: &[PathBuf]) -> Vec<String> {
+        paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
     #[test]
     fn collects_text_and_skips_binary() {
         let dir = TempDir::new();
@@ -89,12 +128,7 @@ mod tests {
         dir.write("blob.bin", "head\0\0\0\u{1}\u{2}tail");
         dir.write("empty.txt", "");
 
-        let names: Vec<String> = collect(&config_at(dir.path()))
-            .unwrap()
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-
+        let names = names(&collect(&config_at(dir.path())).unwrap());
         assert!(names.contains(&"keep.rs".to_string()));
         assert!(!names.contains(&"blob.bin".to_string()));
         assert!(!names.contains(&"empty.txt".to_string()));
@@ -117,6 +151,27 @@ mod tests {
     }
 
     #[test]
+    fn indexes_a_repository_that_lives_under_a_dot_ripsem_directory() {
+        let dir = TempDir::new();
+        dir.write(".ripsem/corpora/project/main.rs", "fn main() {}\n");
+        let root = dir.path().join(".ripsem/corpora/project");
+
+        assert_eq!(names(&collect(&config_at(&root)).unwrap()), ["main.rs"]);
+    }
+
+    #[test]
+    fn skips_the_index_directory_inside_the_root() {
+        let dir = TempDir::new();
+        dir.write("main.rs", "fn main() {}\n");
+        dir.write(".ripsem/config.toml", "model = \"x\"\n");
+
+        assert_eq!(
+            names(&collect(&config_at(dir.path())).unwrap()),
+            ["main.rs"]
+        );
+    }
+
+    #[test]
     fn applies_config_exclude_globs() {
         let dir = TempDir::new();
         dir.write("keep.rs", "fn main() {}\n");
@@ -124,13 +179,36 @@ mod tests {
         let mut config = config_at(dir.path());
         config.exclude = vec!["*.lock".into()];
 
-        let names: Vec<String> = collect(&config)
-            .unwrap()
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
+        let names = names(&collect(&config).unwrap());
         assert!(names.contains(&"keep.rs".to_string()));
         assert!(!names.contains(&"Cargo.lock".to_string()));
+    }
+
+    #[test]
+    fn skips_generated_files_without_configuration() {
+        let dir = TempDir::new();
+        dir.write("keep.rs", "fn main() {}\n");
+        dir.write("Cargo.lock", "version = 3\n");
+        dir.write("package-lock.json", "{\"lockfileVersion\": 3}\n");
+        dir.write("go.sum", "example.com/mod v1.0.0 h1:abc=\n");
+        dir.write("app.min.js", "function a(){return 1}\n");
+        dir.write("app.js.map", "{\"version\":3}\n");
+
+        assert_eq!(
+            names(&collect(&config_at(dir.path())).unwrap()),
+            ["keep.rs"]
+        );
+    }
+
+    #[test]
+    fn generated_files_are_indexed_when_the_default_is_turned_off() {
+        let dir = TempDir::new();
+        dir.write("keep.rs", "fn main() {}\n");
+        dir.write("Cargo.lock", "version = 3\n");
+        let mut config = config_at(dir.path());
+        config.skip_generated = false;
+
+        assert!(names(&collect(&config).unwrap()).contains(&"Cargo.lock".to_string()));
     }
 
     #[test]
@@ -148,11 +226,6 @@ mod tests {
         let mut config = config_at(dir.path());
         config.max_file_kb = 1;
 
-        let names: Vec<String> = collect(&config)
-            .unwrap()
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        assert!(!names.contains(&"big.txt".to_string()));
+        assert!(!names(&collect(&config).unwrap()).contains(&"big.txt".to_string()));
     }
 }

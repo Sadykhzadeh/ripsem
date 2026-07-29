@@ -48,9 +48,10 @@ pub enum Command {
         /// `--json`, which always returns the full snippet.
         #[arg(long, value_name = "LINES", default_value_t = 3)]
         context: usize,
-        /// Drop hits whose cosine score is below this threshold, keeping only
-        /// confident matches. Absent means no filtering. Applies to both the
-        /// human and `--json` output.
+        /// Drop hits whose confidence is below this threshold, keeping only
+        /// strong matches. Confidence is 0–1: semantic similarity, or the share
+        /// of the query's terms found literally, whichever is higher. Absent
+        /// means no filtering. Applies to both the human and `--json` output.
         #[arg(long, value_name = "SCORE")]
         min_score: Option<f32>,
         /// Summarise as one line per file with its hit count (sorted by count),
@@ -149,6 +150,7 @@ struct IndexFacts {
     size_bytes: u64,
     chunks: usize,
     files: usize,
+    named: usize,
     ann: bool,
     index_model: String,
     stale: bool,
@@ -172,6 +174,7 @@ fn status_json(
             "size_bytes": f.size_bytes,
             "chunks": f.chunks,
             "files": f.files,
+            "named": f.named,
             "ann": f.ann,
             "model": f.index_model,
             "stale": f.stale,
@@ -207,6 +210,7 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
                     size_bytes: size,
                     chunks: index.records.len(),
                     files: files.len(),
+                    named: index.records.iter().filter(|r| r.symbol.is_some()).count(),
                     ann: index.ann.is_some(),
                     index_model: index.model.clone(),
                     stale: index.model != config.model,
@@ -243,6 +247,7 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
         (Some(f), _) => {
             println!("index:  {} ({})", f.path, human_size(f.size_bytes));
             println!("chunks: {} across {} files", f.chunks, f.files);
+            println!("named:  {} chunks carry a declaration", f.named);
             if f.ann {
                 println!("ann:    present (approximate search)");
             }
@@ -376,6 +381,8 @@ fn cmd_search(
                     "start_line": h.start_line,
                     "end_line": h.end_line,
                     "score": h.score,
+                    "kind": h.symbol.as_ref().map(|s| &s.kind),
+                    "symbol": h.symbol.as_ref().map(|s| &s.name),
                     "snippet": h.snippet,
                 })
             })
@@ -389,10 +396,20 @@ fn cmd_search(
         return Ok(());
     }
     for h in &hits {
-        println!(
-            "{}:{}-{}  ({:.3})",
-            h.path, h.start_line, h.end_line, h.score
-        );
+        match &h.symbol {
+            Some(s) => println!(
+                "{}:{}-{}  {}  ({:.3})",
+                h.path,
+                h.start_line,
+                h.end_line,
+                s.label(),
+                h.score
+            ),
+            None => println!(
+                "{}:{}-{}  ({:.3})",
+                h.path, h.start_line, h.end_line, h.score
+            ),
+        }
         for l in snippet_lines(&h.snippet, context) {
             println!("    {l}");
         }
@@ -508,6 +525,7 @@ mod tests {
             end_line: 2,
             score,
             snippet: "fn main() {}".into(),
+            symbol: None,
         }
     }
 
@@ -532,6 +550,7 @@ mod tests {
             end_line: 2,
             score,
             snippet: String::new(),
+            symbol: None,
         };
         let hits = vec![
             hit_at("src/a.rs", 0.9),
@@ -579,6 +598,7 @@ mod tests {
             size_bytes: 2048,
             chunks: 12,
             files: 3,
+            named: 9,
             ann: true,
             index_model: "bge-small-en-v1.5".into(),
             stale: false,
@@ -592,6 +612,7 @@ mod tests {
         assert_eq!(v["index"]["present"], true);
         assert_eq!(v["index"]["chunks"], 12);
         assert_eq!(v["index"]["files"], 3);
+        assert_eq!(v["index"]["named"], 9);
         assert_eq!(v["index"]["ann"], true);
         assert_eq!(v["index"]["stale"], false);
     }

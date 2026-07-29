@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -5,9 +6,15 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::lexical::{TermHash, TermVector, Weights};
 use crate::quant::{self, QuantizedVector};
+use crate::symbol::Symbol;
 
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 6;
+
+const RRF_DAMPING: f32 = 60.0;
+const CANDIDATES_PER_RESULT: usize = 8;
+const MIN_CANDIDATES: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
@@ -17,6 +24,8 @@ pub struct Record {
     pub snippet: String,
     pub file_hash: u64,
     pub vector: QuantizedVector,
+    pub terms: TermVector,
+    pub symbol: Option<Symbol>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -29,6 +38,7 @@ pub struct Index {
     pub ann: Option<Vec<u8>>,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct Hit {
     pub score: f32,
     pub record_idx: usize,
@@ -84,46 +94,38 @@ impl Index {
     }
 
     pub fn search_scoped(&self, query: &[f32], k: usize, prefix: Option<&str>) -> Vec<Hit> {
-        self.search_hybrid(query, &[], 0.0, k, prefix)
+        self.search_fused(query, &[], k, prefix)
     }
 
-    pub fn search_hybrid(
+    pub fn search_fused(
         &self,
         query: &[f32],
-        terms: &[String],
-        boost: f32,
+        terms: &[TermHash],
         k: usize,
         prefix: Option<&str>,
     ) -> Vec<Hit> {
-        // When there is no lexical boost, a single pass suffices.
-        if boost == 0.0 || terms.is_empty() {
-            let mut scored: Vec<Hit> = self
-                .records
-                .par_iter()
-                .enumerate()
-                .filter(|(_, r)| prefix.is_none_or(|p| path_in_scope(&r.path, p)))
-                .map(|(i, r)| Hit {
-                    score: quant::dot(&r.vector, query),
-                    record_idx: i,
-                })
-                .collect();
-            sort_and_truncate(&mut scored, k);
-            return scored;
-        }
+        let depth = candidate_depth(k);
+        let dense = self.dense_ranking(query, depth, prefix);
+        let lexical = self.lexical_ranking(terms, depth, prefix);
+        self.fuse(&dense, &lexical, query, k)
+    }
 
-        // Two-phase: vector-only pre-filter to top-M, then apply lexical boost
-        // only to those M candidates.
-        //
-        // Safety margin: M is large enough that the lexical boost (≤ `boost`,
-        // typically 0.1) cannot promote a record from outside top-M into the
-        // final top-k. For the guarantee to hold, the (M+1)-th vector-only score
-        // must exceed the k-th full score by more than `boost`. In practice
-        // M = max(k*8, 64) is a generous buffer that preserves ranking quality
-        // while reducing lexical work by 2–3 orders of magnitude on large corpora.
-        let m = k.saturating_mul(8).max(64);
+    /// Fuse an externally produced dense ranking — the approximate-nearest-
+    /// neighbour graph's candidates — with a full lexical scan, so switching to
+    /// the graph changes only how the dense arm is found, not how results rank.
+    pub fn search_fused_with(
+        &self,
+        dense: &[Hit],
+        query: &[f32],
+        terms: &[TermHash],
+        k: usize,
+    ) -> Vec<Hit> {
+        let lexical = self.lexical_ranking(terms, candidate_depth(k), None);
+        self.fuse(dense, &lexical, query, k)
+    }
 
-        // Phase 1: vector dot for all records (no allocation beyond the Hit vec).
-        let mut phase1: Vec<Hit> = self
+    pub fn dense_ranking(&self, query: &[f32], depth: usize, prefix: Option<&str>) -> Vec<Hit> {
+        let mut ranked: Vec<Hit> = self
             .records
             .par_iter()
             .enumerate()
@@ -133,54 +135,194 @@ impl Index {
                 record_idx: i,
             })
             .collect();
-        sort_and_truncate(&mut phase1, m);
-
-        // Phase 2: apply lexical boost to the top-M candidates only.
-        self.rerank(
-            &phase1.iter().map(|h| h.record_idx).collect::<Vec<_>>(),
-            query,
-            terms,
-            boost,
-            k,
-        )
+        sort_and_truncate(&mut ranked, depth);
+        ranked
     }
 
-    /// Re-score an explicit set of candidate record indices with the SAME hybrid
-    /// scoring as [`Index::search_hybrid`] (vector dot + lexical boost), best
-    /// first, top `k`. Used to put approximate-nearest-neighbour (HNSW)
-    /// candidates on the exact same ranking and score scale as the flat scan, so
-    /// the lexical boost and a `--min-score` threshold behave identically whether
-    /// or not the ANN index kicked in. Out-of-range indices are skipped.
-    pub fn rerank(
+    pub fn lexical_ranking(
         &self,
-        candidates: &[usize],
-        query: &[f32],
-        terms: &[String],
-        boost: f32,
-        k: usize,
-    ) -> Vec<Hit> {
-        let mut scored: Vec<Hit> = candidates
-            .iter()
-            .filter_map(|&i| self.records.get(i).map(|r| (i, r)))
-            .map(|(i, r)| Hit {
-                score: score_record(r, query, terms, boost),
+        terms: &[TermHash],
+        depth: usize,
+        prefix: Option<&str>,
+    ) -> LexicalRanking {
+        if terms.is_empty() || self.records.is_empty() {
+            return LexicalRanking::empty();
+        }
+        let presence: Vec<u64> = self
+            .records
+            .par_iter()
+            .map(|r| match prefix {
+                Some(p) if !path_in_scope(&r.path, p) => 0,
+                _ => r.terms.presence(terms),
+            })
+            .collect();
+        let weights = Weights::new(&presence, terms.len(), self.average_term_count());
+        let mut ranked: Vec<Hit> = presence
+            .par_iter()
+            .enumerate()
+            .filter(|&(_, &bits)| bits != 0)
+            .map(|(i, &bits)| Hit {
+                score: weights.bm25(terms, &self.records[i].terms, bits),
                 record_idx: i,
             })
             .collect();
-        sort_and_truncate(&mut scored, k);
-        scored
+        sort_and_truncate(&mut ranked, depth);
+        LexicalRanking {
+            ranked,
+            weights,
+            terms: terms.to_vec(),
+        }
+    }
+
+    pub(crate) fn fuse(
+        &self,
+        dense: &[Hit],
+        lexical: &LexicalRanking,
+        query: &[f32],
+        k: usize,
+    ) -> Vec<Hit> {
+        let mut agreement: HashMap<usize, f32> = HashMap::new();
+        for ranking in [dense, &lexical.ranked] {
+            for (position, hit) in ranking.iter().enumerate() {
+                if hit.record_idx < self.records.len() {
+                    *agreement.entry(hit.record_idx).or_insert(0.0) +=
+                        1.0 / (RRF_DAMPING + position as f32 + 1.0);
+                }
+            }
+        }
+        let mut candidates: Vec<Candidate> = agreement
+            .into_iter()
+            .map(|(record_idx, agreement)| {
+                let record = &self.records[record_idx];
+                Candidate {
+                    record_idx,
+                    agreement,
+                    declares_something: record.symbol.is_some(),
+                    cosine: quant::dot(&record.vector, query),
+                    coverage: match lexical.terms.is_empty() {
+                        true => 0.0,
+                        false => lexical
+                            .weights
+                            .coverage(record.terms.presence(&lexical.terms)),
+                    },
+                }
+            })
+            .collect();
+        candidates.sort_unstable_by(Candidate::rank);
+        self.best_of_each_place(candidates, k)
+    }
+
+    /// Two records can describe the same lines — a declaration and the
+    /// documentation written above it, or the overlap between adjacent windows —
+    /// and returning both spends a result on nothing. Only the better-ranked one
+    /// is kept, and because this happens before the cut to `k` rather than after
+    /// it, the caller still gets `k` distinct places.
+    fn best_of_each_place(&self, ranked: Vec<Candidate>, k: usize) -> Vec<Hit> {
+        let mut taken: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+        let mut out = Vec::with_capacity(k);
+        for candidate in ranked {
+            if out.len() == k {
+                break;
+            }
+            let record = &self.records[candidate.record_idx];
+            let places = taken.entry(record.path.as_str()).or_default();
+            if places
+                .iter()
+                .any(|&(start, end)| record.start_line <= end && record.end_line >= start)
+            {
+                continue;
+            }
+            places.push((record.start_line, record.end_line));
+            out.push(Hit {
+                score: candidate.confidence(),
+                record_idx: candidate.record_idx,
+            });
+        }
+        out
+    }
+
+    fn average_term_count(&self) -> f32 {
+        let total: u64 = self
+            .records
+            .par_iter()
+            .map(|r| r.terms.length() as u64)
+            .sum();
+        total as f32 / self.records.len().max(1) as f32
     }
 }
 
-/// The hybrid relevance score for one record: cosine (int8 dot) plus, when a
-/// boost is set, a fraction for the query's literal terms appearing in the
-/// snippet/path. Single source of truth for the flat scan and the ANN re-rank.
-fn score_record(record: &Record, query: &[f32], terms: &[String], boost: f32) -> f32 {
-    let mut score = quant::dot(&record.vector, query);
-    if boost > 0.0 {
-        score += boost * lexical_fraction(record, terms);
+const COMPLETE_COVERAGE: f32 = 0.999;
+
+struct Candidate {
+    record_idx: usize,
+    agreement: f32,
+    cosine: f32,
+    coverage: f32,
+    declares_something: bool,
+}
+
+impl Candidate {
+    /// A chunk holding every informative term of the query is not a guess: it is
+    /// what an exact search would have returned, and nothing lacking those terms
+    /// may outrank it. Below that bar neither arm is authoritative, so ordering
+    /// falls back to how strongly the two of them agree.
+    fn holds_every_term(&self) -> bool {
+        self.coverage >= COMPLETE_COVERAGE
     }
-    score
+
+    fn confidence(&self) -> f32 {
+        self.cosine.max(self.coverage)
+    }
+
+    /// A chunk that belongs to a declaration outranks one that does not. Asked
+    /// about behaviour, both retrievers legitimately prefer prose — a changelog
+    /// entry or a paragraph of documentation says the words of the question back
+    /// more closely than the function that implements it — and on the questions
+    /// this misses, more than half the results were documentation, manifests and
+    /// tests. Free prose is not what a code search is for. Documentation attached
+    /// to a declaration carries that declaration's symbol and is unaffected.
+    fn rank(a: &Self, b: &Self) -> Ordering {
+        b.declares_something
+            .cmp(&a.declares_something)
+            .then_with(|| b.holds_every_term().cmp(&a.holds_every_term()))
+            .then_with(|| {
+                b.agreement
+                    .partial_cmp(&a.agreement)
+                    .unwrap_or(Ordering::Equal)
+            })
+            .then_with(|| {
+                b.confidence()
+                    .partial_cmp(&a.confidence())
+                    .unwrap_or(Ordering::Equal)
+            })
+            .then(a.record_idx.cmp(&b.record_idx))
+    }
+}
+
+/// Each arm needs a pool deeper than `k`, so a chunk only one of them ranks
+/// highly still reaches the merge.
+pub fn candidate_depth(k: usize) -> usize {
+    k.saturating_mul(CANDIDATES_PER_RESULT).max(MIN_CANDIDATES)
+}
+
+pub struct LexicalRanking {
+    ranked: Vec<Hit>,
+    weights: Weights,
+    terms: Vec<TermHash>,
+}
+
+impl LexicalRanking {
+    pub fn hits(&self) -> &[Hit] {
+        &self.ranked
+    }
+
+    fn empty() -> Self {
+        Self {
+            ranked: Vec::new(),
+            weights: Weights::new(&[], 0, 1.0),
+            terms: Vec::new(),
+        }
+    }
 }
 
 fn sort_and_truncate(scored: &mut Vec<Hit>, k: usize) {
@@ -197,19 +339,6 @@ fn path_in_scope(path: &str, prefix: &str) -> bool {
         Some(rest) => rest.is_empty() || rest.starts_with('/'),
         None => false,
     }
-}
-
-fn lexical_fraction(record: &Record, terms: &[String]) -> f32 {
-    if terms.is_empty() {
-        return 0.0;
-    }
-    let snippet = record.snippet.to_lowercase();
-    let path = record.path.to_lowercase();
-    let present = terms
-        .iter()
-        .filter(|t| snippet.contains(t.as_str()) || path.contains(t.as_str()))
-        .count();
-    present as f32 / terms.len() as f32
 }
 
 fn temp_sibling(path: &Path) -> std::path::PathBuf {
@@ -229,14 +358,30 @@ mod tests {
     use crate::testutil::TempDir;
 
     fn record(path: &str, vector: Vec<f32>) -> Record {
+        text_record(path, path, vector)
+    }
+
+    fn text_record(path: &str, text: &str, vector: Vec<f32>) -> Record {
         Record {
             path: path.into(),
             start_line: 1,
             end_line: 1,
-            snippet: path.into(),
+            snippet: text.into(),
             file_hash: 0,
             vector: quant::quantize(&vector),
+            terms: TermVector::new(text, path, None),
+            symbol: None,
         }
+    }
+
+    fn terms(query: &str) -> Vec<TermHash> {
+        crate::lexical::query_terms(query)
+    }
+
+    fn paths(index: &Index, hits: &[Hit]) -> Vec<String> {
+        hits.iter()
+            .map(|h| index.records[h.record_idx].path.clone())
+            .collect()
     }
 
     fn sample_index() -> Index {
@@ -274,53 +419,163 @@ mod tests {
     }
 
     #[test]
-    fn lexical_boost_breaks_ties_toward_literal_matches() {
+    fn a_literal_match_outranks_an_equally_similar_chunk() {
         let mut index = Index::new(3, "test".into());
-        let mut with_term = record("a.rs", vec![1.0, 0.0, 0.0]);
-        with_term.snippet = "fn parse_header() {}".into();
-        let mut without = record("b.rs", vec![1.0, 0.0, 0.0]);
-        without.snippet = "fn unrelated() {}".into();
-        index.records.push(with_term);
-        index.records.push(without);
+        index.records.push(text_record(
+            "a.rs",
+            "fn parse_header() {}",
+            vec![1.0, 0.0, 0.0],
+        ));
+        index.records.push(text_record(
+            "b.rs",
+            "fn unrelated() {}",
+            vec![1.0, 0.0, 0.0],
+        ));
 
-        let terms = vec!["parse_header".to_string()];
-        let hits = index.search_hybrid(&[1.0, 0.0, 0.0], &terms, 0.1, 2, None);
+        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms("parse_header"), 2, None);
         assert_eq!(index.records[hits[0].record_idx].path, "a.rs");
 
         let plain = index.search_scoped(&[1.0, 0.0, 0.0], 2, None);
         assert!((plain[0].score - plain[1].score).abs() < 1e-6);
     }
 
+    /// A chunk whose text literally contains the query cannot be reachable only
+    /// through vector similarity: the dense arm ranks it below thousands of
+    /// unrelated chunks, so it has to arrive from the lexical arm instead.
     #[test]
-    fn rerank_applies_lexical_boost_and_respects_candidates() {
-        // The ANN re-rank must score candidates with the same hybrid scoring as
-        // the flat scan — so a literal-term match outranks a vector tie — and must
-        // honor the candidate set + k, and skip out-of-range indices.
+    fn a_literal_match_survives_a_hostile_dense_ranking() {
         let mut index = Index::new(3, "test".into());
-        let mut with_term = record("a.rs", vec![1.0, 0.0, 0.0]);
-        with_term.snippet = "fn parse_header() {}".into();
-        let mut without = record("b.rs", vec![1.0, 0.0, 0.0]);
-        without.snippet = "fn unrelated() {}".into();
-        index.records.push(with_term); // idx 0
-        index.records.push(without); // idx 1
+        index.records.push(text_record(
+            "cache.rs",
+            "fn evict_least_recently_used(cache) {}",
+            vec![0.0, 0.0, 1.0],
+        ));
+        for i in 0..5_000 {
+            index.records.push(text_record(
+                &format!("noise/module_{i}.rs"),
+                &format!("fn filler_{i}() {{}}"),
+                vec![1.0, 0.0, 0.0],
+            ));
+        }
 
-        let terms = vec!["parse_header".to_string()];
-        // Candidates passed in the "wrong" order with an out-of-range index (99);
-        // the boost must reorder, and 99 must be skipped (not panic).
-        let hits = index.rerank(&[1, 0, 99], &[1.0, 0.0, 0.0], &terms, 0.1, 5);
-        assert_eq!(hits.len(), 2, "out-of-range candidate is skipped");
-        assert_eq!(
-            index.records[hits[0].record_idx].path, "a.rs",
-            "lexical boost lifts the literal-term match to the top"
+        let query = [1.0, 0.0, 0.0];
+        let dense_only = index.search_scoped(&query, 10, None);
+        assert!(
+            !paths(&index, &dense_only).contains(&"cache.rs".to_string()),
+            "the dense arm alone must not reach the literal match"
         );
 
-        // k truncates the re-ranked set.
+        let fused = index.search_fused(&query, &terms("evict_least_recently_used"), 10, None);
         assert_eq!(
+            paths(&index, &fused)[0],
+            "cache.rs",
+            "the lexical arm must carry the literal match to the top"
+        );
+        assert_eq!(fused[0].score, 1.0, "full term coverage reports as certain");
+    }
+
+    fn placed(path: &str, start: usize, end: usize, vector: Vec<f32>) -> Record {
+        Record {
+            start_line: start,
+            end_line: end,
+            ..text_record(path, path, vector)
+        }
+    }
+
+    #[test]
+    fn a_declaration_outranks_free_prose_that_matches_better() {
+        let mut index = Index::new(3, "test".into());
+        let mut prose = text_record("HISTORY.md", "get and post helpers", vec![1.0, 0.0, 0.0]);
+        prose.symbol = None;
+        let mut code = text_record("api.py", "def get(url)", vec![0.6, 0.8, 0.0]);
+        code.symbol = Some(Symbol {
+            kind: "fn".into(),
+            name: "get".into(),
+        });
+        index.records.push(prose);
+        index.records.push(code);
+
+        let hits = index.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(
+            index.records[hits[0].record_idx].path, "api.py",
+            "the closer match is a changelog, and a code search is not for those"
+        );
+    }
+
+    /// Ranking prose below code must not mean losing it: a repository the parser
+    /// cannot read has no declarations at all, and its results still have to come.
+    #[test]
+    fn prose_still_fills_the_results_when_there_is_no_code() {
+        let mut index = Index::new(3, "test".into());
+        for i in 0..4 {
+            let mut record = text_record(
+                "notes.md",
+                "retry backoff",
+                vec![1.0 - i as f32 * 0.1, 0.0, 0.0],
+            );
+            record.symbol = None;
+            record.start_line = i * 10 + 1;
+            record.end_line = i * 10 + 5;
+            index.records.push(record);
+        }
+
+        assert_eq!(index.search(&[1.0, 0.0, 0.0], 3).len(), 3);
+    }
+
+    #[test]
+    fn two_records_describing_the_same_lines_yield_one_result() {
+        let mut index = Index::new(3, "test".into());
+        index
+            .records
+            .push(placed("a.rs", 1, 10, vec![1.0, 0.0, 0.0]));
+        index
+            .records
+            .push(placed("a.rs", 8, 15, vec![0.9, 0.1, 0.0]));
+        index
+            .records
+            .push(placed("a.rs", 20, 30, vec![0.8, 0.2, 0.0]));
+
+        let hits = index.search(&[1.0, 0.0, 0.0], 10);
+        assert_eq!(hits.len(), 2, "the overlapping pair collapses into one");
+        assert_eq!(index.records[hits[0].record_idx].start_line, 1);
+        assert_eq!(index.records[hits[1].record_idx].start_line, 20);
+    }
+
+    #[test]
+    fn the_same_lines_in_different_files_are_both_kept() {
+        let mut index = Index::new(3, "test".into());
+        index
+            .records
+            .push(placed("a.rs", 1, 10, vec![1.0, 0.0, 0.0]));
+        index
+            .records
+            .push(placed("b.rs", 1, 10, vec![0.9, 0.1, 0.0]));
+
+        assert_eq!(index.search(&[1.0, 0.0, 0.0], 10).len(), 2);
+    }
+
+    /// Collapsing duplicates before the cut, not after it, is what keeps a
+    /// request for `k` results from quietly returning fewer.
+    #[test]
+    fn a_full_set_of_results_survives_the_duplicates() {
+        let mut index = Index::new(3, "test".into());
+        for i in 0..10 {
+            let line = i * 10 + 1;
+            let vector = vec![1.0 - i as f32 * 0.01, 0.0, 0.0];
             index
-                .rerank(&[0, 1], &[1.0, 0.0, 0.0], &terms, 0.1, 1)
-                .len(),
-            1
-        );
+                .records
+                .push(placed("a.rs", line, line + 5, vector.clone()));
+            index.records.push(placed("a.rs", line, line + 5, vector));
+        }
+
+        assert_eq!(index.search(&[1.0, 0.0, 0.0], 5).len(), 5);
+    }
+
+    #[test]
+    fn a_query_with_no_indexable_terms_falls_back_to_pure_similarity() {
+        let index = sample_index();
+        let hits = index.search_fused(&[0.9, 0.1, 0.0], &terms("a b c"), 2, None);
+        assert_eq!(index.records[hits[0].record_idx].path, "x.rs");
     }
 
     #[test]
@@ -392,53 +647,14 @@ mod tests {
         assert_eq!(hashes.len(), 3);
     }
 
-    /// Asserts that the two-phase (vector-pre-filter then lexical boost on
-    /// top-M) produces the same top-k ordering as the full-scan path for a
-    /// small fixture that includes a lexical tie-break case.
-    #[test]
-    fn two_phase_matches_full_scan_ranking() {
-        // Three records: A and B have identical vector scores, C is far away.
-        // Lexical term appears only in A → full scan puts A first.
-        // The two-phase path (k=2, M=max(16,64)=64 ≥ 3 records total) must
-        // also put A first.
-        let mut index = Index::new(3, "test".into());
-        let mut rec_a = record("a.rs", vec![1.0, 0.0, 0.0]);
-        rec_a.snippet = "fn parse_header() {}".into();
-        let mut rec_b = record("b.rs", vec![1.0, 0.0, 0.0]);
-        rec_b.snippet = "fn unrelated() {}".into();
-        let rec_c = record("c.rs", vec![0.0, 0.0, 1.0]);
-        index.records.push(rec_a);
-        index.records.push(rec_b);
-        index.records.push(rec_c);
-
-        let query = vec![1.0f32, 0.0, 0.0];
-        let terms = vec!["parse_header".to_string()];
-        let boost = 0.1f32;
-
-        let full_hits = index.search_hybrid(&query, &terms, boost, 2, None);
-        assert_eq!(
-            index.records[full_hits[0].record_idx].path, "a.rs",
-            "full scan must put lexical match first"
-        );
-        assert_eq!(full_hits.len(), 2);
-        // Verify scores match expectations (A has boost, B does not, both
-        // outrank C which has zero vector similarity).
-        assert!(full_hits[0].score > full_hits[1].score);
-    }
-
-    /// Synthetic-corpus benchmark: ~20 k records, realistic snippet lengths,
-    /// with lexical terms. Prints elapsed time; use to compare before/after.
-    ///
-    /// Run: cargo test --release bench_search_scoring -- --ignored --nocapture
+    /// Run: cargo test --release bench_fused_search -- --ignored --nocapture
     #[test]
     #[ignore]
-    fn bench_search_scoring() {
-        const N: usize = 20_000;
-        const DIMS: usize = 64; // smaller dims to keep setup fast
-        const N_QUERIES: usize = 50;
-        const SNIPPET_LEN: usize = 300; // chars — realistic for a code snippet
+    fn bench_fused_search() {
+        const RECORDS: usize = 20_000;
+        const DIMS: usize = 64;
+        const QUERIES: usize = 50;
 
-        // Minimal LCG for deterministic pseudo-random numbers.
         struct Lcg(u64);
         impl Lcg {
             fn next(&mut self) -> u64 {
@@ -448,58 +664,44 @@ mod tests {
                     .wrapping_add(1442695040888963407);
                 self.0
             }
-            fn next_f32(&mut self) -> f32 {
-                (self.next() >> 32) as f32 / u32::MAX as f32
-            }
-            fn next_f32_signed(&mut self) -> f32 {
-                self.next_f32() * 2.0 - 1.0
+            fn next_signed_f32(&mut self) -> f32 {
+                (self.next() >> 32) as f32 / u32::MAX as f32 * 2.0 - 1.0
             }
         }
 
         let mut rng = Lcg(0xdeadbeef_cafebabe);
-
-        // Build index.
         let mut index = Index::new(DIMS, "bench".into());
-        for i in 0..N {
-            let v: Vec<f32> = (0..DIMS).map(|_| rng.next_f32_signed()).collect();
-            // Synthetic snippet: mix of words to give lexical search something to do.
+        for i in 0..RECORDS {
+            let vector: Vec<f32> = (0..DIMS).map(|_| rng.next_signed_f32()).collect();
+            let path = format!("src/module_{}.rs", i % 200);
             let snippet = format!(
-                "fn func_{i}() {{ let x = {}; let y = {}; x + y }}  // snippet padding {i}",
-                rng.next() % 1000,
-                rng.next() % 1000,
-            )
-            .chars()
-            .take(SNIPPET_LEN)
-            .collect::<String>();
-            index.records.push(Record {
-                path: format!("src/module_{}.rs", i % 200),
-                start_line: 1,
-                end_line: 10,
-                snippet,
-                file_hash: rng.next(),
-                vector: quant::quantize(&v),
-            });
+                "fn handle_request_{i}(request) {{ let parsed = parse_body(request); \
+                 let session = lookup_session(parsed.token); respond(session) }}"
+            );
+            index.records.push(text_record(&path, &snippet, vector));
         }
 
-        let mut queries: Vec<(Vec<f32>, Vec<String>)> = Vec::new();
-        for i in 0..N_QUERIES {
-            let q: Vec<f32> = (0..DIMS).map(|_| rng.next_f32_signed()).collect();
-            let terms = vec![format!("func_{}", i * 7 % N), "snippet".to_string()];
-            queries.push((q, terms));
-        }
+        let queries: Vec<(Vec<f32>, Vec<TermHash>)> = (0..QUERIES)
+            .map(|i| {
+                let vector: Vec<f32> = (0..DIMS).map(|_| rng.next_signed_f32()).collect();
+                (
+                    vector,
+                    terms(&format!("handle_request_{} lookup_session token", i * 7)),
+                )
+            })
+            .collect();
 
-        // Warm up (ensure rayon thread pool is ready, caches warm).
-        let _ = index.search_hybrid(&queries[0].0, &queries[0].1, 0.1, 20, None);
+        let _ = index.search_fused(&queries[0].0, &queries[0].1, 20, None);
 
         let start = std::time::Instant::now();
-        for (q, terms) in &queries {
-            let _ = index.search_hybrid(q, terms, 0.1, 20, None);
+        for (vector, query_terms) in &queries {
+            let _ = index.search_fused(vector, query_terms, 20, None);
         }
         let elapsed = start.elapsed();
         println!(
-            "bench_search_scoring: {N} records, {N_QUERIES} queries → {:.2?} total ({:.2?}/query)",
+            "bench_fused_search: {RECORDS} records, {QUERIES} queries → {:.2?} total ({:.2?}/query)",
             elapsed,
-            elapsed / N_QUERIES as u32
+            elapsed / QUERIES as u32
         );
     }
 }
