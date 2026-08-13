@@ -205,6 +205,30 @@ fn searcher_rejects_a_same_dim_different_model_index() {
     assert_eq!(searcher.record_count(), original_records);
 }
 
+/// Changing the model without rebuilding leaves an index whose vectors came
+/// from a different model than the one the query is embedded with. A long-lived
+/// searcher already refuses that swap; opening one has to refuse it too, rather
+/// than ranking on the comparison of two unrelated spaces.
+#[test]
+fn opening_an_index_built_with_another_model_is_a_clear_error() {
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie delta echo");
+    let mut config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    config.model = "all-MiniLM-L6-v2".into();
+    let err = match pipeline::open(&config) {
+        Ok(_) => panic!("an index from another model must not open"),
+        Err(e) => e.to_string(),
+    };
+    assert!(err.contains("index --force"), "got: {err}");
+    assert!(err.contains("all-MiniLM-L6-v2"), "got: {err}");
+
+    // Rebuilding for the configured model clears it.
+    pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(pipeline::open(&config).unwrap().model(), "all-MiniLM-L6-v2");
+}
+
 #[test]
 fn empty_repository_indexes_without_error() {
     let dir = TempDir::new();
