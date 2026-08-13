@@ -194,6 +194,19 @@ pub fn open(config: &Config) -> Result<Searcher> {
     let index_path = config.index_path();
     let index = Index::load(&index_path)
         .context("no index yet; run `ripsem index` in this directory first")?;
+    // Queries are embedded with the model this directory is configured for. If
+    // the index was built with another one, its vectors were written in a
+    // different space and comparing the two measures nothing — the same reason
+    // `Searcher::refresh` refuses a swapped-in index. Saying so is better than
+    // ranking on noise, and `status` already reports the mismatch.
+    if index.model != config.model {
+        anyhow::bail!(
+            "index was built with model {}, but this directory is configured for {}; \
+             run `ripsem index --force` to rebuild it",
+            index.model,
+            config.model
+        );
+    }
     let index_mtime = file_mtime(&index_path);
     let model = index.model.clone();
     #[cfg(feature = "hnsw")]
