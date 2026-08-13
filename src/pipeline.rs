@@ -32,27 +32,23 @@ pub struct Drift {
 }
 
 impl Drift {
-    pub fn files(&self) -> usize {
-        self.added + self.modified + self.removed
-    }
-
     pub fn is_current(&self) -> bool {
-        self.files() == 0
+        self.added + self.modified + self.removed == 0
     }
 }
 
 /// Measure that drift with the same walk and the same content hash the
 /// incremental index uses, so what it reports is what a rebuild would touch and
-/// nothing else. A file the indexer produces no chunks for — one holding
-/// nothing but whitespace — is not counted as new, or the count could never
-/// reach zero however often the index was rebuilt.
+/// nothing else. A file the indexer produces no chunks for is not counted as
+/// new — [`chunk::is_blank`] is asked rather than guessed at — or the count
+/// could never reach zero however often the index was rebuilt.
 pub fn drift(config: &Config, index: &Index) -> Result<Drift> {
     let indexed = index.file_hashes();
     let present: Vec<(String, u64)> = walk::collect(config)?
         .par_iter()
         .filter_map(|path| {
             let bytes = std::fs::read(path).ok()?;
-            if String::from_utf8_lossy(&bytes).trim().is_empty() {
+            if chunk::is_blank(&String::from_utf8_lossy(&bytes)) {
                 return None;
             }
             Some((
@@ -63,19 +59,17 @@ pub fn drift(config: &Config, index: &Index) -> Result<Drift> {
         .collect();
 
     let mut drift = Drift::default();
+    let mut on_disk: std::collections::HashSet<&str> =
+        std::collections::HashSet::with_capacity(present.len());
     for (path, hash) in &present {
+        on_disk.insert(path.as_str());
         match indexed.get(path.as_str()) {
             Some(known) if known == hash => {}
             Some(_) => drift.modified += 1,
             None => drift.added += 1,
         }
     }
-    let on_disk: std::collections::HashSet<&str> =
-        present.iter().map(|(path, _)| path.as_str()).collect();
-    drift.removed = indexed
-        .keys()
-        .filter(|path| !on_disk.contains(path.as_str()))
-        .count();
+    drift.removed = indexed.keys().filter(|p| !on_disk.contains(*p)).count();
     Ok(drift)
 }
 
@@ -256,12 +250,10 @@ pub fn open(config: &Config) -> Result<Searcher> {
     let index_path = config.index_path();
     let index = Index::load(&index_path)
         .context("no index yet; run `ripsem index` in this directory first")?;
-    // Queries are embedded with the model this directory is configured for. If
-    // the index was built with another one, its vectors were written in a
-    // different space and comparing the two measures nothing — the same reason
-    // `Searcher::refresh` refuses a swapped-in index. Saying so is better than
-    // ranking on noise, and `status` already reports the mismatch.
-    if index.model != config.model {
+    // Queries are embedded with the model this directory is configured for, so
+    // an index built with another one can only be ranked on noise. Saying so
+    // beats returning numbers that do not mean anything.
+    if !index.built_for(&config.model) {
         anyhow::bail!(
             "index was built with model {}, but this directory is configured for {}; \
              run `ripsem index --force` to rebuild it",
@@ -299,9 +291,9 @@ impl Searcher {
         if index.dims != self.index.dims {
             return Ok(false);
         }
-        // A same-dim index rebuilt with a different model produces vectors that
-        // are not comparable to queries from our embedder; keep the old index.
-        if index.model != self.model {
+        // A hot-reloaded index built with another model is not comparable to
+        // queries from the embedder already in hand; keep the one we have.
+        if !index.built_for(&self.model) {
             return Ok(false);
         }
         #[cfg(feature = "hnsw")]

@@ -81,12 +81,21 @@ impl Index {
         Ok(())
     }
 
-    pub fn file_hashes(&self) -> HashMap<String, u64> {
-        let mut m = HashMap::new();
-        for r in &self.records {
-            m.insert(r.path.clone(), r.file_hash);
-        }
-        m
+    /// Borrowed: a file contributes one entry but as many records as it has
+    /// chunks, so owning the keys would copy every path once per chunk.
+    pub fn file_hashes(&self) -> HashMap<&str, u64> {
+        self.records
+            .iter()
+            .map(|r| (r.path.as_str(), r.file_hash))
+            .collect()
+    }
+
+    /// Whether the vectors in this index can be compared with a query embedded
+    /// by `model`. Two models write into different spaces — the same is true at
+    /// equal dimensionality — so comparing across them measures nothing. Every
+    /// decision about whether an index is usable asks here.
+    pub fn built_for(&self, model: &str) -> bool {
+        self.model == model
     }
 
     pub fn search(&self, query: &[f32], k: usize) -> Vec<Hit> {
