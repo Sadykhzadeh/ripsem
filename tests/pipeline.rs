@@ -229,6 +229,49 @@ fn opening_an_index_built_with_another_model_is_a_clear_error() {
     assert_eq!(pipeline::open(&config).unwrap().model(), "all-MiniLM-L6-v2");
 }
 
+/// What `status` reports as drift has to be exactly what a rebuild would touch,
+/// and has to return to nothing once that rebuild has happened — including for
+/// a file the indexer never produces a chunk for.
+#[test]
+fn drift_counts_what_a_rebuild_would_touch() {
+    use ripsem::index::Index;
+    use ripsem::pipeline::Drift;
+
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie");
+    dir.write("b.rs", "delta echo foxtrot");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let measured = || {
+        let index = Index::load(&config.index_path()).unwrap();
+        pipeline::drift(&config, &index).unwrap()
+    };
+    assert!(measured().is_current());
+
+    dir.write("a.rs", "alpha bravo charlie golf");
+    dir.write("c.rs", "hotel india juliet");
+    std::fs::remove_file(dir.path.join("b.rs")).unwrap();
+    // Whitespace alone yields no chunks, so it is never in the index and must
+    // not be reported as something a rebuild would add.
+    dir.write("blank.rs", "   \n\n");
+
+    assert_eq!(
+        measured(),
+        Drift {
+            added: 1,
+            modified: 1,
+            removed: 1
+        }
+    );
+
+    pipeline::index_repo(&config, false).unwrap();
+    assert!(
+        measured().is_current(),
+        "a rebuild has to settle the count it reported"
+    );
+}
+
 #[test]
 fn empty_repository_indexes_without_error() {
     let dir = TempDir::new();
