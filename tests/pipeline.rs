@@ -205,6 +205,73 @@ fn searcher_rejects_a_same_dim_different_model_index() {
     assert_eq!(searcher.record_count(), original_records);
 }
 
+/// Changing the model without rebuilding leaves an index whose vectors came
+/// from a different model than the one the query is embedded with. A long-lived
+/// searcher already refuses that swap; opening one has to refuse it too, rather
+/// than ranking on the comparison of two unrelated spaces.
+#[test]
+fn opening_an_index_built_with_another_model_is_a_clear_error() {
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie delta echo");
+    let mut config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    config.model = "all-MiniLM-L6-v2".into();
+    let err = match pipeline::open(&config) {
+        Ok(_) => panic!("an index from another model must not open"),
+        Err(e) => e.to_string(),
+    };
+    assert!(err.contains("index --force"), "got: {err}");
+    assert!(err.contains("all-MiniLM-L6-v2"), "got: {err}");
+
+    // Rebuilding for the configured model clears it.
+    pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(pipeline::open(&config).unwrap().model(), "all-MiniLM-L6-v2");
+}
+
+/// What `status` reports as drift has to be exactly what a rebuild would touch,
+/// and has to return to nothing once that rebuild has happened — including for
+/// a file the indexer never produces a chunk for.
+#[test]
+fn drift_counts_what_a_rebuild_would_touch() {
+    use ripsem::index::Index;
+    use ripsem::pipeline::Drift;
+
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie");
+    dir.write("b.rs", "delta echo foxtrot");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let measured = || {
+        let index = Index::load(&config.index_path()).unwrap();
+        pipeline::drift(&config, &index).unwrap()
+    };
+    assert!(measured().is_current());
+
+    dir.write("a.rs", "alpha bravo charlie golf");
+    dir.write("c.rs", "hotel india juliet");
+    std::fs::remove_file(dir.path.join("b.rs")).unwrap();
+    // Whitespace alone yields no chunks, so it is never in the index and must
+    // not be reported as something a rebuild would add.
+    dir.write("blank.rs", "   \n\n");
+
+    assert_eq!(
+        measured(),
+        Drift {
+            added: 1,
+            modified: 1,
+            removed: 1
+        }
+    );
+
+    pipeline::index_repo(&config, false).unwrap();
+    assert!(
+        measured().is_current(),
+        "a rebuild has to settle the count it reported"
+    );
+}
+
 #[test]
 fn empty_repository_indexes_without_error() {
     let dir = TempDir::new();
