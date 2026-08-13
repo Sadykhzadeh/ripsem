@@ -27,3 +27,17 @@ jobs:
         run: cargo test --features treesitter,hnsw --all-targets
       - name: Build all features
         run: cargo build --all-features
+
+  # Paths are the part of this that is not portable: the index stores
+  # forward-slash repo-relative paths, the walker judges them against the root,
+  # the temp-file replace on save has to work, and status strips the verbatim
+  # `\\?\` prefix. All of that is tested, and none of it was tested anywhere it
+  # could actually fail.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test pure-Rust features
+        run: cargo test --features treesitter,hnsw --all-targets
