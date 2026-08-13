@@ -154,6 +154,26 @@ struct IndexFacts {
     ann: bool,
     index_model: String,
     stale: bool,
+    /// `None` when the tree could not be walked to compare against.
+    drift: Option<pipeline::Drift>,
+}
+
+/// The `tree:` line of `status`: what rebuilding would touch, or that it would
+/// touch nothing. Counts are files, and only the non-zero kinds are named.
+fn drift_line(drift: &pipeline::Drift) -> String {
+    if drift.is_current() {
+        return "matches the index".to_string();
+    }
+    let counted: Vec<String> = [
+        (drift.modified, "changed"),
+        (drift.added, "new"),
+        (drift.removed, "gone"),
+    ]
+    .into_iter()
+    .filter(|&(count, _)| count > 0)
+    .map(|(count, label)| format!("{count} {label}"))
+    .collect();
+    format!("out of date: {} — run `ripsem index`", counted.join(", "))
 }
 
 /// Render `status` as machine-readable JSON (schema `ripsem/status/v1`). Pure:
@@ -178,6 +198,14 @@ fn status_json(
             "ann": f.ann,
             "model": f.index_model,
             "stale": f.stale,
+            "drift": match f.drift {
+                Some(d) => json!({
+                    "added": d.added,
+                    "modified": d.modified,
+                    "removed": d.removed,
+                }),
+                None => Value::Null,
+            },
         }),
         None => json!({ "present": false, "error": error }),
     };
@@ -205,6 +233,7 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
                 let files: std::collections::HashSet<&str> =
                     index.records.iter().map(|r| r.path.as_str()).collect();
                 let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                let drift = pipeline::drift(&config, &index).ok();
                 let facts = IndexFacts {
                     path: show_path(&path),
                     size_bytes: size,
@@ -214,6 +243,7 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
                     ann: index.ann.is_some(),
                     index_model: index.model.clone(),
                     stale: index.model != config.model,
+                    drift,
                 };
                 (Some(facts), None)
             }
@@ -248,6 +278,9 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
             println!("index:  {} ({})", f.path, human_size(f.size_bytes));
             println!("chunks: {} across {} files", f.chunks, f.files);
             println!("named:  {} chunks carry a declaration", f.named);
+            if let Some(drift) = &f.drift {
+                println!("tree:   {}", drift_line(drift));
+            }
             if f.ann {
                 println!("ann:    present (approximate search)");
             }
@@ -593,6 +626,31 @@ mod tests {
     }
 
     #[test]
+    fn drift_line_names_only_what_differs() {
+        let none = pipeline::Drift::default();
+        assert_eq!(drift_line(&none), "matches the index");
+
+        let some = pipeline::Drift {
+            added: 2,
+            modified: 1,
+            removed: 0,
+        };
+        assert_eq!(
+            drift_line(&some),
+            "out of date: 1 changed, 2 new — run `ripsem index`"
+        );
+
+        let gone = pipeline::Drift {
+            removed: 3,
+            ..Default::default()
+        };
+        assert_eq!(
+            drift_line(&gone),
+            "out of date: 3 gone — run `ripsem index`"
+        );
+    }
+
+    #[test]
     fn status_json_reports_a_loaded_index() {
         // A present index renders the versioned schema, the lowercase backend, and
         // the health facts (chunks/files/ann/stale) a tool or agent checks.
@@ -605,6 +663,11 @@ mod tests {
             ann: true,
             index_model: "bge-small-en-v1.5".into(),
             stale: false,
+            drift: Some(pipeline::Drift {
+                added: 1,
+                modified: 2,
+                removed: 0,
+            }),
         };
         let out = status_json("bge-small-en-v1.5", Backend::Hash, 384, Some(&facts), None);
         let v: Value = serde_json::from_str(&out).unwrap();
@@ -618,6 +681,9 @@ mod tests {
         assert_eq!(v["index"]["named"], 9);
         assert_eq!(v["index"]["ann"], true);
         assert_eq!(v["index"]["stale"], false);
+        assert_eq!(v["index"]["drift"]["added"], 1);
+        assert_eq!(v["index"]["drift"]["modified"], 2);
+        assert_eq!(v["index"]["drift"]["removed"], 0);
     }
 
     #[test]
