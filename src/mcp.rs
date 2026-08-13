@@ -14,7 +14,7 @@ pub fn serve(config: Config) -> Result<()> {
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();
 
-    let mut session = pipeline::open(&config).ok();
+    let mut session = None;
 
     let mut line = String::new();
     loop {
@@ -30,15 +30,28 @@ pub fn serve(config: Config) -> Result<()> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if let Some(s) = session.as_mut() {
-            let _ = s.refresh();
-        }
+        hold_the_index(&mut session, &config);
         if let Some(response) = handle(&config, session.as_ref(), &request) {
             writeln!(writer, "{}", serde_json::to_string(&response)?)?;
             writer.flush()?;
         }
     }
     Ok(())
+}
+
+/// Hold an open searcher across requests, and take one as soon as there is an
+/// index to take. The server usually starts before the first `ripsem index`
+/// finishes — the README wires the agent up first — and a session that stayed
+/// empty because the index was missing at startup made every later search open
+/// the index and load the embedding model again, a second or more of work per
+/// call. Once held, the searcher only re-reads the file when it changes.
+fn hold_the_index(session: &mut Option<pipeline::Searcher>, config: &Config) {
+    match session {
+        Some(searcher) => {
+            let _ = searcher.refresh();
+        }
+        None => *session = pipeline::open(config).ok(),
+    }
 }
 
 fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value) -> Option<Value> {
@@ -332,6 +345,34 @@ mod tests {
         let kept = apply_min_score(hits, Some(0.5));
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].score, 0.9);
+    }
+
+    /// The documented order is `install claude-code` and then `index`, so the
+    /// server is expected to start without one. It has to pick the index up
+    /// when it appears instead of reopening it for every search from then on.
+    #[test]
+    fn the_index_is_held_as_soon_as_there_is_one() {
+        use crate::config::Backend;
+        use crate::testutil::TempDir;
+
+        let dir = TempDir::new();
+        dir.write("auth.rs", "fn authenticate(user) { verify password }");
+        let config = Config {
+            backend: Backend::Hash,
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let mut session = None;
+        hold_the_index(&mut session, &config);
+        assert!(session.is_none(), "there is no index to hold yet");
+
+        pipeline::index_repo(&config, false).unwrap();
+        hold_the_index(&mut session, &config);
+        assert!(
+            session.is_some(),
+            "the index exists now and must be held instead of reopened per call"
+        );
     }
 
     #[test]
