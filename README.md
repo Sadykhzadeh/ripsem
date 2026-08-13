@@ -44,10 +44,18 @@ behave identically at any repo size.
 ripsem init                       # write .ripsem/config.toml
 ripsem index                      # build the index (incremental on re-runs)
 ripsem search "where is auth set up?"
-ripsem status                     # show index size, chunk/file counts, model
+ripsem status                     # index size, counts, model, drift from the tree
 ripsem status --json              # the same as JSON (schema ripsem/status/v1)
 ripsem watch                      # index and keep it in sync as files change
 ```
+
+`status` also says how far the index has drifted from the files: every hit
+carries the line range its file had when it was indexed, so `tree: out of date:
+3 changed, 1 new` is the difference between a result you can open and a line
+number that has moved. It is measured with the same content hash the incremental
+index uses, so what it counts is what a rebuild would touch — nothing more. The
+JSON carries it as `index.drift` (`added`/`modified`/`removed`), for an agent
+deciding whether to reindex before it searches.
 
 Search respects `.gitignore` and an optional `.ripsemignore`. Results print as
 `path:start-end` with a snippet, ordered by the merged ranking. Two records can
