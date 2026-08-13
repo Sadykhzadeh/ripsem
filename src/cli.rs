@@ -451,7 +451,10 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
             let mut config = Config::load(root)?;
             config.backend = backend;
             config.save()?;
-            println!("backend set to {name}");
+            // Vectors from the two backends are no more comparable than vectors
+            // from two models, and unlike the model the index does not record
+            // which backend wrote it, so nothing downstream can catch this one.
+            println!("backend set to {name} (run `ripsem index --force` to rebuild)");
             Ok(())
         }
     }
