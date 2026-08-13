@@ -17,6 +17,68 @@ pub struct IndexStats {
     pub chunks: usize,
 }
 
+/// How far the index has fallen behind the files it was built from. Every hit
+/// carries the line range its file had when it was indexed, so an index left
+/// behind answers with places that have since moved; this is what says so
+/// before a caller trusts one.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Drift {
+    /// On disk, not in the index.
+    pub added: usize,
+    /// In both, with different content.
+    pub modified: usize,
+    /// In the index, no longer on disk.
+    pub removed: usize,
+}
+
+impl Drift {
+    pub fn files(&self) -> usize {
+        self.added + self.modified + self.removed
+    }
+
+    pub fn is_current(&self) -> bool {
+        self.files() == 0
+    }
+}
+
+/// Measure that drift with the same walk and the same content hash the
+/// incremental index uses, so what it reports is what a rebuild would touch and
+/// nothing else. A file the indexer produces no chunks for — one holding
+/// nothing but whitespace — is not counted as new, or the count could never
+/// reach zero however often the index was rebuilt.
+pub fn drift(config: &Config, index: &Index) -> Result<Drift> {
+    let indexed = index.file_hashes();
+    let present: Vec<(String, u64)> = walk::collect(config)?
+        .par_iter()
+        .filter_map(|path| {
+            let bytes = std::fs::read(path).ok()?;
+            if String::from_utf8_lossy(&bytes).trim().is_empty() {
+                return None;
+            }
+            Some((
+                relative(&config.root, path),
+                fingerprint::content_hash(&bytes),
+            ))
+        })
+        .collect();
+
+    let mut drift = Drift::default();
+    for (path, hash) in &present {
+        match indexed.get(path.as_str()) {
+            Some(known) if known == hash => {}
+            Some(_) => drift.modified += 1,
+            None => drift.added += 1,
+        }
+    }
+    let on_disk: std::collections::HashSet<&str> =
+        present.iter().map(|(path, _)| path.as_str()).collect();
+    drift.removed = indexed
+        .keys()
+        .filter(|path| !on_disk.contains(path.as_str()))
+        .count();
+    Ok(drift)
+}
+
 #[derive(Debug)]
 pub struct SearchHit {
     pub path: String,
