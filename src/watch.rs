@@ -28,8 +28,16 @@ pub fn run(config: Config) -> Result<()> {
                     continue;
                 }
                 drain(&rx);
-                let stats = pipeline::index_repo(&config, false)?;
-                eprintln!("reindexed: {} chunks", stats.chunks);
+                match pipeline::index_repo(&config, false) {
+                    Ok(stats) => eprintln!("reindexed: {} chunks", stats.chunks),
+                    // A reindex can fail for a reason that does not outlive the
+                    // attempt: a file that vanished between the scan and the
+                    // read, or a virus scanner holding the index file open as
+                    // it is replaced. Ending the watch there would leave the
+                    // index frozen while a session that thinks it is live keeps
+                    // querying it.
+                    Err(e) => eprintln!("reindex failed, still watching: {e:#}"),
+                }
             }
             Ok(Err(_)) => continue,
             Err(_) => break,
