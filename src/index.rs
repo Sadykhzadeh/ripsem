@@ -219,7 +219,11 @@ impl Index {
     /// it, the caller still gets `k` distinct places.
     fn best_of_each_place(&self, ranked: Vec<Candidate>, k: usize) -> Vec<Hit> {
         let mut taken: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
-        let mut out = Vec::with_capacity(k);
+        // `k` is whatever the caller asked for, and no result repeats a record,
+        // so the index is the real ceiling. Reserving `k` itself let a number
+        // typed at the command line — or arriving from an MCP client — ask for
+        // an allocation the machine cannot make.
+        let mut out = Vec::with_capacity(k.min(self.records.len()));
         for candidate in ranked {
             if out.len() == k {
                 break;
@@ -591,6 +595,17 @@ mod tests {
     fn search_truncates_to_k() {
         let index = sample_index();
         assert_eq!(index.search(&[1.0, 0.0, 0.0], 1).len(), 1);
+    }
+
+    /// `k` comes from a `-k` flag or from an MCP client, so it is whatever the
+    /// caller types. Asking for more results than exist has one sane answer —
+    /// all of them — and reserving room for the request instead of for the
+    /// index turned a large number into a capacity-overflow abort, which in the
+    /// MCP server takes down the process an agent is talking to.
+    #[test]
+    fn a_k_larger_than_the_index_returns_everything_it_has() {
+        let index = sample_index();
+        assert_eq!(index.search(&[1.0, 0.0, 0.0], usize::MAX).len(), 3);
     }
 
     #[test]
