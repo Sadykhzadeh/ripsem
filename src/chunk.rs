@@ -28,6 +28,13 @@ pub fn chunk_source(path: &Path, text: &str, config: &Config) -> Vec<Chunk> {
     chunk_file(text, config.chunk_lines, config.chunk_overlap)
 }
 
+/// Text with nothing but whitespace in it yields no chunk, so a file made only
+/// of it is never indexed. Anything asking what the indexer would keep asks
+/// here rather than restating the rule.
+pub fn is_blank(text: &str) -> bool {
+    text.trim().is_empty()
+}
+
 pub fn chunk_file(text: &str, chunk_lines: usize, overlap: usize) -> Vec<Chunk> {
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {
@@ -41,7 +48,7 @@ pub fn chunk_file(text: &str, chunk_lines: usize, overlap: usize) -> Vec<Chunk> 
     while start < lines.len() {
         let end = (start + window).min(lines.len());
         let body = lines[start..end].join("\n");
-        if !body.trim().is_empty() {
+        if !is_blank(&body) {
             chunks.push(Chunk {
                 start_line: start + 1,
                 end_line: end,

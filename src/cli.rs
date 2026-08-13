@@ -242,7 +242,7 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
                     named: index.records.iter().filter(|r| r.symbol.is_some()).count(),
                     ann: index.ann.is_some(),
                     index_model: index.model.clone(),
-                    stale: index.model != config.model,
+                    stale: !index.built_for(&config.model),
                     drift,
                 };
                 (Some(facts), None)

@@ -15,6 +15,7 @@ pub fn serve(config: Config) -> Result<()> {
     let mut writer = stdout.lock();
 
     let mut session = None;
+    let mut tried = None;
 
     let mut line = String::new();
     loop {
@@ -30,7 +31,7 @@ pub fn serve(config: Config) -> Result<()> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        hold_the_index(&mut session, &config);
+        hold_the_index(&mut session, &mut tried, &config);
         if let Some(response) = handle(&config, session.as_ref(), &request) {
             writeln!(writer, "{}", serde_json::to_string(&response)?)?;
             writer.flush()?;
@@ -45,13 +46,29 @@ pub fn serve(config: Config) -> Result<()> {
 /// empty because the index was missing at startup made every later search open
 /// the index and load the embedding model again, a second or more of work per
 /// call. Once held, the searcher only re-reads the file when it changes.
-fn hold_the_index(session: &mut Option<pipeline::Searcher>, config: &Config) {
-    match session {
-        Some(searcher) => {
-            let _ = searcher.refresh();
-        }
-        None => *session = pipeline::open(config).ok(),
+///
+/// `tried` is the index file as it looked at the last attempt. Opening decodes
+/// the whole index, and it can fail for a reason that lasts — built with
+/// another model, written by an older ripsem — so retrying on every line of
+/// stdin would pay that decode for every ping. The file changing is what makes
+/// another attempt worth making.
+fn hold_the_index(
+    session: &mut Option<pipeline::Searcher>,
+    tried: &mut Option<std::time::SystemTime>,
+    config: &Config,
+) {
+    if let Some(searcher) = session {
+        let _ = searcher.refresh();
+        return;
     }
+    let mtime = std::fs::metadata(config.index_path())
+        .and_then(|m| m.modified())
+        .ok();
+    if mtime.is_none() || mtime == *tried {
+        return;
+    }
+    *tried = mtime;
+    *session = pipeline::open(config).ok();
 }
 
 fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value) -> Option<Value> {
@@ -364,15 +381,59 @@ mod tests {
         };
 
         let mut session = None;
-        hold_the_index(&mut session, &config);
+        let mut tried = None;
+        hold_the_index(&mut session, &mut tried, &config);
         assert!(session.is_none(), "there is no index to hold yet");
+        assert!(
+            tried.is_none(),
+            "a missing index is not an attempt worth remembering"
+        );
 
         pipeline::index_repo(&config, false).unwrap();
-        hold_the_index(&mut session, &config);
+        hold_the_index(&mut session, &mut tried, &config);
         assert!(
             session.is_some(),
             "the index exists now and must be held instead of reopened per call"
         );
+    }
+
+    /// An index that cannot be opened stays that way until it is rebuilt, and
+    /// opening it decodes the whole file. Retrying that for every line of stdin
+    /// would charge a ping the price of a failed search.
+    #[test]
+    fn an_index_that_cannot_be_opened_is_not_retried_until_it_changes() {
+        use crate::config::Backend;
+        use crate::testutil::TempDir;
+
+        let dir = TempDir::new();
+        dir.write("auth.rs", "fn authenticate(user) { verify password }");
+        let mut config = Config {
+            backend: Backend::Hash,
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        pipeline::index_repo(&config, false).unwrap();
+        // Configured for a model the index was not built with, which is a
+        // failure that lasts until `ripsem index --force`.
+        config.model = "all-MiniLM-L6-v2".into();
+
+        let mut session = None;
+        let mut tried = None;
+        hold_the_index(&mut session, &mut tried, &config);
+        assert!(session.is_none(), "the index is not usable");
+        let first = tried;
+        assert!(first.is_some(), "the attempt has to be remembered");
+
+        hold_the_index(&mut session, &mut tried, &config);
+        assert_eq!(tried, first, "the same file must not be decoded again");
+
+        // Rebuilding for the configured model is a new file, so it is tried
+        // again — and this time it opens. The pause is for the clock the file
+        // is stamped from, as in `searcher_hot_reloads_a_rebuilt_index`.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        pipeline::index_repo(&config, true).unwrap();
+        hold_the_index(&mut session, &mut tried, &config);
+        assert!(session.is_some(), "a rebuilt index has to be picked up");
     }
 
     #[test]
