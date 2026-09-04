@@ -6,10 +6,17 @@
     ],
     "packageRules": [
         {
+            "matchPackageNames": [
+                "*"
+            ],
+            "minimumReleaseAge": "7 days"
+        },
+        {
             "allowedVersions": "<3",
             "matchPackageNames": [
                 "bincode"
-            ]
+            ],
+            "minimumReleaseAge": "7 days"
         }
     ]
 }
