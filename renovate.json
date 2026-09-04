@@ -3,5 +3,13 @@
     "extends": [
         "config:recommended",
         "group:all"
+    ],
+    "packageRules": [
+        {
+            "allowedVersions": "<3",
+            "matchPackageNames": [
+                "bincode"
+            ]
+        }
     ]
 }
