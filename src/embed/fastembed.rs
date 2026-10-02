@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use anyhow::{Result, anyhow};
 use directories::ProjectDirs;
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 
 use super::Embedder;
 
@@ -19,7 +19,7 @@ impl FastEmbedder {
         let cache = cache_dir();
         std::fs::create_dir_all(&cache).ok();
         let model = TextEmbedding::try_new(
-            InitOptions::new(embedding_model)
+            TextInitOptions::new(embedding_model)
                 .with_cache_dir(cache)
                 .with_show_download_progress(true),
         )?;
