@@ -62,7 +62,7 @@ impl Embedder for FastEmbedder {
     fn embed_documents(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         let mut model = self.model.lock().expect("embedder mutex poisoned");
-        model.embed(refs, None)
+        Ok(model.embed(refs, None)?)
     }
 
     fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
