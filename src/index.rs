@@ -58,11 +58,12 @@ impl Index {
     pub fn load(path: &Path) -> Result<Self> {
         let bytes =
             std::fs::read(path).with_context(|| format!("reading index {}", path.display()))?;
-        let index: Index = bincode::deserialize(&bytes).map_err(|e| {
-            anyhow::anyhow!(
-                "index is unreadable or corrupt: {e}; run `ripsem index --force` to rebuild"
-            )
-        })?;
+        let (index, _): (Index, usize) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy()).map_err(|e| {
+                anyhow::anyhow!(
+                    "index is unreadable or corrupt: {e}; run `ripsem index --force` to rebuild"
+                )
+            })?;
         if index.format_version != FORMAT_VERSION {
             anyhow::bail!("index format is from an older ripsem; run `ripsem index --force`");
         }
@@ -73,7 +74,8 @@ impl Index {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let bytes = bincode::serialize(self).context("encoding index")?;
+        let bytes = bincode::serde::encode_to_vec(self, bincode::config::legacy())
+            .context("encoding index")?;
         let tmp = temp_sibling(path);
         std::fs::write(&tmp, bytes).with_context(|| format!("writing index {}", tmp.display()))?;
         std::fs::rename(&tmp, path)
