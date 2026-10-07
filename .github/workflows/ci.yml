@@ -4,6 +4,10 @@ on:
   push:
     branches: [master]
   pull_request:
+  # An advisory can land against a dependency that has not changed, so the
+  # audit below also runs on its own without anybody pushing.
+  schedule:
+    - cron: '0 6 * * 1'
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,6 +31,18 @@ jobs:
         run: cargo test --features treesitter,hnsw --all-targets
       - name: Build all features
         run: cargo build --all-features
+
+  # Renovate keeps Cargo.toml current, but an advisory is usually against a
+  # transitive crate that only the lockfile names - rustls, h2 and
+  # crossbeam-epoch all had one while every direct dependency was up to date.
+  # A separate job so an advisory does not hide the state of the gates above.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit
 
   # Paths are the part of this that is not portable: the index stores
   # forward-slash repo-relative paths, the walker judges them against the root,
