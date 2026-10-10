@@ -40,14 +40,54 @@ pub fn dequantize(stored: &QuantizedVector) -> Vec<f32> {
         .collect()
 }
 
+/// Independent running sums. A single `f32` accumulator is one long chain of
+/// dependent additions, and the compiler may not reorder float addition to
+/// break it up, so the loop runs one element at a time. Sixteen sums are
+/// sixteen chains it can keep in vector registers side by side.
+const LANES: usize = 16;
+
+/// Every query scores every record through this, so it is most of what the
+/// vector half of a search costs.
 pub fn dot(stored: &QuantizedVector, query: &[f32]) -> f32 {
-    let acc: f32 = stored
-        .data
+    let len = stored.data.len().min(query.len());
+    let (data, query) = (&stored.data[..len], &query[..len]);
+    let mut sums = [0f32; LANES];
+    let mut data_chunks = data.chunks_exact(LANES);
+    let mut query_chunks = query.chunks_exact(LANES);
+    for (q, x) in (&mut data_chunks).zip(&mut query_chunks) {
+        for lane in 0..LANES {
+            sums[lane] += q[lane] as f32 * x[lane];
+        }
+    }
+    let tail: f32 = data_chunks
+        .remainder()
         .iter()
-        .zip(query)
+        .zip(query_chunks.remainder())
         .map(|(q, x)| *q as f32 * x)
         .sum();
-    acc * stored.scale
+    (sums.iter().sum::<f32>() + tail) * stored.scale
+}
+
+/// The same split for two full-precision vectors, which is what the
+/// approximate-nearest-neighbour graph compares while it is being built.
+pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
+    let len = a.len().min(b.len());
+    let (a, b) = (&a[..len], &b[..len]);
+    let mut sums = [0f32; LANES];
+    let mut a_chunks = a.chunks_exact(LANES);
+    let mut b_chunks = b.chunks_exact(LANES);
+    for (x, y) in (&mut a_chunks).zip(&mut b_chunks) {
+        for lane in 0..LANES {
+            sums[lane] += x[lane] * y[lane];
+        }
+    }
+    let tail: f32 = a_chunks
+        .remainder()
+        .iter()
+        .zip(b_chunks.remainder())
+        .map(|(x, y)| x * y)
+        .sum();
+    sums.iter().sum::<f32>() + tail
 }
 
 #[cfg(test)]
@@ -79,6 +119,31 @@ mod tests {
         let q = quantize(&[0.0, 0.0, 0.0]);
         assert_eq!(q.scale, 0.0);
         assert_eq!(dot(&q, &[1.0, 1.0, 1.0]), 0.0);
+    }
+
+    /// The split sums have a tail for lengths that are not a multiple of the
+    /// lane count, and a dimension of 3 or 37 has to score like 384 does.
+    #[test]
+    fn split_sums_match_a_plain_sum_at_any_length() {
+        for len in [0, 1, 3, 15, 16, 17, 37, 384, 768] {
+            let a: Vec<f32> = (0..len)
+                .map(|i| ((i * 7 % 11) as f32 - 5.0) / 8.0)
+                .collect();
+            let b: Vec<f32> = (0..len).map(|i| ((i * 3 % 5) as f32 - 2.0) / 4.0).collect();
+            let exact = plain_dot(&a, &b);
+            assert!((dot_f32(&a, &b) - exact).abs() < 1e-4, "dot_f32 at {len}");
+
+            let q = quantize(&a);
+            let dequantized = plain_dot(&dequantize(&q), &b);
+            assert!((dot(&q, &b) - dequantized).abs() < 1e-4, "dot at {len}");
+        }
+    }
+
+    #[test]
+    fn mismatched_lengths_score_the_common_prefix() {
+        let q = quantize(&[1.0, 1.0, 1.0]);
+        assert!((dot(&q, &[1.0, 1.0]) - 2.0).abs() < 0.02);
+        assert_eq!(dot_f32(&[1.0, 2.0, 3.0], &[1.0]), 1.0);
     }
 
     #[test]
