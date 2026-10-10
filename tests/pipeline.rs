@@ -101,6 +101,30 @@ fn unchanged_files_are_reused_on_reindex() {
     assert_eq!(second.reused, 1);
 }
 
+/// A backend this build cannot load stands in for the model here: if a
+/// reindex with nothing to embed still built the embedder, it would fail.
+#[cfg(not(feature = "fastembed"))]
+#[test]
+fn a_reindex_with_nothing_to_embed_never_loads_the_model() {
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie delta echo foxtrot");
+    dir.write("b.rs", "golf hotel india juliet kilo lima");
+    let mut config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    config.backend = Backend::Fastembed;
+    let unchanged = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(unchanged.embedded, 0);
+
+    std::fs::remove_file(dir.path.join("b.rs")).unwrap();
+    let removed = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(removed.chunks, 1);
+
+    dir.write("a.rs", "alpha bravo charlie delta echo foxtrot mike");
+    let err = pipeline::index_repo(&config, false).unwrap_err();
+    assert!(err.to_string().contains("fastembed"), "got: {err}");
+}
+
 #[test]
 fn switching_model_reembeds_without_force() {
     let dir = TempDir::new();
