@@ -96,8 +96,12 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         None
     };
     let mut prev_chunks: HashMap<String, Vec<Record>> = HashMap::new();
+    let mut prev_ann = None;
+    let mut reusable = false;
     if let Some(prev) = prev {
         if prev.dims == dims && prev.model == config.model {
+            reusable = true;
+            prev_ann = prev.ann;
             for record in prev.records {
                 prev_chunks
                     .entry(record.path.clone())
@@ -176,8 +180,25 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     flush(config, &mut embedder, &mut pending, &mut texts, &mut index)?;
     pb.finish_and_clear();
 
+    let stats = IndexStats {
+        files: files.len(),
+        embedded,
+        reused,
+        chunks: index.records.len(),
+    };
+    // Every record came back unchanged and none was left behind, so the file
+    // on disk already says all of this. Rewriting it would rebuild the graph
+    // and move its mtime, which makes a running server decode it again.
+    let unchanged = reusable
+        && embedded == 0
+        && prev_chunks.values().all(Vec::is_empty)
+        && prev_ann.is_some() == wants_ann(index.records.len());
+    if unchanged {
+        return Ok(stats);
+    }
+
     #[cfg(feature = "hnsw")]
-    if index.records.len() >= crate::ann::MIN_RECORDS {
+    if wants_ann(index.records.len()) {
         let vectors: Vec<Vec<f32>> = index
             .records
             .iter()
@@ -187,12 +208,19 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     }
 
     index.save(&config.index_path())?;
-    Ok(IndexStats {
-        files: files.len(),
-        embedded,
-        reused,
-        chunks: index.records.len(),
-    })
+    Ok(stats)
+}
+
+fn wants_ann(records: usize) -> bool {
+    #[cfg(feature = "hnsw")]
+    {
+        records >= crate::ann::MIN_RECORDS
+    }
+    #[cfg(not(feature = "hnsw"))]
+    {
+        let _ = records;
+        false
+    }
 }
 
 const EMBED_BATCH: usize = 256;

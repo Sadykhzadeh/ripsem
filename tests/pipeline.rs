@@ -125,6 +125,39 @@ fn a_reindex_with_nothing_to_embed_never_loads_the_model() {
     assert!(err.to_string().contains("fastembed"), "got: {err}");
 }
 
+fn modified(path: &Path) -> std::time::SystemTime {
+    std::fs::metadata(path).unwrap().modified().unwrap()
+}
+
+/// A running server re-reads the index whenever its mtime moves, and the
+/// graph is rebuilt whenever the file is written, so an unchanged tree has to
+/// leave the file alone. A removal has to reach it all the same. The pauses
+/// are for the clock the file is stamped from, as in the hot-reload test.
+#[test]
+fn an_unchanged_tree_leaves_the_index_file_alone() {
+    use ripsem::index::Index;
+
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie delta echo foxtrot");
+    dir.write("b.rs", "golf hotel india juliet kilo lima");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let written = modified(&config.index_path());
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let again = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(again.reused, 2);
+    assert_eq!(again.chunks, 2);
+    assert_eq!(modified(&config.index_path()), written);
+
+    std::fs::remove_file(dir.path.join("b.rs")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    pipeline::index_repo(&config, false).unwrap();
+    assert_ne!(modified(&config.index_path()), written);
+    let on_disk = Index::load(&config.index_path()).unwrap();
+    assert!(on_disk.records.iter().all(|r| r.path == "a.rs"));
+}
+
 #[test]
 fn switching_model_reembeds_without_force() {
     let dir = TempDir::new();
