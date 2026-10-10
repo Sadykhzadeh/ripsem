@@ -84,8 +84,10 @@ pub struct SearchHit {
 }
 
 pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
-    let embedder = embed::build(config)?;
-    let dims = embedder.dims();
+    // Loaded on the first chunk that needs a vector: a reindex that finds
+    // nothing changed, or only files removed, never needs the model.
+    let mut embedder: Option<Box<dyn embed::Embedder>> = None;
+    let dims = config.dims();
     let files = walk::collect(config)?;
 
     let prev = if !force && config.index_path().exists() {
@@ -167,11 +169,11 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
             });
             texts.push(c.text);
             if texts.len() >= EMBED_BATCH {
-                flush(embedder.as_ref(), &mut pending, &mut texts, &mut index)?;
+                flush(config, &mut embedder, &mut pending, &mut texts, &mut index)?;
             }
         }
     }
-    flush(embedder.as_ref(), &mut pending, &mut texts, &mut index)?;
+    flush(config, &mut embedder, &mut pending, &mut texts, &mut index)?;
     pb.finish_and_clear();
 
     #[cfg(feature = "hnsw")]
@@ -206,7 +208,8 @@ struct Pending {
 }
 
 fn flush(
-    embedder: &dyn embed::Embedder,
+    config: &Config,
+    embedder: &mut Option<Box<dyn embed::Embedder>>,
     pending: &mut Vec<Pending>,
     texts: &mut Vec<String>,
     index: &mut Index,
@@ -214,6 +217,21 @@ fn flush(
     if texts.is_empty() {
         return Ok(());
     }
+    let embedder = match embedder {
+        Some(built) => built,
+        None => {
+            let built = embed::build(config)?;
+            if built.dims() != index.dims {
+                anyhow::bail!(
+                    "model {} embeds {} dimensions, expected {}",
+                    config.model,
+                    built.dims(),
+                    index.dims
+                );
+            }
+            embedder.insert(built)
+        }
+    };
     let vectors = embedder.embed_documents(texts)?;
     for (p, vector) in pending.drain(..).zip(vectors) {
         index.records.push(Record {
