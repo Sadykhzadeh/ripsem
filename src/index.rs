@@ -340,13 +340,23 @@ impl LexicalRanking {
     }
 }
 
+/// Only the best `k` are kept, so only they need ordering: partitioning them
+/// off first is linear in the index, where sorting all of it was not.
 fn sort_and_truncate(scored: &mut Vec<Hit>, k: usize) {
-    scored.sort_unstable_by(|a, b| {
+    let by_score = |a: &Hit, b: &Hit| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    scored.truncate(k);
+    };
+    if k == 0 {
+        scored.clear();
+        return;
+    }
+    if scored.len() > k {
+        scored.select_nth_unstable_by(k - 1, by_score);
+        scored.truncate(k);
+    }
+    scored.sort_unstable_by(by_score);
 }
 
 fn path_in_scope(path: &str, prefix: &str) -> bool {
@@ -617,6 +627,28 @@ mod tests {
     fn a_k_larger_than_the_index_returns_everything_it_has() {
         let index = sample_index();
         assert_eq!(index.search(&[1.0, 0.0, 0.0], usize::MAX).len(), 3);
+    }
+
+    #[test]
+    fn keeps_the_best_k_in_order_without_sorting_the_rest() {
+        let scores = [0.3, 0.9, 0.1, 0.7, 0.5, 0.8, 0.2];
+        let hits = || -> Vec<Hit> {
+            scores
+                .iter()
+                .enumerate()
+                .map(|(record_idx, &score)| Hit { score, record_idx })
+                .collect()
+        };
+        let kept = |k: usize| {
+            let mut scored = hits();
+            sort_and_truncate(&mut scored, k);
+            scored.iter().map(|h| h.score).collect::<Vec<f32>>()
+        };
+        assert_eq!(kept(3), vec![0.9, 0.8, 0.7]);
+        assert_eq!(kept(1), vec![0.9]);
+        assert_eq!(kept(7), vec![0.9, 0.8, 0.7, 0.5, 0.3, 0.2, 0.1]);
+        assert_eq!(kept(50), kept(7));
+        assert!(kept(0).is_empty());
     }
 
     #[test]
