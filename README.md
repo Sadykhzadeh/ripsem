@@ -31,12 +31,17 @@ JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Scala, Kotlin, Bash,
 HTML, CSS, and JSON; other files fall back to line-window chunking without
 names.
 
-The `hnsw` feature builds an approximate-nearest-neighbour index for large
-repositories. Below ~20k chunks the exact flat scan is already sub-10 ms, so the
-graph is only built above that size; smaller repos keep exact results. The graph
-only changes how the vector arm finds its candidates — the lexical arm still
-scans exactly, and the two are merged the same way, so ranking and `--min-score`
-behave identically at any repo size.
+The `hnsw` feature builds an approximate-nearest-neighbour graph, and only
+above 500 000 chunks; below that every result is exact. The graph only changes
+how the vector arm finds its candidates — the lexical arm still scans every
+chunk, and the two are merged the same way, so ranking and `--min-score` behave
+identically at any repo size. That is also why it rarely pays: it can only save
+the vector half of a query, and it is rebuilt on every reindex that changes
+anything. On a 3 864-file monorepo (51 612 chunks) a query took 2.1 ms with the
+graph and 2.1 ms without it, while the graph cost 13 s on every reindex and 96 MB
+of a 172 MB index. On synthetic 384-dimension vectors the graph's half of a query
+took 2.5 ms against 0.9 ms for the scan at 50 000 chunks, and was still no faster
+at 200 000 (3.5 ms against 3.2 ms), where it took 191 s to build.
 
 ## Usage
 

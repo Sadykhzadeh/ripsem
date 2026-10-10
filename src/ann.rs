@@ -1,7 +1,11 @@
 use instant_distance::{Builder, HnswMap, Point, Search};
 use serde::{Deserialize, Serialize};
 
-pub const MIN_RECORDS: usize = 20_000;
+/// The lexical arm scans every chunk whatever finds the vector candidates, so
+/// the graph can only ever save the vector half of a query, and it is rebuilt
+/// on every reindex that changes anything. Measured, that half stays as cheap
+/// as the graph's own search well past 200 000 chunks.
+pub const MIN_RECORDS: usize = 500_000;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Embedding(pub Vec<f32>);
