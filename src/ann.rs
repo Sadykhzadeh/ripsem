@@ -8,8 +8,7 @@ pub struct Embedding(pub Vec<f32>);
 
 impl Point for Embedding {
     fn distance(&self, other: &Self) -> f32 {
-        let dot: f32 = self.0.iter().zip(&other.0).map(|(a, b)| a * b).sum();
-        1.0 - dot
+        1.0 - crate::quant::dot_f32(&self.0, &other.0)
     }
 }
 
