@@ -1,10 +1,10 @@
 # ripsem
 
-Local, offline code search that answers one question well: *where is the code
-that does this?* Ask with an identifier, an error string, or a plain-language
-description of the behaviour — one query, one ranked answer. No account, no API
-key, no network. Embeddings run on a model that lives on your disk, and the
-index is a single file inside your repo.
+Local, offline code search that answers one question: where is the code that
+does this? Ask with an identifier, an error string, or a plain description of
+the behaviour. One query, one ranked answer. No account, no API key, no
+network. Embeddings run on a model stored on your disk, and the index is a
+single file inside your repo.
 
 Every query runs through two independent retrievers and their rankings are
 merged: BM25 over code-aware tokens, and vector similarity from the embedding
@@ -18,30 +18,28 @@ cargo install --path . --features fastembed,treesitter
 ```
 
 The `fastembed` feature pulls in the local embedding runtime. Without it the
-binary still builds and runs on a lightweight lexical backend (useful for tests
-and CI), but real semantic search needs the model.
+binary builds and runs on a lightweight hashing backend (useful for tests and
+CI), but real semantic search needs the model.
 
 The `treesitter` feature chunks code on function and type boundaries instead of
-fixed line windows, which keeps each indexed snippet aligned to a logical unit,
-and names each chunk after the declaration it belongs to — results arrive as
-`src/pipeline.rs:258-293 fn Searcher::query_scoped`, so a caller can tell a
-definition from a call site without opening the file. A function too large to be
-one chunk passes its name to every piece it is cut into. It covers Rust, Python,
-JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Scala, Kotlin, Bash,
-HTML, CSS, and JSON; other files fall back to line-window chunking without
-names.
+fixed line windows, and names each chunk after the declaration it belongs to.
+Results look like `src/pipeline.rs:258-293 fn Searcher::query_scoped`, so a
+caller can tell a definition from a call site without opening the file. A
+function too large for one chunk passes its name to every piece. It covers Rust,
+Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Scala, Kotlin,
+Bash, HTML, CSS and JSON; other files fall back to line windows without names.
 
-The `hnsw` feature builds an approximate-nearest-neighbour graph, and only
-above 500 000 chunks; below that every result is exact. The graph only changes
-how the vector arm finds its candidates — the lexical arm still scans every
-chunk, and the two are merged the same way, so ranking and `--min-score` behave
-identically at any repo size. That is also why it rarely pays: it can only save
-the vector half of a query, and it is rebuilt on every reindex that changes
-anything. On a 3 864-file monorepo (51 612 chunks) a query took 2.1 ms with the
-graph and 2.1 ms without it, while the graph cost 13 s on every reindex and 96 MB
-of a 172 MB index. On synthetic 384-dimension vectors the graph's half of a query
-took 2.5 ms against 0.9 ms for the scan at 50 000 chunks, and was still no faster
-at 200 000 (3.5 ms against 3.2 ms), where it took 191 s to build.
+The `hnsw` feature builds an approximate-nearest-neighbour graph, but only above
+500 000 chunks; below that every result is exact. The graph changes only how the
+vector arm finds candidates. The lexical arm still scans every chunk and the two
+are merged the same way, so ranking and `--min-score` behave identically at any
+size. It rarely pays: it can only save the vector half of a query, and it is
+rebuilt on every reindex that changes anything. On a 3 864-file monorepo
+(51 612 chunks) a query took 2.1 ms with the graph and 2.1 ms without it, while
+the graph cost 13 s on every reindex and 96 MB of a 172 MB index. On synthetic
+384-dimension vectors the graph's half of a query took 2.5 ms against 0.9 ms for
+the scan at 50 000 chunks, and was still no faster at 200 000 (3.5 ms against
+3.2 ms), where it took 191 s to build.
 
 ## Usage
 
@@ -54,30 +52,29 @@ ripsem status --json              # the same as JSON (schema ripsem/status/v1)
 ripsem watch                      # index and keep it in sync as files change
 ```
 
-`status` also says how far the index has drifted from the files: every hit
-carries the line range its file had when it was indexed, so `tree: out of date:
-3 changed, 1 new` is the difference between a result you can open and a line
-number that has moved. It is measured with the same content hash the incremental
-index uses, so what it counts is what a rebuild would touch — nothing more. The
-JSON carries it as `index.drift` (`added`/`modified`/`removed`), for an agent
-deciding whether to reindex before it searches.
+`status` also reports how far the index has drifted from the files. Hits carry
+the line range their file had when it was indexed, so `tree: out of date: 3
+changed, 1 new` tells you when a result may no longer point at the right lines.
+Drift is measured with the same content hash the incremental index uses, so it
+counts exactly what a rebuild would touch. The JSON carries it as `index.drift`
+(`added`/`modified`/`removed`).
 
 Search respects `.gitignore` and an optional `.ripsemignore`. Results print as
-`path:start-end` with a snippet, ordered by the merged ranking. Two records can
-cover the same lines — a declaration and the documentation above it, or the
-overlap between adjacent windows — and only the better-ranked one is returned, so
-`-k 5` means five distinct places rather than five records. The number shown
-is confidence in 0–1: semantic similarity, or the share of the query's terms
-found literally, whichever is higher. Order comes from how strongly both
-retrievers back a chunk, so confidence does not have to fall down the list — a
-hit ranked lower can still carry every word you typed. Add `--json` for
-machine-readable output,
-or `--in <subdir>` to limit results to a subdirectory (e.g. `ripsem search
-"where is auth set up?" --in src/auth`; `./src/auth` and an absolute path into
-the repository mean the same, and a path outside it is an error). Use
-`--context <N>` to control how many snippet lines print per hit (default 3; `0`
-prints just the locations). Pass `--min-score <SCORE>` to keep only strong
-matches (applies to both the human and `--json` output).
+`path:start-end` with a snippet, in merged-ranking order. Two records can cover
+the same lines (a declaration and the documentation above it, or the overlap
+between adjacent windows); only the better-ranked one is returned, so `-k 5`
+means five distinct places. The number shown is confidence in 0-1: semantic
+similarity, or the share of the query's terms found literally, whichever is
+higher. Order comes from how strongly both retrievers back a chunk, so
+confidence does not have to fall down the list.
+
+- `--json` prints machine-readable output.
+- `--in <subdir>` limits results to a subdirectory (`./src/auth` and an absolute
+  path into the repository mean the same; a path outside it is an error).
+- `--context <N>` sets how many snippet lines print per hit (default 3; `0`
+  prints just the locations).
+- `--min-score <SCORE>` keeps only strong matches, in both human and JSON output.
+- `--count-by-file` prints hit counts per file instead of the hits.
 
 ## Models
 
@@ -91,7 +88,7 @@ ripsem index --force              # rebuild after switching
 | --- | --- | --- | --- |
 | bge-small-en-v1.5 | 384 | ~133 MB | default, and the best of the three measured |
 | all-MiniLM-L6-v2 | 384 | ~90 MB | fastest, measurably lower recall |
-| bge-base-en-v1.5 | 768 | ~436 MB | better alone, worse merged — see Quality |
+| bge-base-en-v1.5 | 768 | ~436 MB | better alone, worse merged (see Quality) |
 | multilingual-e5-small | 384 | ~470 MB | multilingual |
 | nomic-embed-text-v1.5 | 768 | ~550 MB | long context |
 
@@ -123,22 +120,22 @@ skip_generated = true
 exclude = []
 ```
 
-`chunk_lines`/`chunk_overlap` size the line windows used for plain-text files and
-for languages without a parser. `max_chunk_lines` caps a single semantic chunk;
-larger functions are split. `exclude` takes gitignore-style globs.
+`chunk_lines` and `chunk_overlap` size the line windows used for plain-text
+files and languages without a parser. `max_chunk_lines` caps a single semantic
+chunk; larger functions are split. `exclude` takes gitignore-style globs.
 
-`skip_generated` leaves out files that are committed but written by a machine —
+`skip_generated` leaves out files that are committed but written by a machine:
 lock files, `*.min.js`, `*.min.css` and source maps. `.gitignore` does not cover
-them because they are committed on purpose, and one of them can outweigh
-everything written by hand: in this repository `Cargo.lock` alone accounted for
-124 of 291 chunks. Set it to `false` to index them anyway.
+them because they are committed on purpose, and one can outweigh everything
+written by hand: in this repository `Cargo.lock` alone accounted for 124 of 291
+chunks. Set it to `false` to index them anyway.
 
 ## Quality
 
 The benchmark asks 73 labelled questions across four real projects in four
-languages, in four shapes — a description in the reader's own words, an identifier
-typed from memory, a message seen in output, and a name remembered wrong — and
-scores each retriever against ground-truth files:
+languages, in four shapes: a description in the reader's own words, an
+identifier typed from memory, a message seen in output, and a name remembered
+wrong. Each retriever is scored against ground-truth files (MRR, top five).
 
 ```
 cargo test --release --features fastembed,treesitter \
@@ -146,10 +143,9 @@ cargo test --release --features fastembed,treesitter \
 ```
 
 Every corpus is pinned: ripsem's own source at the `corpus/v1` tag, and three
-projects at release tags, cloned once into `target/corpora`. Nothing moves as the
-code moves, so two runs differ only by what changed in retrieval. The first run
-needs network and the embedding model, so it is `#[ignore]`d out of the normal
-run.
+projects at release tags, cloned once into `target/corpora`. Two runs differ only
+by what changed in retrieval. The first run needs network and the embedding
+model, so the test is `#[ignore]`d.
 
 | corpus | language | chunks | vector only | lexical only | merged |
 | --- | --- | --- | --- | --- | --- |
@@ -166,30 +162,25 @@ run.
 | message (9) | 0.537 | 1.000 | **1.000** |
 | recalled name (14) | 0.750 | 0.554 | **0.810** |
 
-The per-corpus column is why more than one project is measured. Which arm is
-stronger *reverses* between them: BM25 wins on Go and on Rust, the embedding model
-wins on Python and TypeScript. An earlier version of this file claimed BM25 beats
-the model on real code — that held for the one repository being measured and is
-false in general.
+Which arm is stronger reverses between corpora: BM25 wins on Go and Rust, the
+embedding model on Python and TypeScript. Merging is ahead on every corpus and
+every query shape, so nobody has to know in advance which arm a question needs.
 
-Merging is ahead on every corpus and on every query shape. Nothing tells you in
-advance which arm a given repository and a given question will need, which is the
-whole case for not having to choose.
+### Ranking code above prose
 
-Results that belong to a declaration are ranked above results that do not, and
-that one rule is worth 0.05 of the aggregate on its own. It came out of reading
-the questions the merge got wrong rather than from a theory: on those, more than
-half the returned results were changelogs, documentation, manifests and tests.
-Both retrievers prefer them honestly — a paragraph of prose answers a prose
-question more closely than the function that implements it — and free prose is not
+Results that belong to a declaration rank above results that do not. That one
+rule is worth 0.05 of the aggregate. On the questions the merge got wrong, more
+than half the returned results were changelogs, documentation, manifests and
+tests: both retrievers prefer prose for a prose question, and free prose is not
 what a code search is for. Documentation attached to a declaration carries that
-declaration's symbol and is unaffected; a repository the parser cannot read has no
-declarations at all and still gets its results. The caveat to hold onto: every
-label in this benchmark names a source file, so a rule preferring source is
-rewarded partly by construction, and the number overstates how general it is.
+declaration's symbol and is unaffected, and a repository the parser cannot read
+has no declarations and still gets its results. Every label in the benchmark
+names a source file, so a rule preferring source is rewarded partly by
+construction, and the number overstates how general it is.
 
-The default model is a measurement, not a guess. Three models over the same 73
-questions:
+### Choice of model
+
+Three models over the same 73 questions:
 
 | model | dims | disk | vector only | merged |
 | --- | --- | --- | --- | --- |
@@ -197,83 +188,71 @@ questions:
 | bge-small-en-v1.5 | 384 | ~133 MB | 0.627 | **0.733** |
 | bge-base-en-v1.5 | 768 | ~436 MB | **0.637** | 0.689 |
 
-The larger model is the better retriever on its own and the worse one merged. The
-ordering held before doc records were added and after, so it is not an accident of
-one configuration. Why a model that ranks better alone merges worse is not
-explained here, only measured; three times the disk for less accuracy settles the
-default without an explanation.
+The larger model is the better retriever alone and the worse one merged. The
+ordering held before and after doc records were added. Why is not explained
+here, only measured; three times the disk for less accuracy settles the default.
 
-Documentation is indexed as records of its own. A doc comment or docstring is
-turned into a second record for the same declaration — the same file, the same
-line range, so a hit still points at code — carrying the author's prose instead of
-the code. It is the only change measured here that improved every corpus at once:
-merged MRR 0.679 to **0.733**, and 0.681 to 0.799 on Go, the largest single move
-in this table.
+### Documentation records
 
-It did not improve what it was aimed at. The idea was that a description-shaped
-query would find the sentence explaining a function; descriptions did not move
-(0.551 to 0.545). What moved was identifiers (0.811 to 0.913), messages (0.870 to
-0.944) and remembered names (0.607 to 0.690).
+A doc comment or docstring becomes a second record for the same declaration (same
+file, same line range, so a hit still points at code) holding the author's prose
+instead of the code. It is the only change measured here that improved every
+corpus: merged MRR 0.679 to **0.733**, and 0.681 to 0.799 on Go.
 
-The reason is an interaction, and it took a two-by-two to see it:
+It did not improve what it was aimed at. Descriptions did not move (0.551 to
+0.545); identifiers (0.811 to 0.913), messages (0.870 to 0.944) and remembered
+names (0.607 to 0.690) did. The cause is an interaction with BM25 length
+normalisation:
 
 | | length normalisation on | off |
 | --- | --- | --- |
 | without doc records | 0.679 | 0.670 |
 | with doc records | **0.733** | 0.679 |
 
-Neither on its own is worth anything — doc records add 0.009 without length
-normalisation, and length normalisation adds 0.009 without doc records. Together
-they add 0.054. A doc record is a *short* document that names the declaration and
-says what it is for, and BM25's length term exists precisely to say that a term in
-a short document is stronger evidence than the same term in a long one. The gain
-is that rule finally having something to work with, not the prose being read for
-its meaning.
+Doc records add 0.009 without length normalisation, and length normalisation adds
+0.009 without doc records; together they add 0.054. A doc record is a short
+document that names the declaration, and BM25's length term says a term in a
+short document is stronger evidence than the same term in a long one.
 
-Giving the model more context to embed was tried twice and is not in the code.
-Prepending each chunk's path and declaration to the text sent for embedding —
-standard advice for retrieval over code — measured 0.644 raw and 0.661 with the
-identifiers spelled out as words (`url-to-options` as `url to options`), against
-0.679 for the bare body. Both forms lift identifiers, to 0.835 at best; both push
-descriptions down, to 0.487 at best from 0.551. The header helps the shape the
-lexical arm already answers well and hurts the shape where the model is the only
-arm that can answer at all, and descriptions are 28 of the 73 questions.
+### Reading cost
 
-The same run measures what reaching the answer costs to read. Counting the
-snippets up to and including the first correct hit, a caller takes in **439 bytes
-to reach the answer, against 14 410 bytes for the whole file that answer lives in
-— 33× less**. Read that narrowly: it is the 65 of 73 questions answered inside the
-top five, and the comparison is against reading one file end to end, which is what
-happens when a search can only name a filename. It is not a model of what an agent
-really does, and it says nothing about the 8 questions no arm answered.
+Counting the snippets up to and including the first correct hit, a caller takes
+in **439 bytes to reach the answer, against 14 410 bytes for the whole file it
+lives in, 33x less**. This covers the 65 of 73 questions answered inside the top
+five, and compares against reading one file end to end, which is what happens
+when a search can only name a filename. It is not a model of what an agent does,
+and says nothing about the 8 questions no arm answered.
 
-A second benchmark compares what the two `skip_generated` settings return.
-Indexing the lock file put a machine-written chunk in 6 of 105 result slots, and
-cost 380 chunks against 256, 484 KB against 335 KB, and 21.5 s against 14.6 s to
-build. Ranking is deliberately not part of that claim: `crates.io-index` occurs
-409 times in `Cargo.lock`, so indexing it hands the word `index` the document
-frequency of a stopword, and one corpus cannot separate that accident from the
-change being measured.
+A second benchmark compares the two `skip_generated` settings. Indexing the lock
+file put a machine-written chunk in 6 of 105 result slots, and cost 380 chunks
+against 256, 484 KB against 335 KB, and 21.5 s against 14.6 s to build. Ranking
+is deliberately not part of that claim: `crates.io-index` occurs 409 times in
+`Cargo.lock`, so indexing it gives the word `index` the document frequency of a
+stopword, and one corpus cannot separate that from the change being measured.
 
-The honest gaps. A description in the reader's own words remains the weakest shape
-at 0.595, and eight questions are still unanswered inside the top five. Only one
-of those is a retrieval failure — a chunk no arm surfaces at any depth; the rest
-are ranked somewhere below five.
+### Known gaps
 
-Two attempts at the ranking are recorded because they failed instructively.
-Ordering the complete-coverage group by BM25 lifts messages and drops identifiers
-from 0.811 to 0.714, because a one-word query reaches full coverage in dozens of
-chunks and the group stops meaning anything. Weighting the lexical arm by how much
-of the query it could anchor did exactly what it was predicted to do — identifiers
-and messages unchanged, remembered names up from 0.702 to 0.726 — and lost the same
-amount on descriptions, 0.545 to 0.524. Partial coverage is evidence rather than
-ignorance: a description whose words half-match is still being helped by the
-lexical arm, and no measure taken from one arm alone separates that from a
-paraphrase the arm cannot follow. Both were reverted; what fixed the shapes they
-were aimed at was reading the failures and finding prose in the results. `models` does not find `ModelInfo` because nothing folds plurals —
-a trailing-`s` rule was tried and measured worse. Weighting the declared name
-above the rest of a chunk moved a single query in and out of first place and was
-dropped as a bump rather than a trend.
+A description in the reader's own words is the weakest shape at 0.595, and eight
+questions are still unanswered inside the top five. Only one of those is a
+retrieval failure (a chunk no arm surfaces at any depth); the rest rank below
+five. `models` does not find `ModelInfo` because nothing folds plurals.
+
+### Tried and not kept
+
+- Prepending each chunk's path and declaration to the text sent for embedding
+  measured 0.644 raw and 0.661 with identifiers spelled out as words
+  (`url-to-options` as `url to options`), against 0.679 for the bare body. Both
+  lift identifiers (0.835 at best) and push descriptions down (0.487 at best,
+  from 0.551). Descriptions are 28 of the 73 questions.
+- Ordering the complete-coverage group by BM25 lifts messages and drops
+  identifiers from 0.811 to 0.714, because a one-word query reaches full coverage
+  in dozens of chunks.
+- Weighting the lexical arm by how much of the query it could anchor moved
+  remembered names from 0.702 to 0.726 and lost the same amount on descriptions,
+  0.545 to 0.524.
+- A trailing-`s` plural rule measured worse.
+- Weighting the declared name above the rest of a chunk moved a single query in
+  and out of first place.
 
 ## License
 
