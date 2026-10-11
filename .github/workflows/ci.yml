@@ -32,6 +32,34 @@ jobs:
       - name: Build all features
         run: cargo build --all-features
 
+  # The ONNX Runtime that ort downloads is built against glibc 2.38 and GCC 13,
+  # and links against an older C and C++ runtime only through the symbols in
+  # src/embed/ort_compat.rs. ubuntu-latest is new enough not to need them, so
+  # this job builds where they are needed: the glibc 2.35 and libstdc++ 12 of
+  # Ubuntu 22.04, the oldest system the install instructions promise. The model
+  # test and the search run the runtime, not just link it.
+  real-backend:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test with the embedding model
+        run: |
+          cargo test --features fastembed,treesitter --all-targets
+          cargo test --features fastembed,treesitter --test semantic_search -- --ignored
+      - name: Index and search with the model
+        run: |
+          cargo build --features fastembed,treesitter
+          ripsem=$PWD/target/debug/ripsem
+          mkdir "$RUNNER_TEMP/repo"
+          cp -R src "$RUNNER_TEMP/repo/"
+          cd "$RUNNER_TEMP/repo"
+          "$ripsem" init
+          "$ripsem" index
+          "$ripsem" search "load the embedding model" --context 0 | tee hits
+          grep -q 'src/embed/fastembed.rs' hits
+
   # Renovate keeps Cargo.toml current, but an advisory is usually against a
   # transitive crate that only the lockfile names - rustls, h2 and
   # crossbeam-epoch all had one while every direct dependency was up to date.
