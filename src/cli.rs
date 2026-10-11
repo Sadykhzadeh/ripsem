@@ -507,13 +507,33 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut doc: Value = if path.exists() {
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        serde_json::from_str(&text).unwrap_or_else(|_| json!({}))
-    } else {
-        json!({})
+    // The file usually lists other servers too. One that cannot be read as a
+    // JSON object is left exactly as it is: writing a fresh one in its place
+    // would quietly delete everything else that was configured there.
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", show_path(&path))),
     };
+    // Windows PowerShell writes UTF-8 with a byte-order mark, which JSON
+    // does not allow but a config file made there will have.
+    let text = text.trim_start_matches('\u{feff}');
+    let mut doc: Value = if text.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(text).with_context(|| {
+            format!(
+                "{} is not valid JSON; fix it and run this again",
+                show_path(&path)
+            )
+        })?
+    };
+    if !doc.is_object() {
+        anyhow::bail!(
+            "{} does not hold a JSON object; fix it and run this again",
+            show_path(&path)
+        );
+    }
 
     if !doc
         .get("mcpServers")
@@ -708,6 +728,50 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["index"]["present"], false);
         assert_eq!(v["index"]["error"], "bad magic");
+    }
+
+    #[test]
+    fn install_leaves_a_config_it_cannot_read_untouched() {
+        let dir = crate::testutil::TempDir::new();
+        let path = dir.path().join(".mcp.json");
+        // A trailing comma is enough to fail the parse, and the server already
+        // listed must not be lost to it.
+        let broken = r#"{"mcpServers":{"other":{"command":"x"},}}"#;
+        std::fs::write(&path, broken).unwrap();
+        let err = cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap_err();
+        assert!(err.to_string().contains("not valid JSON"), "got: {err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+
+        std::fs::write(&path, "[1, 2]").unwrap();
+        let err = cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap_err();
+        assert!(err.to_string().contains("JSON object"), "got: {err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[1, 2]");
+    }
+
+    #[test]
+    fn install_keeps_the_servers_of_a_config_with_a_byte_order_mark() {
+        let dir = crate::testutil::TempDir::new();
+        let path = dir.path().join(".mcp.json");
+        std::fs::write(
+            &path,
+            "\u{feff}{\"mcpServers\":{\"other\":{\"command\":\"x\"}}}",
+        )
+        .unwrap();
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["mcpServers"]["other"]["command"], "x");
+        assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
+    }
+
+    #[test]
+    fn install_fills_an_empty_config() {
+        let dir = crate::testutil::TempDir::new();
+        std::fs::write(dir.path().join(".mcp.json"), "\n").unwrap();
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        let doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
     }
 
     #[test]
