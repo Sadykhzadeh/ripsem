@@ -14,14 +14,12 @@ pub struct Chunk {
 
 pub fn chunk_source(path: &Path, text: &str, config: &Config) -> Vec<Chunk> {
     #[cfg(feature = "treesitter")]
-    if let Some(spec) = crate::lang::detect(path) {
-        if let Some(chunks) =
+    if let Some(spec) = crate::lang::detect(path)
+        && let Some(chunks) =
             crate::semantic::chunk(text, &spec, config.max_chunk_lines, config.chunk_overlap)
-        {
-            if !chunks.is_empty() {
-                return chunks;
-            }
-        }
+        && !chunks.is_empty()
+    {
+        return chunks;
     }
     #[cfg(not(feature = "treesitter"))]
     let _ = path;

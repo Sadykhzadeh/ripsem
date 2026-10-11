@@ -97,16 +97,17 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     let mut prev_chunks: HashMap<String, Vec<Record>> = HashMap::new();
     let mut prev_ann = None;
     let mut reusable = false;
-    if let Some(prev) = prev {
-        if prev.dims == dims && prev.model == config.model {
-            reusable = true;
-            prev_ann = prev.ann;
-            for record in prev.records {
-                prev_chunks
-                    .entry(record.path.clone())
-                    .or_default()
-                    .push(record);
-            }
+    if let Some(prev) = prev
+        && prev.dims == dims
+        && prev.model == config.model
+    {
+        reusable = true;
+        prev_ann = prev.ann;
+        for record in prev.records {
+            prev_chunks
+                .entry(record.path.clone())
+                .or_default()
+                .push(record);
         }
     }
     let prev_hash: HashMap<&str, u64> = prev_chunks
@@ -137,12 +138,10 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         let path = &files[i];
         let rel = relative(&config.root, path);
 
-        if !changed {
-            if let Some(records) = prev_chunks.get_mut(&rel) {
-                index.records.append(records);
-                reused += 1;
-                continue;
-            }
+        if !changed && let Some(records) = prev_chunks.get_mut(&rel) {
+            index.records.append(records);
+            reused += 1;
+            continue;
         }
 
         let bytes = match std::fs::read(path) {
@@ -466,20 +465,20 @@ impl Searcher {
         let terms = crate::lexical::query_terms(query);
 
         #[cfg(feature = "hnsw")]
-        if prefix.is_none() {
-            if let Some(map) = &self.ann_map {
-                let depth = crate::index::candidate_depth(k);
-                let dense: Vec<crate::index::Hit> = crate::ann::search_map(map, &qv, depth)
-                    .into_iter()
-                    .map(|(record_idx, score)| crate::index::Hit { score, record_idx })
-                    .collect();
-                return Ok(self
-                    .index
-                    .search_fused_with(&dense, &qv, &terms, k)
-                    .into_iter()
-                    .map(|h| self.hit(h.record_idx, h.score))
-                    .collect());
-            }
+        if prefix.is_none()
+            && let Some(map) = &self.ann_map
+        {
+            let depth = crate::index::candidate_depth(k);
+            let dense: Vec<crate::index::Hit> = crate::ann::search_map(map, &qv, depth)
+                .into_iter()
+                .map(|(record_idx, score)| crate::index::Hit { score, record_idx })
+                .collect();
+            return Ok(self
+                .index
+                .search_fused_with(&dense, &qv, &terms, k)
+                .into_iter()
+                .map(|h| self.hit(h.record_idx, h.score))
+                .collect());
         }
 
         Ok(self

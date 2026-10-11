@@ -51,17 +51,16 @@ pub fn dot(stored: &QuantizedVector, query: &[f32]) -> f32 {
     let len = stored.data.len().min(query.len());
     let (data, query) = (&stored.data[..len], &query[..len]);
     let mut sums = [0f32; LANES];
-    let mut data_chunks = data.chunks_exact(LANES);
-    let mut query_chunks = query.chunks_exact(LANES);
-    for (q, x) in (&mut data_chunks).zip(&mut query_chunks) {
+    let (data_chunks, data_tail) = data.as_chunks::<LANES>();
+    let (query_chunks, query_tail) = query.as_chunks::<LANES>();
+    for (q, x) in data_chunks.iter().zip(query_chunks) {
         for lane in 0..LANES {
             sums[lane] += q[lane] as f32 * x[lane];
         }
     }
-    let tail: f32 = data_chunks
-        .remainder()
+    let tail: f32 = data_tail
         .iter()
-        .zip(query_chunks.remainder())
+        .zip(query_tail)
         .map(|(q, x)| *q as f32 * x)
         .sum();
     (sums.iter().sum::<f32>() + tail) * stored.scale
@@ -72,19 +71,14 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     let len = a.len().min(b.len());
     let (a, b) = (&a[..len], &b[..len]);
     let mut sums = [0f32; LANES];
-    let mut a_chunks = a.chunks_exact(LANES);
-    let mut b_chunks = b.chunks_exact(LANES);
-    for (x, y) in (&mut a_chunks).zip(&mut b_chunks) {
+    let (a_chunks, a_tail) = a.as_chunks::<LANES>();
+    let (b_chunks, b_tail) = b.as_chunks::<LANES>();
+    for (x, y) in a_chunks.iter().zip(b_chunks) {
         for lane in 0..LANES {
             sums[lane] += x[lane] * y[lane];
         }
     }
-    let tail: f32 = a_chunks
-        .remainder()
-        .iter()
-        .zip(b_chunks.remainder())
-        .map(|(x, y)| x * y)
-        .sum();
+    let tail: f32 = a_tail.iter().zip(b_tail).map(|(x, y)| x * y).sum();
     sums.iter().sum::<f32>() + tail
 }
 
