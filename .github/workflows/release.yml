@@ -14,7 +14,37 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The licences of what every archive contains, gathered once: the Rust crates,
+  # and ONNX Runtime with the libraries it bundles, which ort links statically.
+  notices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.2
+      - name: Collect notices
+        run: |
+          out=third-party-notices
+          mkdir "$out"
+          cargo about generate --locked --features fastembed,treesitter \
+            -c third-party/about.toml -o "$out/rust-crates.txt" third-party/about.hbs
+          # ort-sys downloads the ONNX Runtime release its dist table names.
+          ort_sys=$(cargo metadata --locked --format-version 1 --features fastembed |
+            jq -r '.packages[] | select(.name == "ort-sys") | .manifest_path')
+          ort=$(grep -m1 -o 'ms@[0-9.]*' "$(dirname "$ort_sys")/build/download/dist.tsv")
+          base=https://raw.githubusercontent.com/microsoft/onnxruntime/v${ort#ms@}
+          curl -fsSL -o "$out/onnxruntime-LICENSE.txt" "$base/LICENSE"
+          curl -fsSL -o "$out/onnxruntime-ThirdPartyNotices.txt" "$base/ThirdPartyNotices.txt"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: third-party-notices
+          path: third-party-notices/
+          if-no-files-found: error
+
   build:
+    needs: notices
     strategy:
       matrix:
         include:
@@ -34,6 +64,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v8
+        with:
+          name: third-party-notices
+          path: third-party-notices
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }} --features fastembed,treesitter
         env:
@@ -48,11 +82,22 @@ jobs:
           name=ripsem-$GITHUB_REF_NAME-${{ matrix.target }}
           mkdir "$name"
           cp README.md LICENSE "$name/"
+          cp -R third-party-notices "$name/third-party"
           if [ "$RUNNER_OS" = Windows ]; then
             cp target/${{ matrix.target }}/release/ripsem.exe "$name/"
             # The Windows ONNX Runtime is linked against the DirectML.dll it
             # comes with, which has to sit next to the executable.
             cp ort-cache/dfbin/*/*/DirectML.dll "$name/"
+            # third-party/directml holds the licence of DirectML 1.15.4, so a
+            # different DLL stops the release until its licence is checked in.
+            dml=$(powershell -NoProfile -Command \
+              '(Get-Item ort-cache/dfbin/*/*/DirectML.dll).VersionInfo.ProductVersion' | tr -d '\r')
+            case $dml in
+              1.15.4+*) ;;
+              *) echo "DirectML.dll is $dml, third-party/directml is for 1.15.4"; exit 1 ;;
+            esac
+            cp third-party/directml/LICENSE.txt "$name/third-party/DirectML-LICENSE.txt"
+            cp third-party/directml/ThirdPartyNotices.txt "$name/third-party/DirectML-ThirdPartyNotices.txt"
           else
             cp target/${{ matrix.target }}/release/ripsem "$name/"
           fi
@@ -78,7 +123,7 @@ jobs:
           fi
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.target }}
+          name: ripsem-${{ matrix.target }}
           path: ${{ env.PACKAGE }}.*
           if-no-files-found: error
 
@@ -90,6 +135,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
+          pattern: ripsem-*
           path: dist
           merge-multiple: true
       - name: Publish

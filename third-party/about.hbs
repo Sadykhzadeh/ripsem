@@ -1,0 +1,16 @@
+Rust crates compiled into ripsem, and their licences.
+{{#each overview}}
+{{{name}}}: {{count}} crate{{#if (ne count 1)}}s{{/if}}
+{{/each}}
+{{#each licenses}}
+
+================================================================================
+{{{name}}}
+
+Used by:
+{{#each used_by}}
+  {{{crate.name}}} {{{crate.version}}}
+{{/each}}
+
+{{{text}}}
+{{/each}}
