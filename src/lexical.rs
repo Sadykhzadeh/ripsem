@@ -87,10 +87,9 @@ pub struct TermVector {
 }
 
 impl TermVector {
-    /// The declared name is added as a term of its own. For most chunks it is
-    /// already in the text, but a fragment of a function too large to be one
-    /// chunk does not contain the name of the function it came from, and without
-    /// this it cannot be found by that name at all.
+    /// The declared name is added as a term of its own: a fragment of a large
+    /// function does not contain the function's name, and could not be found by
+    /// it otherwise.
     pub fn new(text: &str, path: &str, symbol: Option<&str>) -> Self {
         let mut hashes = document_terms(text, path);
         if let Some(name) = symbol {
@@ -263,9 +262,8 @@ mod tests {
         assert!(vector.presence(&terms_of("embed")) != 0);
     }
 
-    /// A function larger than the chunk budget is cut into pieces whose text
-    /// never mentions the function. Carrying the declared name is what keeps
-    /// those pieces reachable by it.
+    /// Pieces of a function over the chunk budget never mention the function;
+    /// the declared name keeps them reachable by it.
     #[test]
     fn a_fragment_is_reachable_by_the_name_of_its_function() {
         let terms = terms_of("evict_least_recently_used");

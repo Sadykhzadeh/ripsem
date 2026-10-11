@@ -31,10 +31,8 @@ struct Emitter<'a> {
 }
 
 impl Emitter<'_> {
-    /// `enclosing` carries the declaration the caller is inside, so a function
-    /// too large to be one chunk still stamps its name on each of its pieces —
-    /// otherwise the fragments of exactly the longest functions, where a reader
-    /// most needs to know where they are, arrive anonymous.
+    /// `enclosing` is the declaration being walked, so every piece of a function
+    /// too large for one chunk keeps its name.
     fn walk(&mut self, node: Node, enclosing: Option<&Symbol>) {
         if node_lines(&node) <= self.max_lines {
             self.push(&node, &node, enclosing);
@@ -80,10 +78,8 @@ impl Emitter<'_> {
         }
     }
 
-    /// A chunk that groups several small declarations is named after the first
-    /// of them, which is where its line range starts. Naming it after the
-    /// enclosing block instead would answer `mod tests` to every question about
-    /// a test, which is true and useless.
+    /// A chunk grouping several small declarations is named after the first of
+    /// them, not the enclosing block (which would label every test `mod tests`).
     fn push(&mut self, start: &Node, end: &Node, enclosing: Option<&Symbol>) {
         let body = &self.text[start.start_byte()..end.end_byte()];
         if body.trim().is_empty() {
@@ -98,10 +94,9 @@ impl Emitter<'_> {
         });
     }
 
-    /// Attributes, decorators, export wrappers and import lists all sit between
-    /// the start of a chunk and the declaration it is really about, so finding
-    /// that declaration means scanning forward and downward, not just asking the
-    /// first node.
+    /// Attributes, decorators, export wrappers and imports can sit before the
+    /// declaration a chunk is about, so this scans forward and downward rather
+    /// than asking only the first node.
     fn first_declaration(
         &self,
         start: &Node,
@@ -132,12 +127,9 @@ impl Emitter<'_> {
             .find_map(|child| self.declaration_within(child, enclosing))
     }
 
-    /// A declaration's documentation is indexed as a record of its own, spanning
-    /// the declaration rather than the comment, so a hit still points at code.
-    /// The body of a function rarely contains the words its author would use to
-    /// explain it — `is_indexable` says nothing about files or binaries — but the
-    /// sentence above it does, and until now that sentence was dissolved into the
-    /// same vector as the code it describes.
+    /// Indexes a declaration's documentation as a record of its own. It spans the
+    /// declaration, not the comment, so a hit still points at code. A function
+    /// body rarely uses the words its author would use to explain it.
     fn documentation(&mut self, node: Node, enclosing: Option<&Symbol>) {
         let declared = symbol::declaration(&node, self.text, enclosing);
         if let Some(symbol) = &declared {
@@ -178,9 +170,8 @@ impl Emitter<'_> {
     }
 }
 
-/// Doc comments sit in front of what they describe, so they are gathered by
-/// walking backwards. A comment separated by a blank line is somebody else's —
-/// a licence header, a section divider — so adjacency is required.
+/// Gathers the doc comment in front of a node by walking backwards. A comment
+/// separated by a blank line (licence header, section divider) is not one.
 fn comment_above(node: &Node, text: &str) -> Option<String> {
     let mut lines: Vec<&str> = Vec::new();
     let mut below = past_prefixes(node);
@@ -205,10 +196,9 @@ fn comment_above(node: &Node, text: &str) -> Option<String> {
     })
 }
 
-/// `export`, `public` and their kind wrap a declaration without adding a line, so
-/// the comment above sits beside the wrapper rather than beside the declaration.
-/// Climbing is limited to wrappers that start on the same line, which stops the
-/// walk short of the file itself.
+/// `export`, `public` and similar wrap a declaration on the same line, so the
+/// comment sits beside the wrapper. Climbs only through wrappers that start on
+/// that line, which keeps it from reaching the file node.
 fn past_prefixes<'tree>(node: &Node<'tree>) -> Node<'tree> {
     let mut current = *node;
     while let Some(parent) = current.parent() {
@@ -222,8 +212,8 @@ fn past_prefixes<'tree>(node: &Node<'tree>) -> Node<'tree> {
     current
 }
 
-/// Python and its relatives put the documentation inside the declaration, as the
-/// first thing in its body, where a comment-based search will never find it.
+/// Python and similar languages put the docstring first in the body, where the
+/// comment search does not look.
 fn leading_string(node: &Node, text: &str) -> Option<String> {
     let body = node.child_by_field_name("body")?;
     let mut cursor = body.walk();
@@ -241,8 +231,7 @@ fn leading_string(node: &Node, text: &str) -> Option<String> {
     Some(text[string.start_byte()..string.end_byte()].to_string())
 }
 
-/// Comment and string markers carry no meaning for a language model, so they are
-/// stripped and the remaining sentences joined into one run of prose.
+/// Strips comment and string markers and joins the lines into one run of prose.
 fn as_prose(raw: &str) -> String {
     let mut out = String::new();
     for line in raw.lines() {
@@ -337,8 +326,8 @@ mod tests {
         assert!(found.contains(&"fn Searcher::refresh".to_string()));
     }
 
-    /// The case the fixed-window fallback used to lose: a function larger than
-    /// the budget is cut into pieces, and every piece still says where it is.
+    /// A function larger than the budget is cut into pieces, and each piece
+    /// keeps the function's name.
     #[test]
     fn oversized_function_passes_its_name_to_every_fragment() {
         let src = make_fn("enormous", 200, 7);

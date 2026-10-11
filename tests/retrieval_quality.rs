@@ -11,11 +11,9 @@ use ripsem::pipeline;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// The corpora are cached on disk and each measurement rebuilds their index in
-/// place, so two of these tests running at once overwrite each other's index and
-/// report numbers for a corpus neither of them built. `cargo test` runs tests in
-/// parallel by default, which made that the normal case rather than the unlucky
-/// one, and the numbers it produced looked plausible.
+/// Each measurement rebuilds the cached corpus index in place, so tests running
+/// in parallel would overwrite each other's index and report numbers for the
+/// wrong corpus.
 static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn exclusively<T>(measurement: impl FnOnce() -> T) -> T {
@@ -744,10 +742,8 @@ fn fusion_beats_either_retriever_alone() {
     assert!(fused >= 0.74, "MRR too low: {fused:.3}");
 }
 
-/// The catalogue describes one model as the best balance and another as lower
-/// recall, and until now nothing checked either statement. Cheapest first, so a
-/// larger model has to earn its download and its indexing time rather than being
-/// assumed better for having more dimensions.
+/// Checks the catalogue's notes on each model against the benchmark. Cheapest
+/// first, so a larger model has to earn its download.
 #[test]
 #[ignore = "downloads several embedding models; run with --ignored --nocapture"]
 fn a_larger_model_has_to_earn_its_cost() {

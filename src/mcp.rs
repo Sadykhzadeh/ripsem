@@ -41,18 +41,13 @@ pub fn serve(config: Config) -> Result<()> {
     Ok(())
 }
 
-/// Hold an open searcher across requests, and take one as soon as there is an
-/// index to take. The server usually starts before the first `ripsem index`
-/// finishes — the README wires the agent up first — and a session that stayed
-/// empty because the index was missing at startup made every later search open
-/// the index and load the embedding model again, a second or more of work per
-/// call. Once held, the searcher only re-reads the file when it changes.
+/// Keeps one searcher open across requests, taking it as soon as an index
+/// exists. The server often starts before the first `ripsem index` finishes;
+/// once it has the index it only re-reads the file when it changes.
 ///
-/// `tried` is the index file as it looked at the last attempt. Opening decodes
-/// the whole index, and it can fail for a reason that lasts — built with
-/// another model, written by an older ripsem — so retrying on every line of
-/// stdin would pay that decode for every ping. The file changing is what makes
-/// another attempt worth making.
+/// `tried` is the index mtime at the last failed attempt. Opening decodes the
+/// whole file and can fail for a lasting reason (another model, an older
+/// format), so a retry waits for the file to change.
 fn hold_the_index(
     session: &mut Option<pipeline::Searcher>,
     tried: &mut Option<std::time::SystemTime>,
@@ -179,15 +174,13 @@ fn failed(id: Value, e: &anyhow::Error) -> Value {
     )
 }
 
-/// Normalize a user-supplied subdirectory into a repo-relative, forward-slash
-/// prefix usable for scoping search results. `.`/empty/whitespace ⇒ no scope.
-/// Shared by the MCP `search` tool and the CLI `search --in` flag.
+/// Turns a subdirectory argument into a repo-relative, forward-slash prefix.
+/// `.`, empty and whitespace mean no scope. Used by the MCP `search` tool and
+/// `search --in`.
 ///
-/// Index paths are plain `src/embed/x.rs`, so `./src`, `src/../src` and an
-/// absolute path into the repository all have to come down to that form or
-/// they match nothing. A path that leads out of the root is an error: there
-/// is nothing indexed there, and searching everything instead would answer a
-/// question that was not asked.
+/// Index paths look like `src/embed/x.rs`, so `./src`, `src/../src` and
+/// absolute paths into the repository are reduced to that form. A path outside
+/// the root is an error rather than a silent whole-index search.
 pub(crate) fn scope_prefix(raw: &str, root: &Path) -> Result<Option<String>> {
     let raw = raw.trim();
     let outside = || {
@@ -201,8 +194,8 @@ pub(crate) fn scope_prefix(raw: &str, root: &Path) -> Result<Option<String>> {
         let candidate = Path::new(raw);
         match candidate.strip_prefix(root) {
             Ok(rel) => rel.to_path_buf(),
-            // The root arrives canonical — on Windows with a `\\?\` prefix —
-            // and a path typed at a prompt or sent by a client usually is not.
+            // The root is canonical (`\\?\` prefix on Windows), a typed path
+            // usually is not.
             Err(_) => candidate
                 .canonicalize()
                 .ok()
@@ -347,9 +340,8 @@ mod tests {
         assert!(scope_prefix("src/../../other", root).is_err());
     }
 
-    /// The root is canonical — `\\?\C:\…` on Windows — while a path typed at a
-    /// prompt or sent by an agent is not, and that mismatch used to drop the
-    /// scope silently and search the whole index instead.
+    /// The root is canonical (`\\?\C:\…` on Windows) and a typed path is not;
+    /// the mismatch must not drop the scope.
     #[test]
     fn an_absolute_scope_is_matched_against_the_canonical_root() {
         use crate::testutil::TempDir;
@@ -398,7 +390,6 @@ mod tests {
         let value = tool_result(&hits);
         let text = value["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("a.rs:1-4"));
-        // Score must not appear in the MCP output.
         assert!(!text.contains("score"));
         assert!(!text.contains("0.500"));
         assert_eq!(value["isError"], false);
@@ -446,9 +437,8 @@ mod tests {
         assert_eq!(kept[0].score, 0.9);
     }
 
-    /// The documented order is `install claude-code` and then `index`, so the
-    /// server is expected to start without one. It has to pick the index up
-    /// when it appears instead of reopening it for every search from then on.
+    /// The server can start before `ripsem index` has run, and must pick the
+    /// index up once it appears.
     #[test]
     fn the_index_is_held_as_soon_as_there_is_one() {
         use crate::config::Backend;
@@ -479,9 +469,8 @@ mod tests {
         );
     }
 
-    /// An index that cannot be opened stays that way until it is rebuilt, and
-    /// opening it decodes the whole file. Retrying that for every line of stdin
-    /// would charge a ping the price of a failed search.
+    /// An index that fails to open stays that way until it is rebuilt, so the
+    /// server must not decode it again on every request.
     #[test]
     fn an_index_that_cannot_be_opened_is_not_retried_until_it_changes() {
         use crate::config::Backend;
@@ -509,9 +498,8 @@ mod tests {
         hold_the_index(&mut session, &mut tried, &config);
         assert_eq!(tried, first, "the same file must not be decoded again");
 
-        // Rebuilding for the configured model is a new file, so it is tried
-        // again — and this time it opens. The pause is for the clock the file
-        // is stamped from, as in `searcher_hot_reloads_a_rebuilt_index`.
+        // A rebuild is a new file and is tried again. The pause keeps the
+        // mtime from repeating (see `searcher_hot_reloads_a_rebuilt_index`).
         std::thread::sleep(std::time::Duration::from_millis(20));
         pipeline::index_repo(&config, true).unwrap();
         hold_the_index(&mut session, &mut tried, &config);
@@ -524,7 +512,7 @@ mod tests {
         assert_eq!(apply_min_score(hits, None).len(), 2);
     }
 
-    // Build a tiny Hash-backend index and drive a real tools/call through handle().
+    // Drives a real tools/call through handle() against a small hash-backend index.
     #[test]
     fn search_call_against_real_index() {
         use crate::config::{Backend, Config};
@@ -549,7 +537,6 @@ mod tests {
         pipeline::index_repo(&config, false).unwrap();
         let searcher = pipeline::open(&config).unwrap();
 
-        // Query that should match auth.rs and not math.rs.
         let request = json!({
             "jsonrpc": "2.0",
             "id": 42,
@@ -562,21 +549,17 @@ mod tests {
 
         let resp = handle(&config, Some(&searcher), &request).unwrap();
 
-        // Must be a successful result, not a JSON-RPC error.
         assert!(resp.get("error").is_none(), "unexpected error: {resp}");
         let result = &resp["result"];
         assert_eq!(result["isError"], false);
 
         let text = result["content"][0]["text"].as_str().unwrap();
-        // The top hit should be auth.rs.
         assert!(
             text.contains("auth.rs"),
             "expected auth.rs in result, got: {text}"
         );
-        // Lean format: no score field exposed.
         assert!(!text.contains("score"), "score should not appear: {text}");
 
-        // Verify limit is honored: at most 3 results.
         let hit_count = text.matches(':').count();
         assert!(hit_count <= 3, "too many hits for limit=3: {text}");
 
