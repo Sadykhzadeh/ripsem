@@ -13,11 +13,32 @@ question with no shared words still finds the right function.
 
 ## Install
 
+Every [release](https://github.com/Sadykhzadeh/ripsem/releases) has a prebuilt
+binary for each platform below, built with the embedding model and tree-sitter,
+and a `SHA256SUMS` file to check the archives against. Unpack one and put
+`ripsem` on your `PATH`; on Windows, keep `DirectML.dll` next to `ripsem.exe`.
+
+| archive | runs on |
+| --- | --- |
+| `x86_64-unknown-linux-gnu` | glibc 2.35, libstdc++ 12 and OpenSSL 3 or newer: Ubuntu 22.04, Debian 12 and later |
+| `aarch64-apple-darwin` | macOS 13.4 or newer on Apple silicon |
+| `x86_64-pc-windows-msvc` | Windows 10 or newer |
+
+The embedding runtime in the x86-64 builds needs a CPU with AVX2 (Intel
+Haswell, AMD Excavator or newer).
+
+To build from source instead, with Rust 1.90 or newer:
+
 ```
 cargo install --git https://github.com/Sadykhzadeh/ripsem --features fastembed,treesitter
 ```
 
-To build from a checkout instead (Rust 1.85 or newer):
+The build downloads a prebuilt ONNX Runtime and takes several minutes. It works
+on the systems the release binaries run on, and needs a C and C++ compiler, plus
+pkg-config and the OpenSSL headers on Linux (`build-essential pkg-config
+libssl-dev` on Debian and Ubuntu).
+
+To build from a checkout:
 
 ```
 git clone https://github.com/Sadykhzadeh/ripsem
