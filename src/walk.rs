@@ -25,6 +25,30 @@ const GENERATED: &[&str] = &[
 
 pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
     let max_bytes = config.max_file_kb.saturating_mul(1024);
+    let mut builder = builder(config)?;
+    // Pruned here rather than filtered afterwards, so the walk never descends
+    // into a `.git` object store at all.
+    let root = config.root.clone();
+    builder.filter_entry(move |entry| !is_internal(entry.path(), &root));
+    let mut candidates = Vec::new();
+    for result in builder.build() {
+        let entry = match result {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if entry.file_type().is_some_and(|t| t.is_file()) {
+            candidates.push(entry.into_path());
+        }
+    }
+    // Telling text from binary opens every file, which is most of what a
+    // walk costs, and no file's answer depends on another's.
+    Ok(candidates
+        .into_par_iter()
+        .filter(|path| is_indexable(path, max_bytes))
+        .collect())
+}
+
+fn builder(config: &Config) -> Result<WalkBuilder> {
     let mut builder = WalkBuilder::new(&config.root);
     builder
         .hidden(false)
@@ -53,26 +77,51 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
         builder.overrides(overrides.build().context("building exclude overrides")?);
     }
 
-    // Pruned here rather than filtered afterwards, so the walk never descends
-    // into a `.git` object store at all.
-    let root = config.root.clone();
-    builder.filter_entry(move |entry| !is_internal(entry.path(), &root));
-    let mut candidates = Vec::new();
-    for result in builder.build() {
-        let entry = match result {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if entry.file_type().is_some_and(|t| t.is_file()) {
-            candidates.push(entry.into_path());
-        }
+    Ok(builder)
+}
+
+/// Whether a change at any of these paths can alter what [`collect`] returns:
+/// a path the walk reaches, or one that is gone from a directory it reaches.
+/// Only the directories on the way to each path are read, so a build writing
+/// thousands of files under an ignored `target/` is answered from the
+/// top-level listing, by the same rules the walk itself applies. A path that
+/// is not under the root at all cannot be judged and counts as a change.
+pub fn reaches_any(config: &Config, paths: &[PathBuf]) -> bool {
+    let root = &config.root;
+    if paths.iter().any(|p| !p.starts_with(root)) {
+        return true;
     }
-    // Telling text from binary opens every file, which is most of what a
-    // walk costs, and no file's answer depends on another's.
-    Ok(candidates
-        .into_par_iter()
-        .filter(|path| is_indexable(path, max_bytes))
-        .collect())
+    // The one ignore source that lives inside `.git`.
+    let exclude = root.join(".git").join("info").join("exclude");
+    if paths.contains(&exclude) {
+        return true;
+    }
+    let targets: Vec<PathBuf> = paths
+        .iter()
+        .filter(|p| !is_internal(p, root))
+        .cloned()
+        .collect();
+    if targets.is_empty() {
+        return false;
+    }
+    let Ok(mut builder) = builder(config) else {
+        return true;
+    };
+    let on_the_way = targets.clone();
+    let filter_root = root.clone();
+    builder.filter_entry(move |entry| {
+        !is_internal(entry.path(), &filter_root)
+            && on_the_way.iter().any(|t| t.starts_with(entry.path()))
+    });
+    let reached: std::collections::HashSet<PathBuf> = builder
+        .build()
+        .flatten()
+        .map(ignore::DirEntry::into_path)
+        .collect();
+    targets.iter().any(|path| {
+        reached.contains(path)
+            || (!path.exists() && path.parent().is_some_and(|dir| reached.contains(dir)))
+    })
 }
 
 /// ripsem's own index and git's object store are never source. The check is
@@ -220,6 +269,63 @@ mod tests {
         let mut config = config_at(dir.path());
         config.exclude = vec!["[".into()];
         assert!(collect(&config).is_err());
+    }
+
+    #[test]
+    fn a_change_the_walk_would_see_reaches_the_index() {
+        let dir = TempDir::new();
+        dir.write(".gitignore", "target/\n*.log\n");
+        dir.write("src/deep/lib.rs", "fn main() {}\n");
+        dir.write("target/debug/build.rs", "fn main() {}\n");
+        dir.write("debug.log", "noise\n");
+        dir.write("Cargo.lock", "version = 3\n");
+        dir.write(".git/index", "binary\n");
+        let config = config_at(dir.path());
+        let reaches = |rel: &str| reaches_any(&config, &[dir.path().join(rel)]);
+
+        assert!(reaches("src/deep/lib.rs"));
+        assert!(reaches(".gitignore"), "a new ignore rule changes the walk");
+        assert!(
+            reaches("src/deep/gone.rs"),
+            "removed from a walked directory"
+        );
+        assert!(reaches("src/new_dir"), "removed or renamed directory");
+        assert!(
+            reaches(".git/info/exclude"),
+            "git's own ignore file changes the walk too"
+        );
+
+        assert!(!reaches("target/debug/build.rs"));
+        assert!(!reaches("target/debug/gone.rs"));
+        assert!(!reaches("debug.log"));
+        assert!(!reaches("Cargo.lock"), "generated files are skipped too");
+        assert!(!reaches(".git/index"));
+        assert!(!reaches(".ripsem/index.bin"));
+    }
+
+    #[test]
+    fn one_relevant_path_in_a_burst_is_enough() {
+        let dir = TempDir::new();
+        dir.write(".gitignore", "target/\n");
+        dir.write("src/lib.rs", "fn main() {}\n");
+        dir.write("target/a.o", "x\n");
+        let config = config_at(dir.path());
+        let noise = dir.path().join("target/a.o");
+        let source = dir.path().join("src/lib.rs");
+
+        assert!(!reaches_any(&config, std::slice::from_ref(&noise)));
+        assert!(reaches_any(&config, &[noise, source]));
+        assert!(!reaches_any(&config, &[]));
+    }
+
+    /// The watcher's paths are expected to start with the root it was given;
+    /// one that does not cannot be judged, and missing a change is worse than
+    /// a reindex that finds nothing to do.
+    #[test]
+    fn a_path_outside_the_root_counts_as_a_change() {
+        let dir = TempDir::new();
+        let config = config_at(&dir.path().join("repo"));
+        assert!(reaches_any(&config, &[dir.path().join("elsewhere.rs")]));
     }
 
     #[test]
