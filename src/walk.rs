@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
+use rayon::prelude::*;
 
 use crate::config::Config;
 
@@ -52,24 +53,26 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
         builder.overrides(overrides.build().context("building exclude overrides")?);
     }
 
-    let mut out = Vec::new();
+    // Pruned here rather than filtered afterwards, so the walk never descends
+    // into a `.git` object store at all.
+    let root = config.root.clone();
+    builder.filter_entry(move |entry| !is_internal(entry.path(), &root));
+    let mut candidates = Vec::new();
     for result in builder.build() {
         let entry = match result {
             Ok(e) => e,
             Err(_) => continue,
         };
-        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            continue;
-        }
-        let path = entry.into_path();
-        if is_internal(&path, &config.root) {
-            continue;
-        }
-        if is_indexable(&path, max_bytes) {
-            out.push(path);
+        if entry.file_type().is_some_and(|t| t.is_file()) {
+            candidates.push(entry.into_path());
         }
     }
-    Ok(out)
+    // Telling text from binary opens every file, which is most of what a
+    // walk costs, and no file's answer depends on another's.
+    Ok(candidates
+        .into_par_iter()
+        .filter(|path| is_indexable(path, max_bytes))
+        .collect())
 }
 
 /// ripsem's own index and git's object store are never source. The check is
