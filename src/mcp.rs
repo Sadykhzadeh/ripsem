@@ -1,6 +1,7 @@
 use std::io::{BufRead, Write};
+use std::path::{Component, Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
 use crate::config::Config;
@@ -144,10 +145,13 @@ fn handle_call(
         .and_then(|v| v.as_f64())
         .map(|v| v as f32);
 
-    let prefix = args
-        .get("path")
-        .and_then(|p| p.as_str())
-        .and_then(|p| scope_prefix(p, &config.root));
+    let prefix = match args.get("path").and_then(|p| p.as_str()) {
+        Some(raw) => match scope_prefix(raw, &config.root) {
+            Ok(prefix) => prefix,
+            Err(e) => return failed(id, &e),
+        },
+        None => None,
+    };
 
     let result = match session {
         Some(s) => s.query_scoped(query, limit, prefix.as_deref()),
@@ -161,37 +165,65 @@ fn handle_call(
             let hits = apply_min_score(hits, min_score);
             ok(id, tool_result(&hits))
         }
-        Err(e) => ok(
-            id,
-            json!({
-                "content": [{ "type": "text", "text": format!("search failed: {e}") }],
-                "isError": true
-            }),
-        ),
+        Err(e) => failed(id, &e),
     }
+}
+
+fn failed(id: Value, e: &anyhow::Error) -> Value {
+    ok(
+        id,
+        json!({
+            "content": [{ "type": "text", "text": format!("search failed: {e}") }],
+            "isError": true
+        }),
+    )
 }
 
 /// Normalize a user-supplied subdirectory into a repo-relative, forward-slash
 /// prefix usable for scoping search results. `.`/empty/whitespace ⇒ no scope.
 /// Shared by the MCP `search` tool and the CLI `search --in` flag.
-pub(crate) fn scope_prefix(raw: &str, root: &std::path::Path) -> Option<String> {
+///
+/// Index paths are plain `src/embed/x.rs`, so `./src`, `src/../src` and an
+/// absolute path into the repository all have to come down to that form or
+/// they match nothing. A path that leads out of the root is an error: there
+/// is nothing indexed there, and searching everything instead would answer a
+/// question that was not asked.
+pub(crate) fn scope_prefix(raw: &str, root: &Path) -> Result<Option<String>> {
     let raw = raw.trim();
-    if raw.is_empty() || raw == "." {
-        return None;
-    }
-    let candidate = std::path::Path::new(raw);
-    let rel = if candidate.is_absolute() {
-        candidate.strip_prefix(root).ok()?
-    } else {
-        candidate
+    let outside = || {
+        let root = root.display().to_string();
+        anyhow!(
+            "'{raw}' is outside the indexed directory {}",
+            root.strip_prefix(r"\\?\").unwrap_or(&root)
+        )
     };
-    let normalized = rel.to_string_lossy().replace('\\', "/");
-    let trimmed = normalized.trim_matches('/');
-    if trimmed.is_empty() {
-        None
+    let relative: PathBuf = if Path::new(raw).is_absolute() {
+        let candidate = Path::new(raw);
+        match candidate.strip_prefix(root) {
+            Ok(rel) => rel.to_path_buf(),
+            // The root arrives canonical — on Windows with a `\\?\` prefix —
+            // and a path typed at a prompt or sent by a client usually is not.
+            Err(_) => candidate
+                .canonicalize()
+                .ok()
+                .and_then(|c| c.strip_prefix(root).ok().map(Path::to_path_buf))
+                .ok_or_else(outside)?,
+        }
     } else {
-        Some(trimmed.to_string())
+        PathBuf::from(raw.replace('\\', "/"))
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            Component::ParentDir => {
+                parts.pop().ok_or_else(outside)?;
+            }
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        }
     }
+    Ok((!parts.is_empty()).then(|| parts.join("/")))
 }
 
 /// Drop hits whose score is below `min`. `None` keeps all.
@@ -296,11 +328,61 @@ mod tests {
 
     #[test]
     fn scope_prefix_normalizes_relative_paths() {
-        let root = std::path::Path::new("/repo");
-        assert_eq!(scope_prefix("src/embed", root), Some("src/embed".into()));
-        assert_eq!(scope_prefix("src\\embed\\", root), Some("src/embed".into()));
-        assert_eq!(scope_prefix(".", root), None);
-        assert_eq!(scope_prefix("  ", root), None);
+        let root = Path::new("/repo");
+        let scope = |raw: &str| scope_prefix(raw, root).unwrap();
+        assert_eq!(scope("src/embed"), Some("src/embed".into()));
+        assert_eq!(scope("src\\embed\\"), Some("src/embed".into()));
+        assert_eq!(scope("."), None);
+        assert_eq!(scope("  "), None);
+        assert_eq!(scope("./src/"), Some("src".into()));
+        assert_eq!(scope(".\\src\\embed"), Some("src/embed".into()));
+        assert_eq!(scope("src/../docs/./api"), Some("docs/api".into()));
+        assert_eq!(scope("src/.."), None);
+    }
+
+    #[test]
+    fn a_scope_that_leaves_the_root_is_refused() {
+        let root = Path::new("/repo");
+        assert!(scope_prefix("..", root).is_err());
+        assert!(scope_prefix("src/../../other", root).is_err());
+    }
+
+    /// The root is canonical — `\\?\C:\…` on Windows — while a path typed at a
+    /// prompt or sent by an agent is not, and that mismatch used to drop the
+    /// scope silently and search the whole index instead.
+    #[test]
+    fn an_absolute_scope_is_matched_against_the_canonical_root() {
+        use crate::testutil::TempDir;
+
+        let dir = TempDir::new();
+        dir.write("src/embed/mod.rs", "fn build() {}");
+        let root = dir.path().canonicalize().unwrap();
+
+        let inside = dir.path().join("src").join("embed");
+        assert_eq!(
+            scope_prefix(&inside.to_string_lossy(), &root).unwrap(),
+            Some("src/embed".into())
+        );
+        let elsewhere = std::env::temp_dir();
+        let err = scope_prefix(&elsewhere.to_string_lossy(), &root).unwrap_err();
+        assert!(err.to_string().contains("outside"), "got: {err}");
+    }
+
+    #[test]
+    fn a_search_scoped_outside_the_root_is_a_tool_error() {
+        let cfg = Config::default();
+        let resp = handle(
+            &cfg,
+            None,
+            &req(
+                "tools/call",
+                json!({ "name": "search", "arguments": { "query": "x", "path": "../elsewhere" } }),
+            ),
+        )
+        .unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("outside"), "got: {text}");
     }
 
     #[test]
