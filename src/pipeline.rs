@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -323,11 +324,50 @@ impl Queue {
     }
 }
 
+/// The embedding model, built at most once however many threads ask for it.
+struct LazyEmbedder {
+    config: Config,
+    built: OnceLock<Box<dyn embed::Embedder>>,
+    building: Mutex<()>,
+}
+
+impl LazyEmbedder {
+    fn new(config: &Config) -> Self {
+        Self {
+            config: config.clone(),
+            built: OnceLock::new(),
+            building: Mutex::new(()),
+        }
+    }
+
+    /// Builds the model on first use. A failed build is not remembered, so the
+    /// next call tries again.
+    fn get(&self) -> Result<&dyn embed::Embedder> {
+        if let Some(e) = self.built.get() {
+            return Ok(e.as_ref());
+        }
+        let _turn = self.building.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = self.built.get() {
+            return Ok(e.as_ref());
+        }
+        let built = embed::build(&self.config)?;
+        Ok(self.built.get_or_init(|| built).as_ref())
+    }
+
+    /// Starts building the model on another thread. Errors are left for the
+    /// next [`LazyEmbedder::get`] to report.
+    fn warm(self: &Arc<Self>) {
+        let embedder = Arc::clone(self);
+        std::thread::spawn(move || {
+            let _ = embedder.get();
+        });
+    }
+}
+
 pub struct Searcher {
     index: Index,
-    config: Config,
     // Built on the first query, so opening an index does not pay for the model.
-    embedder: std::sync::OnceLock<Box<dyn embed::Embedder>>,
+    embedder: Arc<LazyEmbedder>,
     index_path: std::path::PathBuf,
     index_mtime: Option<std::time::SystemTime>,
     // The model the index was opened with. A reload under a different model
@@ -338,6 +378,10 @@ pub struct Searcher {
 }
 
 pub fn open(config: &Config) -> Result<Searcher> {
+    open_with(config, Arc::new(LazyEmbedder::new(config)))
+}
+
+fn open_with(config: &Config, embedder: Arc<LazyEmbedder>) -> Result<Searcher> {
     let index_path = config.index_path();
     let index = Index::load(&index_path)
         .context("no index yet; run `ripsem index` in this directory first")?;
@@ -357,8 +401,7 @@ pub fn open(config: &Config) -> Result<Searcher> {
     let ann_map = index.ann.as_deref().and_then(crate::ann::load);
     Ok(Searcher {
         index,
-        config: config.clone(),
-        embedder: std::sync::OnceLock::new(),
+        embedder,
         index_path,
         index_mtime,
         model,
@@ -403,17 +446,6 @@ impl Searcher {
         self.index.records.len()
     }
 
-    /// Builds the embedding model on first use.
-    fn embedder(&self) -> Result<&dyn embed::Embedder> {
-        if let Some(e) = self.embedder.get() {
-            return Ok(e.as_ref());
-        }
-        let built = embed::build(&self.config)?;
-        // If another caller won the race, its instance is kept.
-        let _ = self.embedder.set(built);
-        Ok(self.embedder.get().expect("embedder set above").as_ref())
-    }
-
     pub fn query(&self, query: &str, k: usize) -> Result<Vec<SearchHit>> {
         self.query_scoped(query, k, None)
     }
@@ -424,7 +456,7 @@ impl Searcher {
         k: usize,
         prefix: Option<&str>,
     ) -> Result<Vec<SearchHit>> {
-        let qv = self.embedder()?.embed_query(query)?;
+        let qv = self.embedder.get()?.embed_query(query)?;
         let terms = crate::lexical::query_terms(query);
 
         #[cfg(feature = "hnsw")]
@@ -477,7 +509,14 @@ pub fn search_scoped(
     k: usize,
     prefix: Option<&str>,
 ) -> Result<Vec<SearchHit>> {
-    open(config)?.query_scoped(query, k, prefix)
+    let embedder = Arc::new(LazyEmbedder::new(config));
+    // Loading the model and decoding the index are independent, so they run
+    // side by side. Without an index there is nothing to search and no reason
+    // to load (or download) a model.
+    if config.index_path().exists() {
+        embedder.warm();
+    }
+    open_with(config, embedder)?.query_scoped(query, k, prefix)
 }
 
 /// Display `path` relative to `root` with forward slashes, matching the
@@ -510,8 +549,35 @@ fn progress(len: u64) -> ProgressBar {
 
 #[cfg(test)]
 mod tests {
-    use super::relative;
-    use std::path::Path;
+    use super::*;
+    use crate::config::Backend;
+
+    fn hash_config() -> Config {
+        Config {
+            backend: Backend::Hash,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_warmed_embedder_is_the_one_later_callers_get() {
+        let embedder = Arc::new(LazyEmbedder::new(&hash_config()));
+        embedder.warm();
+        let first = embedder.get().unwrap().embed_query("anything").unwrap();
+        let second = embedder.get().unwrap().embed_query("anything").unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[cfg(not(feature = "fastembed"))]
+    #[test]
+    fn a_failed_build_is_tried_again_on_the_next_call() {
+        let embedder = LazyEmbedder::new(&Config {
+            backend: Backend::Fastembed,
+            ..Default::default()
+        });
+        assert!(embedder.get().is_err());
+        assert!(embedder.get().is_err());
+    }
 
     #[test]
     fn relative_strips_root_and_uses_forward_slashes() {
