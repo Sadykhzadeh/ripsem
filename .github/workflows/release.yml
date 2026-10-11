@@ -1,0 +1,102 @@
+name: release
+
+# A `v*` tag builds ripsem with the embedding model and tree-sitter for each
+# platform below and publishes the archives, with their SHA-256 sums, as a
+# GitHub release of that tag.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          # glibc symbols bind to the version a binary is linked against, so
+          # the Linux build runs on the oldest system it supports: built here
+          # it needs glibc 2.35, built on ubuntu-latest it would need 2.39.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} --features fastembed,treesitter
+        env:
+          # Where ort unpacks the ONNX Runtime it downloads, so the package
+          # step knows where to find the files that ship with it.
+          ORT_CACHE_DIR: ${{ github.workspace }}/ort-cache
+          # The macOS ONNX Runtime is built for macOS 13.4 and later, so the
+          # binary says so instead of claiming Rust's default of 11.0.
+          MACOSX_DEPLOYMENT_TARGET: '13.4'
+      - name: Package
+        run: |
+          name=ripsem-$GITHUB_REF_NAME-${{ matrix.target }}
+          mkdir "$name"
+          cp README.md LICENSE "$name/"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp target/${{ matrix.target }}/release/ripsem.exe "$name/"
+            # The Windows ONNX Runtime is linked against the DirectML.dll it
+            # comes with, which has to sit next to the executable.
+            cp ort-cache/dfbin/*/*/DirectML.dll "$name/"
+          else
+            cp target/${{ matrix.target }}/release/ripsem "$name/"
+          fi
+          echo "PACKAGE=$name" >> "$GITHUB_ENV"
+      # Runs the packaged binary, from a directory of its own, the way a user
+      # would after unpacking it: a missing library fails here, not for them.
+      - name: Index and search with the packaged binary
+        run: |
+          ripsem=$PWD/$PACKAGE/ripsem
+          mkdir smoke
+          cp -R src smoke/
+          cd smoke
+          "$ripsem" init
+          "$ripsem" index
+          "$ripsem" search "load the embedding model" --context 0 | tee hits
+          grep -q 'src/embed/fastembed.rs' hits
+      - name: Archive
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a "$PACKAGE.zip" "$PACKAGE"
+          else
+            tar -czf "$PACKAGE.tar.gz" "$PACKAGE"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.PACKAGE }}.*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum ripsem-* > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" --generate-notes ripsem-* SHA256SUMS
