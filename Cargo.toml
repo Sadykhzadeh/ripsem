@@ -2,7 +2,7 @@
 name = "ripsem"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.90"
 license = "Apache-2.0"
 description = "Local, offline semantic code search with an MCP server for coding agents"
 repository = "https://github.com/Sadykhzadeh/ripsem"

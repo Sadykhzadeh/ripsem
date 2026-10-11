@@ -132,15 +132,15 @@ impl Emitter<'_> {
     /// body rarely uses the words its author would use to explain it.
     fn documentation(&mut self, node: Node, enclosing: Option<&Symbol>) {
         let declared = symbol::declaration(&node, self.text, enclosing);
-        if let Some(symbol) = &declared {
-            if let Some(prose) = self.prose_for(&node) {
-                self.out.push(Chunk {
-                    start_line: node.start_position().row + 1,
-                    end_line: node.end_position().row + 1,
-                    text: prose,
-                    symbol: Some(symbol.clone()),
-                });
-            }
+        if let Some(symbol) = &declared
+            && let Some(prose) = self.prose_for(&node)
+        {
+            self.out.push(Chunk {
+                start_line: node.start_position().row + 1,
+                end_line: node.end_position().row + 1,
+                text: prose,
+                symbol: Some(symbol.clone()),
+            });
         }
         let scope = declared.as_ref().or(enclosing);
         let mut cursor = node.walk();
