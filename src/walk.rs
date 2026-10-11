@@ -8,10 +8,8 @@ use rayon::prelude::*;
 
 use crate::config::Config;
 
-/// Committed, but written by a machine. Nobody asking where the code that does
-/// something lives means a lock file or a minified bundle, and a single lock file
-/// can outnumber every hand-written file in the repository put together.
-/// `.gitignore` does not cover these because they are deliberately committed.
+/// Machine-written files that are committed on purpose, so `.gitignore` does not
+/// cover them. A lock file can outweigh all the hand-written source in a repo.
 const GENERATED: &[&str] = &[
     "*.lock",
     "package-lock.json",
@@ -26,8 +24,7 @@ const GENERATED: &[&str] = &[
 pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
     let max_bytes = config.max_file_kb.saturating_mul(1024);
     let mut builder = builder(config)?;
-    // Pruned here rather than filtered afterwards, so the walk never descends
-    // into a `.git` object store at all.
+    // Pruned during the walk so it never descends into `.git`.
     let root = config.root.clone();
     builder.filter_entry(move |entry| !is_internal(entry.path(), &root));
     let mut candidates = Vec::new();
@@ -40,8 +37,8 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
             candidates.push(entry.into_path());
         }
     }
-    // Telling text from binary opens every file, which is most of what a
-    // walk costs, and no file's answer depends on another's.
+    // The text/binary check opens every file and is most of the cost, so it
+    // runs in parallel.
     Ok(candidates
         .into_par_iter()
         .filter(|path| is_indexable(path, max_bytes))
@@ -81,11 +78,10 @@ fn builder(config: &Config) -> Result<WalkBuilder> {
 }
 
 /// Whether a change at any of these paths can alter what [`collect`] returns:
-/// a path the walk reaches, or one that is gone from a directory it reaches.
-/// Only the directories on the way to each path are read, so a build writing
-/// thousands of files under an ignored `target/` is answered from the
-/// top-level listing, by the same rules the walk itself applies. A path that
-/// is not under the root at all cannot be judged and counts as a change.
+/// the walk reaches the path, or it is gone from a directory the walk reaches.
+/// Reads only the directories on the way to each path, so thousands of writes
+/// under an ignored `target/` cost a top-level listing. A path outside the root
+/// cannot be judged and counts as a change.
 pub fn reaches_any(config: &Config, paths: &[PathBuf]) -> bool {
     let root = &config.root;
     if paths.iter().any(|p| !p.starts_with(root)) {
@@ -124,10 +120,9 @@ pub fn reaches_any(config: &Config, paths: &[PathBuf]) -> bool {
     })
 }
 
-/// ripsem's own index and git's object store are never source. The check is
-/// against the path *below the root*: an absolute-path check would refuse to
-/// index a repository that merely happens to live inside a directory called
-/// `.ripsem` or `.git`.
+/// ripsem's own data and `.git` are never source. Judged on the path below the
+/// root, so a repository that lives inside a directory named `.git` or
+/// `.ripsem` still indexes.
 fn is_internal(path: &Path, root: &Path) -> bool {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -318,9 +313,8 @@ mod tests {
         assert!(!reaches_any(&config, &[]));
     }
 
-    /// The watcher's paths are expected to start with the root it was given;
-    /// one that does not cannot be judged, and missing a change is worse than
-    /// a reindex that finds nothing to do.
+    /// A path that does not start with the root cannot be judged. A needless
+    /// reindex is cheaper than a missed change.
     #[test]
     fn a_path_outside_the_root_counts_as_a_change() {
         let dir = TempDir::new();

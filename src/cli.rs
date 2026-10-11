@@ -177,10 +177,8 @@ fn drift_line(drift: &pipeline::Drift) -> String {
     format!("out of date: {} — run `ripsem index`", counted.join(", "))
 }
 
-/// Render `status` as machine-readable JSON (schema `ripsem/status/v1`). Pure:
-/// takes the already-gathered facts so it is unit-testable without a real index.
-/// `index` is `None` (with an optional `error`) when the index is missing or
-/// unreadable; the `error` is `null` for a plain "missing" index.
+/// Renders `status` as JSON (schema `ripsem/status/v1`). `index` is `None` when
+/// the index is missing or unreadable; `error` is set only for unreadable.
 fn status_json(
     model: &str,
     backend: Backend,
@@ -224,8 +222,8 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
     let config = Config::load(root)?;
     let path = config.index_path();
 
-    // Gather the index facts once, then render as JSON or human text. A missing
-    // file and an unreadable index both yield `None`; the latter carries an error.
+    // A missing file and an unreadable index both yield no facts; only the
+    // latter carries an error.
     let (facts, error) = if !path.exists() {
         (None, None)
     } else {
@@ -337,16 +335,12 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// First `context` lines of a snippet for the human output. `0` yields an empty
-/// slice (just the location header), and the count is capped at the lines
-/// available, so a short snippet never pads with blanks.
+/// The first `context` lines of a snippet for the human output.
 fn snippet_lines(snippet: &str, context: usize) -> Vec<&str> {
     snippet.lines().take(context).collect()
 }
 
-/// Drop hits scoring below `min`. `None` keeps everything; a set threshold
-/// retains only hits with `score >= min`. This is a result filter, so callers
-/// apply it before both the JSON and human branches.
+/// Drops hits scoring below `min`; `None` keeps everything.
 fn apply_min_score(hits: Vec<pipeline::SearchHit>, min: Option<f32>) -> Vec<pipeline::SearchHit> {
     match min {
         Some(min) => hits.into_iter().filter(|h| h.score >= min).collect(),
@@ -354,8 +348,7 @@ fn apply_min_score(hits: Vec<pipeline::SearchHit>, min: Option<f32>) -> Vec<pipe
     }
 }
 
-/// Aggregate hits into `(path, count)` pairs, sorted by count descending then
-/// path ascending — the "which files matched most" view behind `--count-by-file`.
+/// Counts hits per file for `--count-by-file`, most hits first, then by path.
 fn file_hit_counts(hits: &[pipeline::SearchHit]) -> Vec<(String, usize)> {
     let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for h in hits {
@@ -381,9 +374,7 @@ fn cmd_search(
     count_by_file: bool,
 ) -> Result<()> {
     let config = Config::load(root)?;
-    // Normalize the optional --in scope the same way the MCP `search` tool does,
-    // so a relative subdir, an absolute path under the repo, or trailing slashes
-    // all resolve to the same repo-relative prefix.
+    // Same normalisation as the MCP `search` tool.
     let prefix = match within {
         Some(raw) => mcp::scope_prefix(raw, &config.root)?,
         None => None,
@@ -488,9 +479,8 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
             let mut config = Config::load(root)?;
             config.backend = backend;
             config.save()?;
-            // Vectors from the two backends are no more comparable than vectors
-            // from two models, and unlike the model the index does not record
-            // which backend wrote it, so nothing downstream can catch this one.
+            // The index records its model but not its backend, so a mismatch
+            // here is not caught later.
             println!("backend set to {name} (run `ripsem index --force` to rebuild)");
             Ok(())
         }
@@ -507,16 +497,14 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    // The file usually lists other servers too. One that cannot be read as a
-    // JSON object is left exactly as it is: writing a fresh one in its place
-    // would quietly delete everything else that was configured there.
+    // The file usually lists other servers. If it is not a readable JSON object
+    // it is left alone, since a fresh file would drop them.
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", show_path(&path))),
     };
-    // Windows PowerShell writes UTF-8 with a byte-order mark, which JSON
-    // does not allow but a config file made there will have.
+    // Windows PowerShell writes a byte-order mark that JSON does not allow.
     let text = text.trim_start_matches('\u{feff}');
     let mut doc: Value = if text.trim().is_empty() {
         json!({})
@@ -567,11 +555,8 @@ mod tests {
     #[test]
     fn snippet_lines_respects_the_context_count() {
         let snippet = "one\ntwo\nthree\nfour";
-        // N>0 returns the first N lines.
         assert_eq!(snippet_lines(snippet, 2), vec!["one", "two"]);
-        // 0 returns nothing — just the location header prints.
         assert!(snippet_lines(snippet, 0).is_empty());
-        // A request beyond the available lines is capped, never padded.
         assert_eq!(
             snippet_lines(snippet, 10),
             vec!["one", "two", "three", "four"]
@@ -591,14 +576,11 @@ mod tests {
 
     #[test]
     fn min_score_filters_by_threshold() {
-        // No threshold keeps everything in order.
         let kept = apply_min_score(vec![hit(0.9), hit(0.5), hit(0.2)], None);
         assert_eq!(kept.len(), 3);
-        // A threshold keeps hits at or above it and drops the rest.
         let kept = apply_min_score(vec![hit(0.9), hit(0.5), hit(0.2)], Some(0.5));
         let scores: Vec<f32> = kept.iter().map(|h| h.score).collect();
         assert_eq!(scores, vec![0.9, 0.5]);
-        // An empty input stays empty whether or not a threshold is set.
         assert!(apply_min_score(vec![], Some(0.5)).is_empty());
     }
 
@@ -619,7 +601,6 @@ mod tests {
             hit_at("src/c.rs", 0.6),
             hit_at("src/b.rs", 0.5),
         ];
-        // Sorted by count descending, then path ascending as the tie-break.
         assert_eq!(
             file_hit_counts(&hits),
             vec![
@@ -676,8 +657,6 @@ mod tests {
 
     #[test]
     fn status_json_reports_a_loaded_index() {
-        // A present index renders the versioned schema, the lowercase backend, and
-        // the health facts (chunks/files/ann/stale) a tool or agent checks.
         let facts = IndexFacts {
             path: "/repo/.ripsem/index.bin".into(),
             size_bytes: 2048,
@@ -712,7 +691,6 @@ mod tests {
 
     #[test]
     fn status_json_reports_a_missing_index_with_null_error() {
-        // No index file ⇒ present:false and a null error (distinct from unreadable).
         let out = status_json("m", Backend::Fastembed, 768, None, None);
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["backend"], "fastembed");
@@ -722,8 +700,6 @@ mod tests {
 
     #[test]
     fn status_json_reports_an_unreadable_index_with_the_error() {
-        // A corrupt/unreadable index ⇒ present:false carrying the error string, so
-        // a caller can tell "never built" from "broke".
         let out = status_json("m", Backend::Hash, 384, None, Some("bad magic"));
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["index"]["present"], false);
@@ -734,8 +710,6 @@ mod tests {
     fn install_leaves_a_config_it_cannot_read_untouched() {
         let dir = crate::testutil::TempDir::new();
         let path = dir.path().join(".mcp.json");
-        // A trailing comma is enough to fail the parse, and the server already
-        // listed must not be lost to it.
         let broken = r#"{"mcpServers":{"other":{"command":"x"},}}"#;
         std::fs::write(&path, broken).unwrap();
         let err = cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap_err();

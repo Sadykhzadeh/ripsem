@@ -17,10 +17,9 @@ pub struct IndexStats {
     pub chunks: usize,
 }
 
-/// How far the index has fallen behind the files it was built from. Every hit
-/// carries the line range its file had when it was indexed, so an index left
-/// behind answers with places that have since moved; this is what says so
-/// before a caller trusts one.
+/// How far the index has fallen behind the files it was built from. Hits carry
+/// the line ranges their file had when it was indexed, so a stale index points
+/// at places that may have moved.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Drift {
     /// On disk, not in the index.
@@ -37,11 +36,10 @@ impl Drift {
     }
 }
 
-/// Measure that drift with the same walk and the same content hash the
-/// incremental index uses, so what it reports is what a rebuild would touch and
-/// nothing else. A file the indexer produces no chunks for is not counted as
-/// new — [`chunk::is_blank`] is asked rather than guessed at — or the count
-/// could never reach zero however often the index was rebuilt.
+/// Measures drift with the same walk and content hash the incremental index
+/// uses, so it reports what a rebuild would touch. A file with no chunks
+/// ([`chunk::is_blank`]) is not counted as new, or the count could never reach
+/// zero.
 pub fn drift(config: &Config, index: &Index) -> Result<Drift> {
     let indexed = index.file_hashes();
     let present: Vec<(String, u64)> = walk::collect(config)?
@@ -185,9 +183,9 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         reused,
         chunks: index.records.len(),
     };
-    // Every record came back unchanged and none was left behind, so the file
-    // on disk already says all of this. Rewriting it would rebuild the graph
-    // and move its mtime, which makes a running server decode it again.
+    // Nothing was embedded or dropped, so the file on disk is already right.
+    // Rewriting it would rebuild the graph and bump the mtime, which makes a
+    // running server reload it.
     let unchanged = reusable
         && embedded == 0
         && prev_chunks.values().all(Vec::is_empty)
@@ -222,15 +220,13 @@ fn wants_ann(records: usize) -> bool {
     }
 }
 
-/// How many chunks queue up before they are embedded. They are put in order
-/// of length first, so the more of them there are to choose from, the closer
-/// in length each group handed to the model is.
+/// Chunks queued before embedding. They are sorted by length first, so a larger
+/// window gives groups of closer length.
 const EMBED_WINDOW: usize = 4096;
 
-/// How many chunks go to the model at once. The runtime pads every text in a
-/// call to the longest one in it, so a short doc comment embedded beside a
-/// 50-line function costs as much as the function. Small groups of similar
-/// length waste almost nothing; below this, per-call overhead takes over.
+/// Chunks per model call. The runtime pads every text to the longest in the
+/// call, so groups of similar length waste little; much below this, per-call
+/// overhead dominates.
 const EMBED_GROUP: usize = 32;
 
 struct Pending {
@@ -261,8 +257,8 @@ impl Queue {
         self.texts.len() >= EMBED_WINDOW
     }
 
-    /// Embeds shortest first, in groups of [`EMBED_GROUP`], and still appends
-    /// the records in walk order, so the order is only ever seen by the model.
+    /// Embeds shortest first, in groups of [`EMBED_GROUP`], but appends the
+    /// records in walk order.
     fn flush(
         &mut self,
         config: &Config,
@@ -329,14 +325,13 @@ impl Queue {
 
 pub struct Searcher {
     index: Index,
-    // Built on the first query rather than at open time: opening an index to
-    // check its status or refresh it shouldn't pay the model-load cost.
     config: Config,
+    // Built on the first query, so opening an index does not pay for the model.
     embedder: std::sync::OnceLock<Box<dyn embed::Embedder>>,
     index_path: std::path::PathBuf,
     index_mtime: Option<std::time::SystemTime>,
-    // The embedder is built once for the model the index was opened with; a
-    // hot-reload that swapped in a different same-dim model would be incomparable.
+    // The model the index was opened with. A reload under a different model
+    // is refused even when the dimensions match.
     model: String,
     #[cfg(feature = "hnsw")]
     ann_map: Option<instant_distance::HnswMap<crate::ann::Embedding, u32>>,
@@ -346,9 +341,8 @@ pub fn open(config: &Config) -> Result<Searcher> {
     let index_path = config.index_path();
     let index = Index::load(&index_path)
         .context("no index yet; run `ripsem index` in this directory first")?;
-    // Queries are embedded with the model this directory is configured for, so
-    // an index built with another one can only be ranked on noise. Saying so
-    // beats returning numbers that do not mean anything.
+    // Queries are embedded with the configured model; against an index built
+    // with another one the scores would mean nothing.
     if !index.built_for(&config.model) {
         anyhow::bail!(
             "index was built with model {}, but this directory is configured for {}; \
@@ -387,8 +381,7 @@ impl Searcher {
         if index.dims != self.index.dims {
             return Ok(false);
         }
-        // A hot-reloaded index built with another model is not comparable to
-        // queries from the embedder already in hand; keep the one we have.
+        // Keep the current index if the new one was built with another model.
         if !index.built_for(&self.model) {
             return Ok(false);
         }
@@ -401,8 +394,7 @@ impl Searcher {
         Ok(true)
     }
 
-    /// The embedding model this searcher was opened with. A hot-reload that
-    /// would change this is rejected (see [`Searcher::refresh`]).
+    /// The embedding model this searcher was opened with.
     pub fn model(&self) -> &str {
         &self.model
     }
@@ -411,14 +403,13 @@ impl Searcher {
         self.index.records.len()
     }
 
-    /// Build the embedding model on first use and return it. Subsequent calls
-    /// reuse the same instance.
+    /// Builds the embedding model on first use.
     fn embedder(&self) -> Result<&dyn embed::Embedder> {
         if let Some(e) = self.embedder.get() {
             return Ok(e.as_ref());
         }
         let built = embed::build(&self.config)?;
-        // A concurrent caller may have won the race; either way one instance wins.
+        // If another caller won the race, its instance is kept.
         let _ = self.embedder.set(built);
         Ok(self.embedder.get().expect("embedder set above").as_ref())
     }
@@ -478,8 +469,8 @@ pub fn search(config: &Config, query: &str, k: usize) -> Result<Vec<SearchHit>> 
     open(config)?.query(query, k)
 }
 
-/// Like [`search`], but limit results to a repo-relative path prefix (already
-/// normalized — see `mcp::scope_prefix`). `None` searches the whole index.
+/// Like [`search`], limited to a normalized repo-relative path prefix (see
+/// `mcp::scope_prefix`). `None` searches the whole index.
 pub fn search_scoped(
     config: &Config,
     query: &str,
@@ -529,10 +520,8 @@ mod tests {
             relative(root, Path::new("/repo/src/main.rs")),
             "src/main.rs"
         );
-        // Backslashes in a component are normalised to forward slashes so the
-        // output matches index/search paths on Windows.
         assert_eq!(relative(Path::new("a"), Path::new("a/b\\c")), "b/c");
-        // A path outside root is returned as-is (still slash-normalised).
+        // Outside the root: returned as it is.
         assert_eq!(relative(root, Path::new("/other/x.rs")), "/other/x.rs");
     }
 }

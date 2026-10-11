@@ -83,8 +83,7 @@ impl Index {
         Ok(())
     }
 
-    /// Borrowed: a file contributes one entry but as many records as it has
-    /// chunks, so owning the keys would copy every path once per chunk.
+    /// Keys are borrowed, so a file's path is not copied once per chunk.
     pub fn file_hashes(&self) -> HashMap<&str, u64> {
         self.records
             .iter()
@@ -92,10 +91,8 @@ impl Index {
             .collect()
     }
 
-    /// Whether the vectors in this index can be compared with a query embedded
-    /// by `model`. Two models write into different spaces — the same is true at
-    /// equal dimensionality — so comparing across them measures nothing. Every
-    /// decision about whether an index is usable asks here.
+    /// Whether a query embedded by `model` can be compared with this index.
+    /// Different models give incomparable vectors even at equal dimensions.
     pub fn built_for(&self, model: &str) -> bool {
         self.model == model
     }
@@ -121,9 +118,9 @@ impl Index {
         self.fuse(&dense, &lexical, query, k)
     }
 
-    /// Fuse an externally produced dense ranking — the approximate-nearest-
-    /// neighbour graph's candidates — with a full lexical scan, so switching to
-    /// the graph changes only how the dense arm is found, not how results rank.
+    /// Fuses a dense ranking from the nearest-neighbour graph with a full
+    /// lexical scan, so the graph changes how candidates are found, not how
+    /// results rank.
     pub fn search_fused_with(
         &self,
         dense: &[Hit],
@@ -223,17 +220,12 @@ impl Index {
         self.best_of_each_place(candidates, k)
     }
 
-    /// Two records can describe the same lines — a declaration and the
-    /// documentation written above it, or the overlap between adjacent windows —
-    /// and returning both spends a result on nothing. Only the better-ranked one
-    /// is kept, and because this happens before the cut to `k` rather than after
-    /// it, the caller still gets `k` distinct places.
+    /// Keeps the better-ranked of any records that cover the same lines (a
+    /// declaration and its doc record, or overlapping windows). Done before the
+    /// cut to `k`, so the caller still gets `k` distinct places.
     fn best_of_each_place(&self, ranked: Vec<Candidate>, k: usize) -> Vec<Hit> {
         let mut taken: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
-        // `k` is whatever the caller asked for, and no result repeats a record,
-        // so the index is the real ceiling. Reserving `k` itself let a number
-        // typed at the command line — or arriving from an MCP client — ask for
-        // an allocation the machine cannot make.
+        // `k` comes from the caller, so cap the reservation at the index size.
         let mut out = Vec::with_capacity(k.min(self.records.len()));
         for candidate in ranked {
             if out.len() == k {
@@ -277,10 +269,9 @@ struct Candidate {
 }
 
 impl Candidate {
-    /// A chunk holding every informative term of the query is not a guess: it is
-    /// what an exact search would have returned, and nothing lacking those terms
-    /// may outrank it. Below that bar neither arm is authoritative, so ordering
-    /// falls back to how strongly the two of them agree.
+    /// A chunk holding every informative query term is what an exact search
+    /// would return, so nothing lacking those terms may outrank it. Below that,
+    /// ordering falls back to how strongly the two arms agree.
     fn holds_every_term(&self) -> bool {
         self.coverage >= COMPLETE_COVERAGE
     }
@@ -289,13 +280,10 @@ impl Candidate {
         self.cosine.max(self.coverage)
     }
 
-    /// A chunk that belongs to a declaration outranks one that does not. Asked
-    /// about behaviour, both retrievers legitimately prefer prose — a changelog
-    /// entry or a paragraph of documentation says the words of the question back
-    /// more closely than the function that implements it — and on the questions
-    /// this misses, more than half the results were documentation, manifests and
-    /// tests. Free prose is not what a code search is for. Documentation attached
-    /// to a declaration carries that declaration's symbol and is unaffected.
+    /// A chunk that belongs to a declaration outranks one that does not.
+    /// Questions about behaviour match changelogs and docs more closely than the
+    /// code that implements it, and free prose is not what a code search is for.
+    /// Doc records carry their declaration's symbol, so they are unaffected.
     fn rank(a: &Self, b: &Self) -> Ordering {
         b.declares_something
             .cmp(&a.declares_something)
@@ -314,8 +302,8 @@ impl Candidate {
     }
 }
 
-/// Each arm needs a pool deeper than `k`, so a chunk only one of them ranks
-/// highly still reaches the merge.
+/// How many candidates each arm contributes. Deeper than `k`, so a chunk that
+/// only one arm ranks highly still reaches the merge.
 pub fn candidate_depth(k: usize) -> usize {
     k.saturating_mul(CANDIDATES_PER_RESULT).max(MIN_CANDIDATES)
 }
@@ -340,8 +328,8 @@ impl LexicalRanking {
     }
 }
 
-/// Only the best `k` are kept, so only they need ordering: partitioning them
-/// off first is linear in the index, where sorting all of it was not.
+/// Keeps the best `k`. Partitioning them off first is linear in the index;
+/// sorting everything is not.
 fn sort_and_truncate(scored: &mut Vec<Hit>, k: usize) {
     let by_score = |a: &Hit, b: &Hit| {
         b.score
@@ -464,9 +452,8 @@ mod tests {
         assert!((plain[0].score - plain[1].score).abs() < 1e-6);
     }
 
-    /// A chunk whose text literally contains the query cannot be reachable only
-    /// through vector similarity: the dense arm ranks it below thousands of
-    /// unrelated chunks, so it has to arrive from the lexical arm instead.
+    /// A literal match can sit below thousands of unrelated chunks in the dense
+    /// ranking, so it has to arrive from the lexical arm.
     #[test]
     fn a_literal_match_survives_a_hostile_dense_ranking() {
         let mut index = Index::new(3, "test".into());
@@ -527,8 +514,8 @@ mod tests {
         );
     }
 
-    /// Ranking prose below code must not mean losing it: a repository the parser
-    /// cannot read has no declarations at all, and its results still have to come.
+    /// Prose ranks below code but is not dropped: without declarations (no
+    /// parser for the language) it is all there is.
     #[test]
     fn prose_still_fills_the_results_when_there_is_no_code() {
         let mut index = Index::new(3, "test".into());
@@ -579,8 +566,7 @@ mod tests {
         assert_eq!(index.search(&[1.0, 0.0, 0.0], 10).len(), 2);
     }
 
-    /// Collapsing duplicates before the cut, not after it, is what keeps a
-    /// request for `k` results from quietly returning fewer.
+    /// Duplicates are collapsed before the cut to `k`, not after.
     #[test]
     fn a_full_set_of_results_survives_the_duplicates() {
         let mut index = Index::new(3, "test".into());
@@ -618,11 +604,8 @@ mod tests {
         assert_eq!(index.search(&[1.0, 0.0, 0.0], 1).len(), 1);
     }
 
-    /// `k` comes from a `-k` flag or from an MCP client, so it is whatever the
-    /// caller types. Asking for more results than exist has one sane answer —
-    /// all of them — and reserving room for the request instead of for the
-    /// index turned a large number into a capacity-overflow abort, which in the
-    /// MCP server takes down the process an agent is talking to.
+    /// `k` comes from `-k` or an MCP client. A huge value must return what
+    /// exists, not abort on a capacity overflow.
     #[test]
     fn a_k_larger_than_the_index_returns_everything_it_has() {
         let index = sample_index();

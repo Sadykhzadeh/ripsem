@@ -28,20 +28,16 @@ pub fn run(config: Config) -> Result<()> {
         while let Ok(more) = rx.try_recv() {
             burst.add(more);
         }
-        // A build writing under `target/`, a git command rewriting `.git`, an
-        // editor's swap file under an ignored path: none of it can change the
-        // index, and each used to cost a full walk and hash of the tree.
+        // Writes under an ignored `target/` or inside `.git` cannot change the
+        // index, so they should not cost a walk of the whole tree.
         if !burst.rescan && !walk::reaches_any(&config, &burst.paths) {
             continue;
         }
         match pipeline::index_repo(&config, false) {
             Ok(stats) => eprintln!("reindexed: {} chunks", stats.chunks),
-            // A reindex can fail for a reason that does not outlive the
-            // attempt: a file that vanished between the scan and the
-            // read, or a virus scanner holding the index file open as
-            // it is replaced. Ending the watch there would leave the
-            // index frozen while a session that thinks it is live keeps
-            // querying it.
+            // Failures are often transient (a file removed mid-scan, a scanner
+            // holding the index open). Quitting would leave the index frozen
+            // while a running session keeps querying it.
             Err(e) => eprintln!("reindex failed, still watching: {e:#}"),
         }
     }
@@ -52,8 +48,7 @@ pub fn run(config: Config) -> Result<()> {
 #[derive(Default)]
 struct Burst {
     paths: Vec<PathBuf>,
-    /// The watcher lost events, or reported an error, so the paths cannot
-    /// be trusted to say what changed.
+    /// The watcher lost events or reported an error, so `paths` is incomplete.
     rescan: bool,
 }
 
