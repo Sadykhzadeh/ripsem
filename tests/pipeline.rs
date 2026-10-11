@@ -63,23 +63,57 @@ fn indexes_and_searches_by_overlapping_terms() {
 #[test]
 fn indexes_correctly_across_embedding_batches() {
     let dir = TempDir::new();
-    let mut body = String::new();
-    for i in 0..9000 {
-        if i == 5000 {
-            body.push_str("zebraquux singular beacon token\n");
-        } else {
-            body.push_str(&format!("filler row {i}\n"));
+    // Each file is 32 windows of 40 lines, so 140 of them queue more chunks
+    // than one embedding window holds.
+    for file in 0..140 {
+        let mut body = String::new();
+        for i in 0..1000 {
+            if file == 120 && i == 500 {
+                body.push_str("zebraquux singular beacon token\n");
+            } else {
+                body.push_str(&format!("filler row {i}\n"));
+            }
         }
+        dir.write(&format!("part{file}.txt"), &body);
     }
-    dir.write("big.txt", &body);
     let config = config_for(&dir.path);
 
     let stats = pipeline::index_repo(&config, false).unwrap();
-    assert!(stats.chunks > 256);
+    assert!(stats.chunks > 4096, "{} chunks", stats.chunks);
 
     let hits = pipeline::search(&config, "zebraquux singular beacon", 5).unwrap();
-    assert_eq!(hits[0].path, "big.txt");
-    assert!(hits[0].start_line <= 5001 && hits[0].end_line >= 5001);
+    assert_eq!(hits[0].path, "part120.txt");
+    assert!(hits[0].start_line <= 501 && hits[0].end_line >= 501);
+}
+
+/// Chunks are embedded shortest first and stored in walk order, so a slip
+/// in putting the vectors back would give a record somebody else's vector.
+/// The hash backend is deterministic, so each record's vector can be checked
+/// against its own text.
+#[test]
+fn every_record_keeps_its_own_vector_when_embedded_out_of_order() {
+    use ripsem::embed::Embedder;
+    use ripsem::embed::hashing::HashEmbedder;
+    use ripsem::index::Index;
+
+    let dir = TempDir::new();
+    for i in 0..50 {
+        let words: Vec<String> = (0..(i * 7 % 23 + 1))
+            .map(|w| format!("word{i}x{w}"))
+            .collect();
+        dir.write(&format!("f{i}.rs"), &words.join(" "));
+    }
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let embedder = HashEmbedder::new(config.dims());
+    let index = Index::load(&config.index_path()).unwrap();
+    assert_eq!(index.records.len(), 50);
+    for record in &index.records {
+        let own = embedder.embed_query(&record.snippet).unwrap();
+        let similarity = ripsem::quant::dot(&record.vector, &own);
+        assert!(similarity > 0.99, "{} got {similarity}", record.path);
+    }
 }
 
 #[test]

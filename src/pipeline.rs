@@ -130,8 +130,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     let mut index = Index::new(dims, config.model.clone());
     let mut embedded = 0;
     let mut reused = 0;
-    let mut pending: Vec<Pending> = Vec::new();
-    let mut texts: Vec<String> = Vec::new();
+    let mut queue = Queue::default();
 
     let pb = progress(scanned.len() as u64);
     for (i, hash, changed) in scanned {
@@ -158,7 +157,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         }
         embedded += 1;
         for c in chunks {
-            pending.push(Pending {
+            let pending = Pending {
                 path: rel.clone(),
                 start_line: c.start_line,
                 end_line: c.end_line,
@@ -170,14 +169,14 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
                     c.symbol.as_ref().map(|s| s.name.as_str()),
                 ),
                 symbol: c.symbol,
-            });
-            texts.push(c.text);
-            if texts.len() >= EMBED_BATCH {
-                flush(config, &mut embedder, &mut pending, &mut texts, &mut index)?;
+            };
+            queue.push(pending, c.text);
+            if queue.is_full() {
+                queue.flush(config, &mut embedder, &mut index, &pb)?;
             }
         }
     }
-    flush(config, &mut embedder, &mut pending, &mut texts, &mut index)?;
+    queue.flush(config, &mut embedder, &mut index, &pb)?;
     pb.finish_and_clear();
 
     let stats = IndexStats {
@@ -223,7 +222,16 @@ fn wants_ann(records: usize) -> bool {
     }
 }
 
-const EMBED_BATCH: usize = 256;
+/// How many chunks queue up before they are embedded. They are put in order
+/// of length first, so the more of them there are to choose from, the closer
+/// in length each group handed to the model is.
+const EMBED_WINDOW: usize = 4096;
+
+/// How many chunks go to the model at once. The runtime pads every text in a
+/// call to the longest one in it, so a short doc comment embedded beside a
+/// 50-line function costs as much as the function. Small groups of similar
+/// length waste almost nothing; below this, per-call overhead takes over.
+const EMBED_GROUP: usize = 32;
 
 struct Pending {
     path: String,
@@ -235,46 +243,88 @@ struct Pending {
     symbol: Option<crate::symbol::Symbol>,
 }
 
-fn flush(
-    config: &Config,
-    embedder: &mut Option<Box<dyn embed::Embedder>>,
-    pending: &mut Vec<Pending>,
-    texts: &mut Vec<String>,
-    index: &mut Index,
-) -> Result<()> {
-    if texts.is_empty() {
-        return Ok(());
+/// Chunks waiting for their vectors, kept in the order the walk found them.
+#[derive(Default)]
+struct Queue {
+    pending: Vec<Pending>,
+    texts: Vec<String>,
+    embedded: usize,
+}
+
+impl Queue {
+    fn push(&mut self, pending: Pending, text: String) {
+        self.pending.push(pending);
+        self.texts.push(text);
     }
-    let embedder = match embedder {
-        Some(built) => built,
-        None => {
-            let built = embed::build(config)?;
-            if built.dims() != index.dims {
+
+    fn is_full(&self) -> bool {
+        self.texts.len() >= EMBED_WINDOW
+    }
+
+    /// Embeds shortest first, in groups of [`EMBED_GROUP`], and still appends
+    /// the records in walk order, so the order is only ever seen by the model.
+    fn flush(
+        &mut self,
+        config: &Config,
+        embedder: &mut Option<Box<dyn embed::Embedder>>,
+        index: &mut Index,
+        pb: &ProgressBar,
+    ) -> Result<()> {
+        if self.texts.is_empty() {
+            return Ok(());
+        }
+        let embedder = match embedder {
+            Some(built) => built,
+            None => {
+                let built = embed::build(config)?;
+                if built.dims() != index.dims {
+                    anyhow::bail!(
+                        "model {} embeds {} dimensions, expected {}",
+                        config.model,
+                        built.dims(),
+                        index.dims
+                    );
+                }
+                embedder.insert(built)
+            }
+        };
+        let mut order: Vec<usize> = (0..self.texts.len()).collect();
+        order.sort_by_key(|&i| self.texts[i].len());
+        let mut vectors: Vec<Vec<f32>> = vec![Vec::new(); self.texts.len()];
+        for group in order.chunks(EMBED_GROUP) {
+            let texts: Vec<String> = group
+                .iter()
+                .map(|&i| std::mem::take(&mut self.texts[i]))
+                .collect();
+            let embedded = embedder.embed_documents(&texts)?;
+            if embedded.len() != texts.len() {
                 anyhow::bail!(
-                    "model {} embeds {} dimensions, expected {}",
-                    config.model,
-                    built.dims(),
-                    index.dims
+                    "the embedding backend returned {} vectors for {} chunks",
+                    embedded.len(),
+                    texts.len()
                 );
             }
-            embedder.insert(built)
+            for (&i, vector) in group.iter().zip(embedded) {
+                vectors[i] = vector;
+            }
+            self.embedded += group.len();
+            pb.set_message(format!("{} chunks embedded", self.embedded));
         }
-    };
-    let vectors = embedder.embed_documents(texts)?;
-    for (p, vector) in pending.drain(..).zip(vectors) {
-        index.records.push(Record {
-            path: p.path,
-            start_line: p.start_line,
-            end_line: p.end_line,
-            snippet: p.snippet,
-            file_hash: p.file_hash,
-            vector: crate::quant::quantize(&vector),
-            terms: p.terms,
-            symbol: p.symbol,
-        });
+        for (p, vector) in self.pending.drain(..).zip(vectors) {
+            index.records.push(Record {
+                path: p.path,
+                start_line: p.start_line,
+                end_line: p.end_line,
+                snippet: p.snippet,
+                file_hash: p.file_hash,
+                vector: crate::quant::quantize(&vector),
+                terms: p.terms,
+                symbol: p.symbol,
+            });
+        }
+        self.texts.clear();
+        Ok(())
     }
-    texts.clear();
-    Ok(())
 }
 
 pub struct Searcher {
