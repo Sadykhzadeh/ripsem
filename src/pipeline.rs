@@ -446,6 +446,12 @@ impl Searcher {
         self.index.records.len()
     }
 
+    /// Starts loading the embedding model in the background, so the first
+    /// query does not have to wait for it.
+    pub fn warm(&self) {
+        self.embedder.warm();
+    }
+
     pub fn query(&self, query: &str, k: usize) -> Result<Vec<SearchHit>> {
         self.query_scoped(query, k, None)
     }

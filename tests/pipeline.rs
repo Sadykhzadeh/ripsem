@@ -227,6 +227,29 @@ fn scoped_search_limits_results_to_a_subdirectory() {
 }
 
 #[test]
+fn a_searcher_answers_the_same_after_warming_the_model() {
+    let dir = TempDir::new();
+    dir.write("auth.rs", "verify password create session token");
+    dir.write("math.rs", "add subtract multiply divide numbers");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let cold = pipeline::open(&config).unwrap();
+    let warmed = pipeline::open(&config).unwrap();
+    warmed.warm();
+
+    let paths = |s: &pipeline::Searcher| -> Vec<String> {
+        s.query("verify password session token", 5)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.path)
+            .collect()
+    };
+    assert_eq!(paths(&cold), paths(&warmed));
+    assert_eq!(paths(&warmed)[0], "auth.rs");
+}
+
+#[test]
 fn search_scoped_convenience_limits_results_to_a_prefix() {
     // The `search_scoped` convenience (backing the CLI `search --in`) scopes the
     // whole-index search to a path prefix, returning only matching files.

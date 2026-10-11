@@ -65,6 +65,10 @@ fn hold_the_index(
     }
     *tried = mtime;
     *session = pipeline::open(config).ok();
+    // The agent usually pauses between the handshake and its first search.
+    if let Some(searcher) = session {
+        searcher.warm();
+    }
 }
 
 fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value) -> Option<Value> {
