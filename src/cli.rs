@@ -40,7 +40,8 @@ pub enum Command {
         #[arg(long)]
         json: bool,
         /// Limit results to a subdirectory (relative to the repo root), e.g.
-        /// `--in src/embed`. `.` or empty searches the whole index.
+        /// `--in src/embed`. `.` or empty searches the whole index; a path
+        /// outside the repository is an error.
         #[arg(long = "in", value_name = "PREFIX")]
         within: Option<String>,
         /// Number of snippet lines to print per hit in the human output. `0`
@@ -383,7 +384,10 @@ fn cmd_search(
     // Normalize the optional --in scope the same way the MCP `search` tool does,
     // so a relative subdir, an absolute path under the repo, or trailing slashes
     // all resolve to the same repo-relative prefix.
-    let prefix = within.and_then(|raw| mcp::scope_prefix(raw, &config.root));
+    let prefix = match within {
+        Some(raw) => mcp::scope_prefix(raw, &config.root)?,
+        None => None,
+    };
     let hits = pipeline::search_scoped(&config, query, limit, prefix.as_deref())?;
     let hits = apply_min_score(hits, min_score);
 

@@ -73,10 +73,11 @@ retrievers back a chunk, so confidence does not have to fall down the list — a
 hit ranked lower can still carry every word you typed. Add `--json` for
 machine-readable output,
 or `--in <subdir>` to limit results to a subdirectory (e.g. `ripsem search
-"where is auth set up?" --in src/auth`). Use `--context <N>` to control how many
-snippet lines print per hit (default 3; `0` prints just the locations). Pass
-`--min-score <SCORE>` to keep only strong matches (applies to both the human and
-`--json` output).
+"where is auth set up?" --in src/auth`; `./src/auth` and an absolute path into
+the repository mean the same, and a path outside it is an error). Use
+`--context <N>` to control how many snippet lines print per hit (default 3; `0`
+prints just the locations). Pass `--min-score <SCORE>` to keep only strong
+matches (applies to both the human and `--json` output).
 
 ## Models
 
