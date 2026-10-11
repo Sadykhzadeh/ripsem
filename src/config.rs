@@ -96,6 +96,16 @@ impl Config {
         self.data_dir().join("index.bin")
     }
 
+    /// The nearest directory at or above `start` that holds a `.ripsem`
+    /// directory, or `start` itself when there is none.
+    pub fn find_root(start: &Path) -> PathBuf {
+        start
+            .ancestors()
+            .find(|dir| dir.join(".ripsem").is_dir())
+            .unwrap_or(start)
+            .to_path_buf()
+    }
+
     pub fn load(root: &Path) -> Result<Self> {
         let mut cfg = Config {
             root: root.to_path_buf(),
@@ -149,6 +159,28 @@ mod tests {
         assert_eq!(loaded.model, "bge-base-en-v1.5");
         assert_eq!(loaded.chunk_lines, 64);
         assert_eq!(loaded.root, dir.path());
+    }
+
+    #[test]
+    fn find_root_climbs_to_the_nearest_ripsem_directory() {
+        let dir = TempDir::new();
+        dir.write(".ripsem/config.toml", "");
+        dir.write("a/b/file.rs", "fn main() {}");
+        dir.write("a/.ripsem/config.toml", "");
+        let top = dir.path().to_path_buf();
+
+        assert_eq!(Config::find_root(&top.join("a/b")), top.join("a"));
+        assert_eq!(Config::find_root(&top.join("a")), top.join("a"));
+        assert_eq!(Config::find_root(&top), top);
+    }
+
+    #[test]
+    fn find_root_falls_back_to_the_start_directory() {
+        let dir = TempDir::new();
+        dir.write("a/b/file.rs", "fn main() {}");
+        let start = dir.path().join("a/b");
+
+        assert_eq!(Config::find_root(&start), start);
     }
 
     #[test]
