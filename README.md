@@ -14,6 +14,14 @@ question with no shared words still finds the right function.
 ## Install
 
 ```
+cargo install --git https://github.com/Sadykhzadeh/ripsem --features fastembed,treesitter
+```
+
+To build from a checkout instead (Rust 1.85 or newer):
+
+```
+git clone https://github.com/Sadykhzadeh/ripsem
+cd ripsem
 cargo install --path . --features fastembed,treesitter
 ```
 
