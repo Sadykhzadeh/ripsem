@@ -4,6 +4,8 @@ pub mod hashing;
 
 #[cfg(feature = "fastembed")]
 pub mod fastembed;
+#[cfg(all(feature = "fastembed", target_os = "linux", target_env = "gnu"))]
+mod ort_compat;
 
 use crate::config::{Backend, Config};
 
