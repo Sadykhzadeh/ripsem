@@ -11,8 +11,10 @@ use crate::{mcp, model, pipeline, walk, watch};
 #[derive(Parser)]
 #[command(name = "ripsem", version, about = "Local semantic code search")]
 pub struct Cli {
-    #[arg(long, global = true, default_value = ".")]
-    pub path: PathBuf,
+    /// Project directory. Defaults to the nearest parent of the current
+    /// directory that holds a `.ripsem` directory, or the current directory.
+    #[arg(long, global = true)]
+    pub path: Option<PathBuf>,
 
     #[command(subcommand)]
     pub command: Command,
@@ -104,7 +106,16 @@ pub enum InstallCmd {
 }
 
 pub fn run(cli: Cli) -> Result<()> {
-    let root = cli.path.canonicalize().unwrap_or(cli.path);
+    let root = match cli.path {
+        Some(path) => path.canonicalize().unwrap_or(path),
+        None => {
+            let here = Path::new(".").canonicalize().unwrap_or_else(|_| ".".into());
+            match cli.command {
+                Command::Init => here,
+                _ => Config::find_root(&here),
+            }
+        }
+    };
     match cli.command {
         Command::Init => cmd_init(&root),
         Command::Index { force, dry_run } => cmd_index(&root, force, dry_run),

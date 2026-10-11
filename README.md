@@ -52,6 +52,9 @@ ripsem status --json              # the same as JSON (schema ripsem/status/v1)
 ripsem watch                      # index and keep it in sync as files change
 ```
 
+Like git, every command except `init` works from any subdirectory: it uses the
+nearest parent that holds a `.ripsem` directory. `--path <dir>` overrides that.
+
 `status` also reports how far the index has drifted from the files. Hits carry
 the line range their file had when it was indexed, so `tree: out of date: 3
 changed, 1 new` tells you when a result may no longer point at the right lines.
