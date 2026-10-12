@@ -358,6 +358,16 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// A score to three places for the human output. One that rounds to zero
+/// prints as `0.000`, never `-0.000`.
+fn show_score(score: f32) -> String {
+    let shown = format!("{score:.3}");
+    match shown.strip_prefix('-') {
+        Some(digits) if digits.bytes().all(|b| b == b'0' || b == b'.') => digits.to_string(),
+        _ => shown,
+    }
+}
+
 /// The first `context` lines of a snippet for the human output.
 fn snippet_lines(snippet: &str, context: usize) -> Vec<&str> {
     snippet.lines().take(context).collect()
@@ -460,16 +470,19 @@ fn print_hits(
     for h in hits {
         match &h.symbol {
             Some(s) => println!(
-                "{}:{}-{}  {}  ({:.3})",
+                "{}:{}-{}  {}  ({})",
                 h.path,
                 h.start_line,
                 h.end_line,
                 s.label(),
-                h.score
+                show_score(h.score)
             ),
             None => println!(
-                "{}:{}-{}  ({:.3})",
-                h.path, h.start_line, h.end_line, h.score
+                "{}:{}-{}  ({})",
+                h.path,
+                h.start_line,
+                h.end_line,
+                show_score(h.score)
             ),
         }
         for l in snippet_lines(&h.snippet, context) {
@@ -584,6 +597,14 @@ mod tests {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(2048), "2.0 KB");
         assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn a_score_that_rounds_to_zero_has_no_sign() {
+        assert_eq!(show_score(-0.0), "0.000");
+        assert_eq!(show_score(-0.0004), "0.000");
+        assert_eq!(show_score(-0.25), "-0.250");
+        assert_eq!(show_score(0.46884), "0.469");
     }
 
     #[test]
