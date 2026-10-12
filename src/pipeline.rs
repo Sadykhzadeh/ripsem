@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
@@ -385,8 +385,12 @@ pub fn open(config: &Config) -> Result<Searcher> {
 
 fn open_with(config: &Config, embedder: Arc<LazyEmbedder>) -> Result<Searcher> {
     let index_path = config.index_path();
-    let index = Index::load(&index_path)
-        .context("no index yet; run `ripsem index` in this directory first")?;
+    if !index_path.exists() {
+        anyhow::bail!("no index yet; run `ripsem index` in this directory first");
+    }
+    // Only a missing file means there is no index. Any other failure carries
+    // its own advice, such as rebuilding an index from an older ripsem.
+    let index = Index::load(&index_path)?;
     // Queries are embedded with the configured model; against an index built
     // with another one the scores would mean nothing.
     if !index.built_for(&config.model) {

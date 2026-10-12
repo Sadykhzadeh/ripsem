@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1.0.102"
-bincode = { version = "2", features = ["serde"] }
+bitcode = { version = "0.6.9", features = ["serde"] }
 clap = { version = "4.6.1", features = ["derive"] }
 content_inspector = "0.2.4"
 directories = "6.0.0"

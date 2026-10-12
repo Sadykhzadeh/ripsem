@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use bitcode::{Decode, Encode};
 use xxhash_rust::xxh3::xxh3_64;
 
 pub const MAX_QUERY_TERMS: usize = 64;
@@ -80,7 +80,7 @@ fn starts_new_piece(bytes: &[u8], i: usize) -> bool {
     false
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Encode, Decode)]
 pub struct TermVector {
     terms: Vec<(TermHash, u8)>,
     length: u32,

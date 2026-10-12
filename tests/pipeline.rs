@@ -424,6 +424,27 @@ fn searching_without_an_index_is_a_clear_error() {
     assert!(err.to_string().contains("ripsem index"));
 }
 
+/// An index file from a ripsem that wrote another format: searching names the
+/// cause, and a plain `ripsem index` replaces it.
+#[test]
+fn an_index_from_an_older_ripsem_is_reported_and_rebuilt() {
+    let dir = TempDir::new();
+    dir.write("auth.rs", "fn authenticate(user) { verify password }");
+    let config = config_for(&dir.path);
+    std::fs::create_dir_all(config.data_dir()).unwrap();
+    // The first bytes of a format 6 index, which had no header.
+    std::fs::write(config.index_path(), [6, 0, 0, 0, 0, 1, 0, 0]).unwrap();
+
+    let err = format!("{:#}", pipeline::search(&config, "verify", 5).unwrap_err());
+    assert!(err.contains("from an older ripsem"), "got: {err}");
+    assert!(!err.contains("no index yet"), "got: {err}");
+
+    let stats = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(stats.embedded, 1);
+    let hits = pipeline::search(&config, "verify password", 5).unwrap();
+    assert_eq!(hits[0].path, "auth.rs");
+}
+
 #[test]
 fn force_reindex_reembeds_everything() {
     let dir = TempDir::new();

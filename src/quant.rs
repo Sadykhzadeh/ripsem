@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
+use bitcode::{Decode, Encode};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct QuantizedVector {
     pub scale: f32,
     pub data: Vec<i8>,
@@ -140,12 +140,8 @@ mod tests {
     #[test]
     fn stores_roughly_a_quarter_of_the_f32_size() {
         let v: Vec<f32> = (0..384).map(|i| (i as f32).sin()).collect();
-        let f32_bytes = bincode::serde::encode_to_vec(&v, bincode::config::legacy())
-            .unwrap()
-            .len();
-        let q_bytes = bincode::serde::encode_to_vec(quantize(&v), bincode::config::legacy())
-            .unwrap()
-            .len();
+        let f32_bytes = bitcode::encode(&v).len();
+        let q_bytes = bitcode::encode(&quantize(&v)).len();
         assert!(q_bytes * 3 < f32_bytes);
     }
 
