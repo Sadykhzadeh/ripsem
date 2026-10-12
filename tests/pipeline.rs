@@ -145,6 +145,10 @@ fn a_reindex_with_nothing_to_embed_never_loads_the_model() {
     dir.write("b.rs", "golf hotel india juliet kilo lima");
     let mut config = config_for(&dir.path);
     pipeline::index_repo(&config, false).unwrap();
+    // Records are reused only for the backend that embedded them.
+    let mut index = ripsem::index::Index::load(&config.index_path()).unwrap();
+    index.backend = Backend::Fastembed;
+    index.save(&config.index_path()).unwrap();
 
     config.backend = Backend::Fastembed;
     let unchanged = pipeline::index_repo(&config, false).unwrap();
@@ -422,6 +426,46 @@ fn searching_without_an_index_is_a_clear_error() {
 
     let err = pipeline::search(&config, "where is auth", 5).unwrap_err();
     assert!(err.to_string().contains("ripsem index"));
+}
+
+/// The hash backend gives its own vectors under any model name, so an index it
+/// built cannot answer a query embedded by the model, or the other way round.
+#[test]
+fn opening_an_index_built_by_another_backend_is_a_clear_error() {
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie delta echo");
+    let mut config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    config.backend = Backend::Fastembed;
+    let err = match pipeline::open(&config) {
+        Ok(_) => panic!("an index from another backend must not open"),
+        Err(e) => e.to_string(),
+    };
+    assert!(err.contains("index --force"), "got: {err}");
+    assert!(err.contains("Hash backend"), "got: {err}");
+    assert!(err.contains("Fastembed backend"), "got: {err}");
+}
+
+#[test]
+fn switching_backend_reembeds_without_force() {
+    use ripsem::index::Index;
+
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie");
+    dir.write("b.rs", "delta echo foxtrot");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    // The same files and model, embedded by the other backend.
+    let mut other = Index::load(&config.index_path()).unwrap();
+    other.backend = Backend::Fastembed;
+    other.save(&config.index_path()).unwrap();
+
+    let stats = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(stats.reused, 0);
+    assert_eq!(stats.embedded, 2);
+    assert!(pipeline::open(&config).is_ok());
 }
 
 /// An index file from a ripsem that wrote another format: searching names the

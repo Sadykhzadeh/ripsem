@@ -99,7 +99,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     let mut reusable = false;
     if let Some(prev) = prev
         && prev.dims == dims
-        && prev.model == config.model
+        && prev.built_for(config.backend, &config.model)
     {
         reusable = true;
         prev_ann = prev.ann;
@@ -127,7 +127,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         })
         .collect();
 
-    let mut index = Index::new(dims, config.model.clone());
+    let mut index = Index::new(dims, config.backend, config.model.clone());
     let mut embedded = 0;
     let mut reused = 0;
     let mut queue = Queue::default();
@@ -373,7 +373,7 @@ pub struct Searcher {
     index_path: std::path::PathBuf,
     index_mtime: Option<std::time::SystemTime>,
     // The model the index was opened with. A reload under a different model
-    // is refused even when the dimensions match.
+    // or backend is refused even when the dimensions match.
     model: String,
     #[cfg(feature = "hnsw")]
     ann_map: Option<instant_distance::HnswMap<crate::ann::Embedding, u32>>,
@@ -391,14 +391,14 @@ fn open_with(config: &Config, embedder: Arc<LazyEmbedder>) -> Result<Searcher> {
     // Only a missing file means there is no index. Any other failure carries
     // its own advice, such as rebuilding an index from an older ripsem.
     let index = Index::load(&index_path)?;
-    // Queries are embedded with the configured model; against an index built
-    // with another one the scores would mean nothing.
-    if !index.built_for(&config.model) {
+    // Queries are embedded with the configured model and backend; against an
+    // index built with another the scores would mean nothing.
+    if !index.built_for(config.backend, &config.model) {
         anyhow::bail!(
-            "index was built with model {}, but this directory is configured for {}; \
+            "index was built with {}, but this directory is configured for {}; \
              run `ripsem index --force` to rebuild it",
-            index.model,
-            config.model
+            index.built_with(),
+            crate::index::embedded_by(config.backend, &config.model)
         );
     }
     let index_mtime = file_mtime(&index_path);
@@ -430,8 +430,9 @@ impl Searcher {
         if index.dims != self.index.dims {
             return Ok(false);
         }
-        // Keep the current index if the new one was built with another model.
-        if !index.built_for(&self.model) {
+        // Keep the current index if the new one was built with another model
+        // or backend.
+        if !index.built_for(self.index.backend, &self.model) {
             return Ok(false);
         }
         #[cfg(feature = "hnsw")]

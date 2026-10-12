@@ -15,7 +15,9 @@ const DATA_GITIGNORE: &str = "\
 /*.tmp
 ";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, bitcode::Encode, bitcode::Decode,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Backend {
     Hash,
