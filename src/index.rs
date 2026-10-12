@@ -1,22 +1,34 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use bitcode::{Decode, Encode};
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
 
 use crate::lexical::{TermHash, TermVector, Weights};
 use crate::quant::{self, QuantizedVector};
 use crate::symbol::Symbol;
 
-pub const FORMAT_VERSION: u32 = 6;
+/// Changes whenever the bytes of an index would, including on a bitcode
+/// upgrade: bitcode keeps its encoding only within one 0.x series.
+pub const FORMAT_VERSION: u32 = 7;
+
+/// Every index file starts with these bytes and then [`FORMAT_VERSION`] as a
+/// little-endian u32, so a file from another ripsem is recognised before its
+/// body is decoded.
+const MAGIC: [u8; 6] = *b"ripsem";
+
+/// Index files without the header are bincode and begin with their own
+/// format version, 1 to 6, as a little-endian u32.
+const HEADERLESS_VERSIONS: std::ops::RangeInclusive<u32> = 1..=6;
 
 const RRF_DAMPING: f32 = 60.0;
 const CANDIDATES_PER_RESULT: usize = 8;
 const MIN_CANDIDATES: usize = 64;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct Record {
     pub path: String,
     pub start_line: usize,
@@ -28,13 +40,11 @@ pub struct Record {
     pub symbol: Option<Symbol>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Encode, Decode)]
 pub struct Index {
-    pub format_version: u32,
     pub dims: usize,
     pub model: String,
     pub records: Vec<Record>,
-    #[serde(default)]
     pub ann: Option<Vec<u8>>,
 }
 
@@ -47,7 +57,6 @@ pub struct Hit {
 impl Index {
     pub fn new(dims: usize, model: String) -> Self {
         Self {
-            format_version: FORMAT_VERSION,
             dims,
             model,
             records: Vec::new(),
@@ -58,26 +67,52 @@ impl Index {
     pub fn load(path: &Path) -> Result<Self> {
         let bytes =
             std::fs::read(path).with_context(|| format!("reading index {}", path.display()))?;
-        let (index, _): (Index, usize) =
-            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy()).map_err(|e| {
-                anyhow::anyhow!(
-                    "index is unreadable or corrupt: {e}; run `ripsem index --force` to rebuild"
-                )
-            })?;
-        if index.format_version != FORMAT_VERSION {
-            anyhow::bail!("index format is from an older ripsem; run `ripsem index --force`");
+        Self::decode(&bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let corrupt = |e: &dyn std::fmt::Display| {
+            anyhow::anyhow!(
+                "index is unreadable or corrupt: {e}; run `ripsem index --force` to rebuild"
+            )
+        };
+        let (version, body) = match bytes.strip_prefix(MAGIC.as_slice()) {
+            Some(rest) => {
+                let (version, body) = rest
+                    .split_first_chunk::<4>()
+                    .ok_or_else(|| corrupt(&"the header is cut short"))?;
+                (u32::from_le_bytes(*version), body)
+            }
+            None => match bytes.first_chunk::<4>().map(|v| u32::from_le_bytes(*v)) {
+                Some(version) if HEADERLESS_VERSIONS.contains(&version) => (version, &[][..]),
+                _ => return Err(corrupt(&"no ripsem header")),
+            },
+        };
+        match version.cmp(&FORMAT_VERSION) {
+            Ordering::Less => {
+                anyhow::bail!("index format is from an older ripsem; run `ripsem index --force`")
+            }
+            Ordering::Greater => anyhow::bail!(
+                "index format is from a newer ripsem; run `ripsem index --force` to rebuild it \
+                 for this one"
+            ),
+            Ordering::Equal => bitcode::decode(body).map_err(|e| corrupt(&e)),
         }
-        Ok(index)
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let bytes = bincode::serde::encode_to_vec(self, bincode::config::legacy())
-            .context("encoding index")?;
+        let body = bitcode::encode(self);
         let tmp = temp_sibling(path);
-        std::fs::write(&tmp, bytes).with_context(|| format!("writing index {}", tmp.display()))?;
+        std::fs::File::create(&tmp)
+            .and_then(|mut file| {
+                file.write_all(&MAGIC)?;
+                file.write_all(&FORMAT_VERSION.to_le_bytes())?;
+                file.write_all(&body)
+            })
+            .with_context(|| format!("writing index {}", tmp.display()))?;
         std::fs::rename(&tmp, path)
             .with_context(|| format!("replacing index {}", path.display()))?;
         Ok(())
@@ -657,14 +692,64 @@ mod tests {
         assert!(!path.with_file_name("index.bin.tmp").exists());
     }
 
+    fn with_header(version: u32, body: &[u8]) -> Vec<u8> {
+        [MAGIC.as_slice(), &version.to_le_bytes(), body].concat()
+    }
+
     #[test]
-    fn rejects_a_mismatched_format_version() {
+    fn a_version_other_than_this_one_says_which_side_it_is_on() {
+        let body = bitcode::encode(&sample_index());
+        let err = |version| {
+            Index::decode(&with_header(version, &body))
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(err(FORMAT_VERSION - 1).contains("older ripsem"));
+        assert!(err(FORMAT_VERSION + 1).contains("newer ripsem"));
+        assert!(Index::decode(&with_header(FORMAT_VERSION, &body)).is_ok());
+    }
+
+    /// An empty index as ripsem wrote it before the header: bincode's legacy
+    /// layout of format version 6, 3 dims, model "test", no records, no graph.
+    #[test]
+    fn an_index_from_before_the_header_is_reported_as_older() {
+        let mut headerless = Vec::new();
+        headerless.extend_from_slice(&6u32.to_le_bytes());
+        headerless.extend_from_slice(&3u64.to_le_bytes());
+        headerless.extend_from_slice(&4u64.to_le_bytes());
+        headerless.extend_from_slice(b"test");
+        headerless.extend_from_slice(&0u64.to_le_bytes());
+        headerless.push(0);
+
         let dir = TempDir::new();
         let path = dir.path().join(".ripsem/index.bin");
-        let mut index = sample_index();
-        index.format_version = FORMAT_VERSION + 1;
-        index.save(&path).unwrap();
-        assert!(Index::load(&path).is_err());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, headerless).unwrap();
+        let err = Index::load(&path).unwrap_err().to_string();
+        assert!(err.contains("from an older ripsem"), "got: {err}");
+        assert!(err.contains("index --force"), "got: {err}");
+    }
+
+    #[test]
+    fn a_cut_short_header_or_body_is_corrupt() {
+        let err = Index::decode(&MAGIC[..]).unwrap_err().to_string();
+        assert!(err.contains("unreadable or corrupt"), "got: {err}");
+        let err = Index::decode(&with_header(FORMAT_VERSION, b"\x01"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unreadable or corrupt"), "got: {err}");
+    }
+
+    /// The header cannot tell one bitcode release from another, so a change in
+    /// the bytes has to come with a new FORMAT_VERSION and fails here until it
+    /// does. Update both together.
+    #[test]
+    fn the_encoding_is_pinned_to_the_format_version() {
+        let bytes = bitcode::encode(&sample_index());
+        assert_eq!(
+            (FORMAT_VERSION, crate::fingerprint::content_hash(&bytes)),
+            (7, 0x9ba7_7f3b_39af_e0e9)
+        );
     }
 
     #[test]

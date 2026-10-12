@@ -22,13 +22,11 @@ pub fn build(vectors: Vec<Vec<f32>>) -> Option<Vec<u8>> {
     let values: Vec<u32> = (0..vectors.len() as u32).collect();
     let points: Vec<Embedding> = vectors.into_iter().map(Embedding).collect();
     let map = Builder::default().seed(1).build(points, values);
-    bincode::serde::encode_to_vec(&map, bincode::config::legacy()).ok()
+    bitcode::serialize(&map).ok()
 }
 
 pub fn load(blob: &[u8]) -> Option<HnswMap<Embedding, u32>> {
-    bincode::serde::decode_from_slice(blob, bincode::config::legacy())
-        .ok()
-        .map(|(map, _)| map)
+    bitcode::deserialize(blob).ok()
 }
 
 pub fn search_map(map: &HnswMap<Embedding, u32>, query: &[f32], k: usize) -> Vec<(usize, f32)> {
