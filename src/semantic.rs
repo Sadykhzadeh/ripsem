@@ -174,7 +174,7 @@ impl Emitter<'_> {
 /// separated by a blank line (licence header, section divider) is not one.
 fn comment_above(node: &Node, text: &str) -> Option<String> {
     let mut lines: Vec<&str> = Vec::new();
-    let mut below = past_prefixes(node);
+    let mut below = past_prefixes(node, text);
     while let Some(previous) = below.prev_named_sibling() {
         if previous.end_position().row + 1 < below.start_position().row {
             break;
@@ -198,13 +198,19 @@ fn comment_above(node: &Node, text: &str) -> Option<String> {
 
 /// `export`, `public` and similar wrap a declaration on the same line, so the
 /// comment sits beside the wrapper. Climbs only through wrappers that start on
-/// that line, which keeps it from reaching the file node.
-fn past_prefixes<'tree>(node: &Node<'tree>) -> Node<'tree> {
+/// that line, which keeps it from reaching the file node. A wrapper may end in
+/// a semicolon, as `const load = () => {};` wraps the declarator `load`, but
+/// in `let a = f, b = g;` the comment is not about `b`, so a node that follows
+/// another of its kind stays where it is.
+fn past_prefixes<'tree>(node: &Node<'tree>, text: &str) -> Node<'tree> {
     let mut current = *node;
     while let Some(parent) = current.parent() {
-        if parent.end_byte() != current.end_byte()
-            || parent.start_position().row != current.start_position().row
-        {
+        let tail = &text[current.end_byte()..parent.end_byte()];
+        let same_row = parent.start_position().row == current.start_position().row;
+        let follows_its_kind = current
+            .prev_named_sibling()
+            .is_some_and(|previous| previous.kind() == current.kind());
+        if !same_row || !matches!(tail, "" | ";") || follows_its_kind {
             break;
         }
         current = parent;
@@ -558,6 +564,21 @@ mod tests {
                 "# Computes the total.\ndef compute\n  1\nend\n",
                 "Computes the total.",
             ),
+            (
+                "a.js",
+                "/** Loads the settings. */\nexport const load = () => {};\n",
+                "Loads the settings.",
+            ),
+            (
+                "p.tsx",
+                "// Renders the page.\nconst Page = () => <main />;\n",
+                "Renders the page.",
+            ),
+            (
+                "m.h",
+                "// Adds two numbers.\nint add(int a, int b);\n",
+                "Adds two numbers.",
+            ),
         ];
         for (file, src, expected) in cases {
             let chunks = chunk_source(file, src, 1);
@@ -565,6 +586,24 @@ mod tests {
                 chunks.iter().any(|c| c.text == expected),
                 "{file}: expected {expected:?}, got {:?}",
                 chunks.iter().map(|c| &c.text).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn a_comment_above_several_declarators_is_not_about_the_last() {
+        for src in [
+            "// Both handlers.\nlet open = () => {}, close = () => {};\n",
+            "// Both handlers.\nlet open = () => {}, close = () => {}\n",
+        ] {
+            let chunks = chunk_source("a.js", src, 1);
+            let close = Some("fn close".to_string());
+            assert!(
+                !chunks
+                    .iter()
+                    .any(|c| c.text == "Both handlers."
+                        && c.symbol.as_ref().map(Symbol::label) == close),
+                "{src:?}"
             );
         }
     }
