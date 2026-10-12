@@ -32,3 +32,23 @@ pub fn build(config: &Config) -> Result<Box<dyn Embedder>> {
         }
     }
 }
+
+/// What to tell a user whose queries embed with [`hashing`]. Its vectors only
+/// record which words occur, so a question in prose finds little more than its
+/// words, and the results look no different from real ones. A build with the
+/// model can still be set to it: `init` in a build without the model writes
+/// `backend = "hash"`, and reinstalling does not change the config.
+pub fn backend_warning(backend: Backend) -> Option<&'static str> {
+    match backend {
+        Backend::Fastembed => None,
+        Backend::Hash if cfg!(feature = "fastembed") => Some(
+            "hashing backend: results match words, not meaning; \
+             run `ripsem model backend fastembed`, then `ripsem index --force`",
+        ),
+        Backend::Hash => Some(
+            "hashing backend: results match words, not meaning; \
+             reinstall with `--features fastembed`, \
+             then run `ripsem model backend fastembed` and `ripsem index --force`",
+        ),
+    }
+}
