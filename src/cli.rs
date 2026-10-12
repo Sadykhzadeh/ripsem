@@ -296,8 +296,8 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
         (None, Some(e)) => println!("index:  unreadable ({e})"),
         (Some(f), _) => {
             println!("index:  {} ({})", f.path, human_size(f.size_bytes));
-            println!("chunks: {} across {} files", f.chunks, f.files);
-            println!("named:  {} chunks carry a declaration", f.named);
+            println!("chunks: {} across {}", f.chunks, plural(f.files, "file"));
+            println!("named:  {} with a declaration", plural(f.named, "chunk"));
             if let Some(drift) = &f.drift {
                 println!("tree:   {}", drift_line(drift));
             }
@@ -314,6 +314,14 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
     }
     warn_about_backend(&config);
     Ok(())
+}
+
+/// `n` with its noun, in the plural unless `n` is 1: "1 file", "3 files".
+pub(crate) fn plural(n: usize, noun: &str) -> String {
+    match n {
+        1 => format!("1 {noun}"),
+        _ => format!("{n} {noun}s"),
+    }
 }
 
 fn show_path(path: &Path) -> String {
@@ -346,13 +354,16 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
         for path in &files {
             println!("{}", pipeline::relative(&config.root, path));
         }
-        println!("{} files would be indexed", files.len());
+        println!("{} would be indexed", plural(files.len(), "file"));
         return Ok(());
     }
     let stats = pipeline::index_repo(&config, force)?;
     println!(
-        "{} files: {} embedded, {} unchanged -> {} chunks",
-        stats.files, stats.embedded, stats.reused, stats.chunks
+        "{}: {} embedded, {} unchanged -> {}",
+        plural(stats.files, "file"),
+        stats.embedded,
+        stats.reused,
+        plural(stats.chunks, "chunk")
     );
     warn_about_backend(&config);
     Ok(())
@@ -591,6 +602,13 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counts_one_in_the_singular() {
+        assert_eq!(plural(1, "chunk"), "1 chunk");
+        assert_eq!(plural(0, "file"), "0 files");
+        assert_eq!(plural(3, "file"), "3 files");
+    }
 
     #[test]
     fn formats_sizes_by_unit() {

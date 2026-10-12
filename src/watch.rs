@@ -5,14 +5,16 @@ use std::time::Duration;
 use anyhow::Result;
 use notify::{RecursiveMode, Watcher};
 
+use crate::cli::plural;
 use crate::config::Config;
 use crate::{pipeline, walk};
 
 pub fn run(config: Config) -> Result<()> {
     let stats = pipeline::index_repo(&config, false)?;
     eprintln!(
-        "indexed {} files ({} chunks); watching for changes",
-        stats.files, stats.chunks
+        "indexed {} ({}); watching for changes",
+        plural(stats.files, "file"),
+        plural(stats.chunks, "chunk")
     );
 
     let (tx, rx) = channel();
@@ -34,7 +36,7 @@ pub fn run(config: Config) -> Result<()> {
             continue;
         }
         match pipeline::index_repo(&config, false) {
-            Ok(stats) => eprintln!("reindexed: {} chunks", stats.chunks),
+            Ok(stats) => eprintln!("reindexed: {}", plural(stats.chunks, "chunk")),
             // Failures are often transient (a file removed mid-scan, a scanner
             // holding the index open). Quitting would leave the index frozen
             // while a running session keeps querying it.
