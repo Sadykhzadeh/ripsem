@@ -7,7 +7,17 @@ use serde_json::{Value, json};
 use crate::config::Config;
 use crate::pipeline;
 
-const PROTOCOL_VERSION: &str = "2024-11-05";
+/// Protocol revisions this server speaks, newest first. Between them they
+/// change transports, authorization and client features, and add optional
+/// tool fields (structured output, titles, annotations, icons) that a single
+/// text-returning tool has no need for. The one difference that reaches a
+/// stdio server is that 2025-03-26 lets the client send JSON-RPC batches,
+/// which [`reply`] accepts under any revision.
+///
+/// 2026-07-28 drops `initialize` for per-request metadata. A client of that
+/// revision probes with `server/discover` first, and the method-not-found
+/// answer tells it to fall back to `initialize`.
+const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 pub fn serve(config: Config) -> Result<()> {
     let stdin = std::io::stdin();
@@ -33,7 +43,7 @@ pub fn serve(config: Config) -> Result<()> {
             Err(_) => continue,
         };
         hold_the_index(&mut session, &mut tried, &config);
-        if let Some(response) = handle(&config, session.as_ref(), &request) {
+        if let Some(response) = reply(&config, session.as_ref(), &request) {
             writeln!(writer, "{}", serde_json::to_string(&response)?)?;
             writer.flush()?;
         }
@@ -71,6 +81,32 @@ fn hold_the_index(
     }
 }
 
+/// Answers one line: a request, a notification, or a batch of them. A batch is
+/// answered with an array of the responses its requests produce, and with
+/// nothing when it held only notifications.
+fn reply(config: &Config, session: Option<&pipeline::Searcher>, message: &Value) -> Option<Value> {
+    match message {
+        Value::Array(batch) if batch.is_empty() => Some(error(Value::Null, -32600, "empty batch")),
+        Value::Array(batch) => {
+            let responses: Vec<Value> = batch
+                .iter()
+                .filter_map(|request| handle(config, session, request))
+                .collect();
+            (!responses.is_empty()).then_some(Value::Array(responses))
+        }
+        request => handle(config, session, request),
+    }
+}
+
+/// The client's revision when this server speaks it. Otherwise the newest one,
+/// which the client either accepts or disconnects on.
+fn negotiate(requested: Option<&str>) -> &'static str {
+    PROTOCOL_VERSIONS
+        .into_iter()
+        .find(|&version| Some(version) == requested)
+        .unwrap_or(PROTOCOL_VERSIONS[0])
+}
+
 fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value) -> Option<Value> {
     let method = request.get("method")?.as_str()?;
     let id = request.get("id").cloned();
@@ -79,7 +115,12 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
         "initialize" => Some(ok(
             id?,
             json!({
-                "protocolVersion": PROTOCOL_VERSION,
+                "protocolVersion": negotiate(
+                    request
+                        .get("params")
+                        .and_then(|p| p.get("protocolVersion"))
+                        .and_then(Value::as_str)
+                ),
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "ripsem", "version": env!("CARGO_PKG_VERSION") }
             }),
@@ -130,9 +171,11 @@ fn handle_call(
         return error(id, -32602, "unknown tool");
     }
 
+    // Arguments that do not fit the input schema are a tool error, which the
+    // model sees and can correct, rather than a protocol error.
     let query = match args.get("query").and_then(|q| q.as_str()) {
         Some(q) => q,
-        None => return error(id, -32602, "missing 'query'"),
+        None => return failed(id, &anyhow!("missing 'query'")),
     };
     let limit = args
         .get("limit")
@@ -273,7 +316,64 @@ mod tests {
         let cfg = Config::default();
         let resp = handle(&cfg, None, &req("initialize", json!({}))).unwrap();
         assert_eq!(resp["result"]["serverInfo"]["name"], "ripsem");
-        assert_eq!(resp["result"]["protocolVersion"], PROTOCOL_VERSION);
+        assert_eq!(resp["result"]["capabilities"]["tools"], json!({}));
+    }
+
+    fn negotiated(params: Value) -> Value {
+        let cfg = Config::default();
+        handle(&cfg, None, &req("initialize", params)).unwrap()["result"]["protocolVersion"].clone()
+    }
+
+    #[test]
+    fn initialize_answers_with_the_version_the_client_asked_for() {
+        for version in PROTOCOL_VERSIONS {
+            assert_eq!(negotiated(json!({ "protocolVersion": version })), version);
+        }
+    }
+
+    #[test]
+    fn initialize_offers_the_newest_version_for_one_it_does_not_speak() {
+        assert_eq!(
+            negotiated(json!({ "protocolVersion": "2099-01-01" })),
+            "2025-11-25"
+        );
+        assert_eq!(
+            negotiated(json!({ "protocolVersion": 20241105 })),
+            "2025-11-25"
+        );
+        assert_eq!(negotiated(json!({})), "2025-11-25");
+    }
+
+    /// A 2026-07-28 client probes with `server/discover` and falls back to
+    /// `initialize` on any error that is not one of that revision's own.
+    #[test]
+    fn a_probe_for_the_stateless_revision_is_method_not_found() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("server/discover", json!({}))).unwrap();
+        assert_eq!(resp["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn a_batch_is_answered_with_the_responses_of_its_requests() {
+        let cfg = Config::default();
+        let batch = json!([
+            { "jsonrpc": "2.0", "id": 1, "method": "ping" },
+            { "jsonrpc": "2.0", "method": "notifications/initialized" },
+            { "jsonrpc": "2.0", "id": "two", "method": "tools/list" }
+        ]);
+        let resp = reply(&cfg, None, &batch).unwrap();
+        let responses = resp.as_array().unwrap();
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["id"], 1);
+        assert_eq!(responses[1]["id"], "two");
+        assert_eq!(responses[1]["result"]["tools"][0]["name"], "search");
+
+        let notes = json!([{ "jsonrpc": "2.0", "method": "notifications/initialized" }]);
+        assert!(reply(&cfg, None, &notes).is_none());
+        assert_eq!(
+            reply(&cfg, None, &json!([])).unwrap()["error"]["code"],
+            -32600
+        );
     }
 
     #[test]
@@ -299,8 +399,9 @@ mod tests {
         assert!(handle(&cfg, None, &note).is_none());
     }
 
+    /// A missing argument goes back to the model as a tool error it can act on.
     #[test]
-    fn call_without_query_is_rejected() {
+    fn call_without_query_is_a_tool_error() {
         let cfg = Config::default();
         let resp = handle(
             &cfg,
@@ -308,7 +409,9 @@ mod tests {
             &req("tools/call", json!({ "name": "search", "arguments": {} })),
         )
         .unwrap();
-        assert_eq!(resp["error"]["code"], -32602);
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("missing 'query'"), "got: {text}");
     }
 
     #[test]
