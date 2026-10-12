@@ -7,13 +7,14 @@ use anyhow::{Context, Result};
 use bitcode::{Decode, Encode};
 use rayon::prelude::*;
 
+use crate::config::Backend;
 use crate::lexical::{TermHash, TermVector, Weights};
 use crate::quant::{self, QuantizedVector};
 use crate::symbol::Symbol;
 
 /// Changes whenever the bytes of an index would, including on a bitcode
 /// upgrade: bitcode keeps its encoding only within one 0.x series.
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 
 /// Every index file starts with these bytes and then [`FORMAT_VERSION`] as a
 /// little-endian u32, so a file from another ripsem is recognised before its
@@ -43,6 +44,7 @@ pub struct Record {
 #[derive(Debug, Encode, Decode)]
 pub struct Index {
     pub dims: usize,
+    pub backend: Backend,
     pub model: String,
     pub records: Vec<Record>,
     pub ann: Option<Vec<u8>>,
@@ -55,9 +57,10 @@ pub struct Hit {
 }
 
 impl Index {
-    pub fn new(dims: usize, model: String) -> Self {
+    pub fn new(dims: usize, backend: Backend, model: String) -> Self {
         Self {
             dims,
+            backend,
             model,
             records: Vec::new(),
             ann: None,
@@ -126,10 +129,16 @@ impl Index {
             .collect()
     }
 
-    /// Whether a query embedded by `model` can be compared with this index.
-    /// Different models give incomparable vectors even at equal dimensions.
-    pub fn built_for(&self, model: &str) -> bool {
-        self.model == model
+    /// Whether a query embedded by `model` on `backend` can be compared with
+    /// this index. Different models give incomparable vectors even at equal
+    /// dimensions, and the hash backend gives its own under any model name.
+    pub fn built_for(&self, backend: Backend, model: &str) -> bool {
+        self.backend == backend && self.model == model
+    }
+
+    /// Names what embedded this index, as messages about a mismatch show it.
+    pub fn built_with(&self) -> String {
+        embedded_by(self.backend, &self.model)
     }
 
     pub fn search(&self, query: &[f32], k: usize) -> Vec<Hit> {
@@ -382,6 +391,11 @@ fn sort_and_truncate(scored: &mut Vec<Hit>, k: usize) {
     scored.sort_unstable_by(by_score);
 }
 
+/// `bge-small-en-v1.5 (Hash backend)`, in the form `ripsem init` prints.
+pub fn embedded_by(backend: Backend, model: &str) -> String {
+    format!("{model} ({backend:?} backend)")
+}
+
 fn path_in_scope(path: &str, prefix: &str) -> bool {
     match path.strip_prefix(prefix) {
         Some(rest) => rest.is_empty() || rest.starts_with('/'),
@@ -433,7 +447,7 @@ mod tests {
     }
 
     fn sample_index() -> Index {
-        let mut index = Index::new(3, "test".into());
+        let mut index = Index::new(3, Backend::Hash, "test".into());
         index.records.push(record("x.rs", vec![1.0, 0.0, 0.0]));
         index.records.push(record("y.rs", vec![0.0, 1.0, 0.0]));
         index.records.push(record("z.rs", vec![0.0, 0.0, 1.0]));
@@ -442,7 +456,7 @@ mod tests {
 
     #[test]
     fn scoped_search_only_returns_matching_prefix() {
-        let mut index = Index::new(3, "test".into());
+        let mut index = Index::new(3, Backend::Hash, "test".into());
         index.records.push(record("src/a.rs", vec![1.0, 0.0, 0.0]));
         index
             .records
@@ -468,7 +482,7 @@ mod tests {
 
     #[test]
     fn a_literal_match_outranks_an_equally_similar_chunk() {
-        let mut index = Index::new(3, "test".into());
+        let mut index = Index::new(3, Backend::Hash, "test".into());
         index.records.push(text_record(
             "a.rs",
             "fn parse_header() {}",
@@ -491,7 +505,7 @@ mod tests {
     /// ranking, so it has to arrive from the lexical arm.
     #[test]
     fn a_literal_match_survives_a_hostile_dense_ranking() {
-        let mut index = Index::new(3, "test".into());
+        let mut index = Index::new(3, Backend::Hash, "test".into());
         index.records.push(text_record(
             "cache.rs",
             "fn evict_least_recently_used(cache) {}",
@@ -531,7 +545,7 @@ mod tests {
 
     #[test]
     fn a_declaration_outranks_free_prose_that_matches_better() {
-        let mut index = Index::new(3, "test".into());
+        let mut index = Index::new(3, Backend::Hash, "test".into());
         let mut prose = text_record("HISTORY.md", "get and post helpers", vec![1.0, 0.0, 0.0]);
         prose.symbol = None;
         let mut code = text_record("api.py", "def get(url)", vec![0.6, 0.8, 0.0]);
@@ -553,7 +567,7 @@ mod tests {
     /// parser for the language) it is all there is.
     #[test]
     fn prose_still_fills_the_results_when_there_is_no_code() {
-        let mut index = Index::new(3, "test".into());
+        let mut index = Index::new(3, Backend::Hash, "test".into());
         for i in 0..4 {
             let mut record = text_record(
                 "notes.md",
@@ -571,7 +585,7 @@ mod tests {
 
     #[test]
     fn two_records_describing_the_same_lines_yield_one_result() {
-        let mut index = Index::new(3, "test".into());
+        let mut index = Index::new(3, Backend::Hash, "test".into());
         index
             .records
             .push(placed("a.rs", 1, 10, vec![1.0, 0.0, 0.0]));
@@ -590,7 +604,7 @@ mod tests {
 
     #[test]
     fn the_same_lines_in_different_files_are_both_kept() {
-        let mut index = Index::new(3, "test".into());
+        let mut index = Index::new(3, Backend::Hash, "test".into());
         index
             .records
             .push(placed("a.rs", 1, 10, vec![1.0, 0.0, 0.0]));
@@ -604,7 +618,7 @@ mod tests {
     /// Duplicates are collapsed before the cut to `k`, not after.
     #[test]
     fn a_full_set_of_results_survives_the_duplicates() {
-        let mut index = Index::new(3, "test".into());
+        let mut index = Index::new(3, Backend::Hash, "test".into());
         for i in 0..10 {
             let line = i * 10 + 1;
             let vector = vec![1.0 - i as f32 * 0.01, 0.0, 0.0];
@@ -748,7 +762,7 @@ mod tests {
         let bytes = bitcode::encode(&sample_index());
         assert_eq!(
             (FORMAT_VERSION, crate::fingerprint::content_hash(&bytes)),
-            (7, 0x9ba7_7f3b_39af_e0e9)
+            (8, 0xe38d_fe3b_39c8_7ec0)
         );
     }
 
@@ -762,6 +776,14 @@ mod tests {
         let err = Index::load(&path).unwrap_err().to_string();
         assert!(err.contains("unreadable or corrupt"), "got: {err}");
         assert!(!err.contains("from an older ripsem"), "got: {err}");
+    }
+
+    #[test]
+    fn answers_only_queries_from_the_same_backend_and_model() {
+        let index = sample_index();
+        assert!(index.built_for(Backend::Hash, "test"));
+        assert!(!index.built_for(Backend::Fastembed, "test"));
+        assert!(!index.built_for(Backend::Hash, "other"));
     }
 
     #[test]
@@ -796,7 +818,7 @@ mod tests {
         }
 
         let mut rng = Lcg(0xdeadbeef_cafebabe);
-        let mut index = Index::new(DIMS, "bench".into());
+        let mut index = Index::new(DIMS, Backend::Hash, "bench".into());
         for i in 0..RECORDS {
             let vector: Vec<f32> = (0..DIMS).map(|_| rng.next_signed_f32()).collect();
             let path = format!("src/module_{}.rs", i % 200);

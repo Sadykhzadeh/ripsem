@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
 use crate::config::{Backend, Config};
-use crate::index::Index;
+use crate::index::{self, Index};
 use crate::{embed, mcp, model, pipeline, walk, watch};
 
 #[derive(Parser)]
@@ -173,6 +173,7 @@ struct IndexFacts {
     files: usize,
     named: usize,
     ann: bool,
+    index_backend: Backend,
     index_model: String,
     stale: bool,
     /// `None` when the tree could not be walked to compare against.
@@ -215,6 +216,7 @@ fn status_json(
             "files": f.files,
             "named": f.named,
             "ann": f.ann,
+            "backend": f.index_backend,
             "model": f.index_model,
             "stale": f.stale,
             "drift": match f.drift {
@@ -261,8 +263,9 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
                     files: files.len(),
                     named: index.records.iter().filter(|r| r.symbol.is_some()).count(),
                     ann: index.ann.is_some(),
+                    index_backend: index.backend,
                     index_model: index.model.clone(),
-                    stale: !index.built_for(&config.model),
+                    stale: !index.built_for(config.backend, &config.model),
                     drift,
                 };
                 (Some(facts), None)
@@ -307,7 +310,8 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
             if f.stale {
                 println!(
                     "note:   index built with {}, config wants {}; run `ripsem index --force`",
-                    f.index_model, config.model
+                    index::embedded_by(f.index_backend, &f.index_model),
+                    index::embedded_by(config.backend, &config.model)
                 );
             }
         }
@@ -737,6 +741,7 @@ mod tests {
             files: 3,
             named: 9,
             ann: true,
+            index_backend: Backend::Hash,
             index_model: "bge-small-en-v1.5".into(),
             stale: false,
             drift: Some(pipeline::Drift {
@@ -762,6 +767,7 @@ mod tests {
         assert_eq!(v["index"]["files"], 3);
         assert_eq!(v["index"]["named"], 9);
         assert_eq!(v["index"]["ann"], true);
+        assert_eq!(v["index"]["backend"], "hash");
         assert_eq!(v["index"]["stale"], false);
         assert_eq!(v["index"]["drift"]["added"], 1);
         assert_eq!(v["index"]["drift"]["modified"], 2);
