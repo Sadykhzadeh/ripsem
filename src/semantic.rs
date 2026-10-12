@@ -404,6 +404,67 @@ mod tests {
     }
 
     #[test]
+    fn names_functions_bound_to_a_name() {
+        let cases = [
+            (
+                "a.js",
+                "const load = (path) => {\n  return path;\n};\n",
+                "fn load",
+            ),
+            ("b.js", "export const run = async () => {}\n", "fn run"),
+            ("c.js", "const parse = function (text) {}\n", "fn parse"),
+            ("d.mjs", "const ids = function* () {}\n", "fn ids"),
+            (
+                "e.js",
+                "class Store {\n  handle = () => {}\n}\n",
+                "fn Store::handle",
+            ),
+            (
+                "f.ts",
+                "export const render = (rows: Row[]): string => rows.join()\n",
+                "fn render",
+            ),
+            (
+                "g.ts",
+                "class Store {\n  private handle = (): void => {}\n}\n",
+                "fn Store::handle",
+            ),
+            ("h.tsx", "export const App = () => <div />;\n", "fn App"),
+        ];
+        for (file, src, expected) in cases {
+            let chunks = chunk_source(file, src, 1);
+            assert!(
+                labels(&chunks).iter().any(|l| l == expected),
+                "{file}: expected {expected:?}, got {:?}",
+                labels(&chunks)
+            );
+        }
+    }
+
+    #[test]
+    fn a_variable_or_field_holding_a_value_is_not_a_declaration() {
+        let cases = [
+            ("a.js", "const limit = 5;\nlet { a, b } = () => {};\n"),
+            ("b.js", "const rows = items.map((item) => item.id);\n"),
+            ("c.ts", "class Store {\n  count: number = 0\n}\n"),
+            ("d.js", "class Store {\n  count = 0\n}\n"),
+            (
+                "e.js",
+                "class Store {\n  load() {\n    const done = () => {};\n  }\n}\n",
+            ),
+        ];
+        for (file, src) in cases {
+            let found = labels(&chunk_source(file, src, 1));
+            assert!(
+                found
+                    .iter()
+                    .all(|l| l == "class Store" || l == "fn Store::load"),
+                "{file}: got {found:?}"
+            );
+        }
+    }
+
+    #[test]
     fn chunks_a_range_of_languages() {
         let cases = [
             (
