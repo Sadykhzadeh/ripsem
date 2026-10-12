@@ -99,6 +99,37 @@ fn init_makes_the_current_directory_a_root_even_inside_another() {
     assert!(inner.join(".ripsem/config.toml").exists());
 }
 
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[test]
+fn every_command_says_when_search_matches_words_not_meaning() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn authenticate(user) { verify password }");
+    let warned = |output: &Output| stderr(output).contains("warning: hashing backend");
+
+    // `init` writes the build's default backend, which is hashing only in a
+    // build without the model.
+    let init = ripsem(&dir.path, &["init"]);
+    assert!(init.status.success());
+    assert_eq!(warned(&init), cfg!(not(feature = "fastembed")));
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(warned(&ripsem(&dir.path, &["index"])));
+    assert!(warned(&ripsem(&dir.path, &["search", "verify"])));
+    let json = ripsem(&dir.path, &["search", "verify", "--json"]);
+    assert!(warned(&json));
+    assert!(stdout(&json).trim_start().starts_with('['));
+    assert!(warned(&ripsem(&dir.path, &["status"])));
+    let status = ripsem(&dir.path, &["status", "--json"]);
+    assert!(stdout(&status).contains("\"warning\": \"hashing backend"));
+
+    ripsem(&dir.path, &["model", "backend", "fastembed"]);
+    let status = ripsem(&dir.path, &["status"]);
+    assert!(!stderr(&status).contains("warning"), "{}", stderr(&status));
+    assert!(stdout(&ripsem(&dir.path, &["status", "--json"])).contains("\"warning\": null"));
+}
+
 fn git(cwd: &Path, args: &[&str]) -> String {
     // The user's global excludes could hide `.ripsem` and pass this for them.
     let excludes = cwd.join("no-global-excludes");

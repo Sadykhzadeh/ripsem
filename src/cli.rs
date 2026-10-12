@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::config::{Backend, Config};
 use crate::index::Index;
-use crate::{mcp, model, pipeline, walk, watch};
+use crate::{embed, mcp, model, pipeline, walk, watch};
 
 #[derive(Parser)]
 #[command(name = "ripsem", version, about = "Local semantic code search")]
@@ -153,7 +153,16 @@ fn cmd_init(root: &Path) -> Result<()> {
     config.save()?;
     println!("wrote {}", show_path(&config.config_path()));
     println!("model: {} ({:?} backend)", config.model, config.backend);
+    warn_about_backend(&config);
     Ok(())
+}
+
+/// Hashing-backend results look like any others, so every command that builds
+/// or reads vectors says on stderr that they match words, not meaning.
+fn warn_about_backend(config: &Config) {
+    if let Some(warning) = embed::backend_warning(config.backend) {
+        eprintln!("warning: {warning}");
+    }
 }
 
 /// Index-health facts gathered for the `status` output (both human and JSON).
@@ -224,6 +233,7 @@ fn status_json(
         "model": model,
         "backend": backend,
         "dims": dims,
+        "warning": embed::backend_warning(backend),
         "index": index_json,
     });
     serde_json::to_string_pretty(&doc).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
@@ -302,6 +312,7 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
             }
         }
     }
+    warn_about_backend(&config);
     Ok(())
 }
 
@@ -343,6 +354,7 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
         "{} files: {} embedded, {} unchanged -> {} chunks",
         stats.files, stats.embedded, stats.reused, stats.chunks
     );
+    warn_about_backend(&config);
     Ok(())
 }
 
@@ -392,9 +404,20 @@ fn cmd_search(
     };
     let hits = pipeline::search_scoped(&config, query, limit, prefix.as_deref())?;
     let hits = apply_min_score(hits, min_score);
+    print_hits(&hits, as_json, context, count_by_file)?;
+    warn_about_backend(&config);
+    Ok(())
+}
 
+/// Prints search results in the shape the flags ask for.
+fn print_hits(
+    hits: &[pipeline::SearchHit],
+    as_json: bool,
+    context: usize,
+    count_by_file: bool,
+) -> Result<()> {
     if count_by_file {
-        let counts = file_hit_counts(&hits);
+        let counts = file_hit_counts(hits);
         if as_json {
             let rows: Vec<Value> = counts
                 .into_iter()
@@ -434,7 +457,7 @@ fn cmd_search(
         println!("no matches");
         return Ok(());
     }
-    for h in &hits {
+    for h in hits {
         match &h.symbol {
             Some(s) => println!(
                 "{}:{}-{}  {}  ({:.3})",
@@ -689,6 +712,12 @@ mod tests {
         assert_eq!(v["model"], "bge-small-en-v1.5");
         assert_eq!(v["backend"], "hash");
         assert_eq!(v["dims"], 384);
+        assert!(
+            v["warning"]
+                .as_str()
+                .is_some_and(|w| w.starts_with("hashing backend")),
+            "{out}"
+        );
         assert_eq!(v["index"]["present"], true);
         assert_eq!(v["index"]["chunks"], 12);
         assert_eq!(v["index"]["files"], 3);
@@ -705,6 +734,7 @@ mod tests {
         let out = status_json("m", Backend::Fastembed, 768, None, None);
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["backend"], "fastembed");
+        assert!(v["warning"].is_null());
         assert_eq!(v["index"]["present"], false);
         assert!(v["index"]["error"].is_null());
     }
