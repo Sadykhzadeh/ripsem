@@ -183,7 +183,9 @@ impl Weights {
     }
 
     pub fn coverage(&self, presence: u64) -> f32 {
-        if self.reachable_idf <= 0.0 {
+        // A record with no query term returns +0.0 here, since an empty f32
+        // sum is -0.0 and that sign would reach the score.
+        if self.reachable_idf <= 0.0 || presence == 0 {
             return 0.0;
         }
         let matched: f32 = set_bits(presence).map(|i| self.idf[i]).sum();
@@ -351,5 +353,9 @@ mod tests {
         let rows = scored("evict_least_recently_used");
         assert_eq!(rows[1].1, 0.0);
         assert_eq!(rows[1].2, 0.0);
+        assert!(
+            rows[1].2.is_sign_positive(),
+            "a score of -0.0 prints as -0.000"
+        );
     }
 }
