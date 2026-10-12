@@ -24,8 +24,10 @@ pub fn declaration(
     text: &str,
     enclosing: Option<&Symbol>,
 ) -> Option<Symbol> {
-    let kind = declared_kind(node.kind())?;
-    let name = declared_name(node, text)?;
+    let (kind, name) = match is_binding(node.kind()) {
+        true => ("fn", bound_function_name(node, text)?),
+        false => (declared_kind(node.kind())?, declared_name(node, text)?),
+    };
     Some(Symbol {
         kind: kind.to_string(),
         name: match enclosing {
@@ -64,6 +66,40 @@ fn declared_kind(node_kind: &str) -> Option<&'static str> {
         .iter()
         .find(|(needle, _)| node_kind.contains(needle))
         .map(|&(_, kind)| kind)
+}
+
+/// JavaScript and TypeScript mostly declare a function by binding one to a
+/// name, `const load = async () => {}` or a class field `handle = () => {}`.
+/// Such a variable or field is named like the function it holds. One holding
+/// anything else is not a declaration, even where its node kind, such as
+/// TypeScript's `public_field_definition`, contains a needle like `def`.
+#[cfg(feature = "treesitter")]
+fn is_binding(node_kind: &str) -> bool {
+    node_kind == "variable_declarator" || node_kind.ends_with("field_definition")
+}
+
+/// The name has to be a plain identifier: a destructuring pattern, a string or
+/// a computed key does not name one function. A variable inside a function
+/// body holds a closure, which belongs to the function around it as a Rust
+/// closure or a Python lambda does.
+#[cfg(feature = "treesitter")]
+fn bound_function_name(node: &tree_sitter::Node, text: &str) -> Option<String> {
+    let value = node.child_by_field_name("value")?;
+    if !value.kind().contains("function") {
+        return None;
+    }
+    let statement = node.parent()?;
+    if statement
+        .parent()
+        .is_some_and(|block| block.kind() == "statement_block")
+    {
+        return None;
+    }
+    ["name", "property"]
+        .into_iter()
+        .filter_map(|field| node.child_by_field_name(field))
+        .find(|name| is_name_leaf(name.kind()))
+        .map(|name| text[name.start_byte()..name.end_byte()].to_string())
 }
 
 #[cfg(feature = "treesitter")]
