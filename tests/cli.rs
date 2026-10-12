@@ -172,3 +172,50 @@ fn git_sees_the_config_but_not_the_index() {
         ]
     );
 }
+
+/// One session over stdio, as a client of the 2025-06-18 revision runs it.
+#[test]
+fn the_mcp_server_answers_a_session_from_handshake_to_search() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn authenticate(user) { verify password }");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let session = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search","arguments":{"query":"verify password"}}}"#,
+    ];
+    let mut server = Command::new(env!("CARGO_BIN_EXE_ripsem"))
+        .arg("mcp")
+        .current_dir(&dir.path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = server.stdin.take().unwrap();
+    for line in session {
+        writeln!(stdin, "{line}").unwrap();
+    }
+    drop(stdin);
+    let output = server.wait_with_output().unwrap();
+    assert!(output.status.success());
+
+    let responses: Vec<serde_json::Value> = stdout(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(responses.len(), 3, "the notification gets no answer");
+    assert_eq!(responses[0]["id"], 1);
+    assert_eq!(responses[0]["result"]["protocolVersion"], "2025-06-18");
+    assert_eq!(responses[1]["result"]["tools"][0]["name"], "search");
+    let result = &responses[2]["result"];
+    assert_eq!(result["isError"], false);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("src/auth.rs:1-1"), "got: {text}");
+}
