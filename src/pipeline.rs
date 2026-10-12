@@ -183,6 +183,9 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         reused,
         chunks: index.records.len(),
     };
+    // Before the early return below, so a data directory that lacks its
+    // `.gitignore` gets one even when nothing needs reindexing.
+    config.create_data_dir()?;
     // Nothing was embedded or dropped, so the file on disk is already right.
     // Rewriting it would rebuild the graph and bump the mtime, which makes a
     // running server reload it.

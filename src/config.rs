@@ -1,9 +1,19 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{self, DEFAULT_MODEL};
+
+/// Patterns are anchored to `.ripsem`, so a project checked out somewhere below
+/// it, which the walk reads parent ignore files for, keeps its own files.
+const DATA_GITIGNORE: &str = "\
+# Written by ripsem, which leaves this file alone once it exists.
+# `ripsem index` rebuilds the index; config.toml can be committed.
+/index.bin
+/*.tmp
+";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -96,6 +106,27 @@ impl Config {
         self.data_dir().join("index.bin")
     }
 
+    /// Creates the data directory with a `.gitignore` that keeps the index and
+    /// its temp file out of git while `config.toml` stays committable. An
+    /// existing `.gitignore` is left exactly as it is, so one the user edited
+    /// survives every run.
+    pub fn create_data_dir(&self) -> Result<()> {
+        let dir = self.data_dir();
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        let path = dir.join(".gitignore");
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => file
+                .write_all(DATA_GITIGNORE.as_bytes())
+                .with_context(|| format!("writing {}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(e) => Err(e).with_context(|| format!("writing {}", path.display())),
+        }
+    }
+
     /// The nearest directory at or above `start` that holds a `.ripsem`
     /// directory, or `start` itself when there is none.
     pub fn find_root(start: &Path) -> PathBuf {
@@ -124,7 +155,7 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<()> {
-        std::fs::create_dir_all(self.data_dir())?;
+        self.create_data_dir()?;
         let text = toml::to_string_pretty(self)?;
         std::fs::write(self.config_path(), text)?;
         Ok(())
@@ -188,5 +219,37 @@ mod tests {
         let dir = TempDir::new();
         let cfg = Config::load(dir.path()).unwrap();
         assert_eq!(cfg.model, DEFAULT_MODEL);
+    }
+
+    #[test]
+    fn save_ignores_the_index_but_not_the_config() {
+        let dir = TempDir::new();
+        let cfg = Config {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        cfg.save().unwrap();
+
+        let text = std::fs::read_to_string(dir.path().join(".ripsem/.gitignore")).unwrap();
+        let patterns: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(patterns, ["/index.bin", "/*.tmp"]);
+        assert!(cfg.index_path().ends_with("index.bin"));
+    }
+
+    #[test]
+    fn an_existing_data_gitignore_is_left_as_it_is() {
+        let dir = TempDir::new();
+        dir.write(".ripsem/.gitignore", "# commit the index too\n");
+        let cfg = Config {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        cfg.save().unwrap();
+        cfg.create_data_dir().unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".ripsem/.gitignore")).unwrap(),
+            "# commit the index too\n"
+        );
     }
 }
