@@ -193,6 +193,22 @@ fn an_unchanged_tree_leaves_the_index_file_alone() {
 }
 
 #[test]
+fn a_reindex_with_nothing_to_do_still_writes_the_data_gitignore() {
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie delta echo foxtrot");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let gitignore = config.data_dir().join(".gitignore");
+    assert!(gitignore.exists());
+
+    // A data directory that holds an index but no `.gitignore`.
+    std::fs::remove_file(&gitignore).unwrap();
+    let again = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(again.reused, 1);
+    assert!(gitignore.exists());
+}
+
+#[test]
 fn switching_model_reembeds_without_force() {
     let dir = TempDir::new();
     dir.write("a.rs", "alpha bravo charlie");

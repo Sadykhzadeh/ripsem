@@ -98,3 +98,46 @@ fn init_makes_the_current_directory_a_root_even_inside_another() {
     assert!(ripsem(&inner, &["init"]).status.success());
     assert!(inner.join(".ripsem/config.toml").exists());
 }
+
+fn git(cwd: &Path, args: &[&str]) -> String {
+    // The user's global excludes could hide `.ripsem` and pass this for them.
+    let excludes = cwd.join("no-global-excludes");
+    let out = Command::new("git")
+        .arg("-c")
+        .arg(format!("core.excludesFile={}", excludes.display()))
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("git is needed for this test");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    stdout(&out)
+}
+
+#[test]
+fn git_sees_the_config_but_not_the_index() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn authenticate(user) { verify password }");
+    git(&dir.path, &["init", "-q"]);
+    assert!(ripsem(&dir.path, &["init"]).status.success());
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+    assert!(dir.path.join(".ripsem/index.bin").exists());
+
+    let untracked = git(
+        &dir.path,
+        &["status", "--porcelain", "--untracked-files=all"],
+    );
+    assert_eq!(
+        untracked.lines().collect::<Vec<_>>(),
+        [
+            "?? .ripsem/.gitignore",
+            "?? .ripsem/config.toml",
+            "?? src/auth.rs"
+        ]
+    );
+}

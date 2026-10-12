@@ -200,10 +200,15 @@ mod tests {
     #[test]
     fn indexes_a_repository_that_lives_under_a_dot_ripsem_directory() {
         let dir = TempDir::new();
+        config_at(dir.path()).create_data_dir().unwrap();
         dir.write(".ripsem/corpora/project/main.rs", "fn main() {}\n");
+        dir.write(".ripsem/corpora/project/index.bin", "not ripsem's index\n");
+        dir.write(".ripsem/corpora/project/notes.tmp", "scratch\n");
         let root = dir.path().join(".ripsem/corpora/project");
 
-        assert_eq!(names(&collect(&config_at(&root)).unwrap()), ["main.rs"]);
+        let mut collected = names(&collect(&config_at(&root)).unwrap());
+        collected.sort();
+        assert_eq!(collected, ["index.bin", "main.rs", "notes.tmp"]);
     }
 
     #[test]
@@ -211,6 +216,7 @@ mod tests {
         let dir = TempDir::new();
         dir.write("main.rs", "fn main() {}\n");
         dir.write(".ripsem/config.toml", "model = \"x\"\n");
+        dir.write(".ripsem/.gitignore", "/index.bin\n");
 
         assert_eq!(
             names(&collect(&config_at(dir.path())).unwrap()),
