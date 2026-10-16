@@ -185,22 +185,23 @@ model, so the test is `#[ignore]`d.
 
 | corpus | language | chunks | vector only | lexical only | merged |
 | --- | --- | --- | --- | --- | --- |
-| ripsem | Rust | 146 | 0.611 | 0.675 | **0.778** |
+| ripsem | Rust | 147 | 0.611 | 0.675 | **0.778** |
 | requests v2.34.2 | Python | 909 | 0.700 | 0.610 | **0.796** |
-| mux v1.8.1 | Go | 398 | 0.576 | 0.736 | **0.875** |
-| got v14.4.5 | TypeScript | 851 | 0.600 | 0.542 | **0.729** |
-| all | | 2304 | 0.627 | 0.631 | **0.785** |
+| mux v1.8.1 | Go | 400 | 0.576 | 0.736 | **0.875** |
+| got v14.4.5 | TypeScript | 853 | 0.608 | 0.542 | **0.718** |
+| all | | 2309 | 0.629 | 0.631 | **0.782** |
 
 | query shape | vector only | lexical only | merged |
 | --- | --- | --- | --- |
-| description (28) | 0.438 | 0.373 | **0.595** |
-| identifier (22) | 0.826 | 0.856 | **0.924** |
+| description (28) | 0.438 | 0.373 | **0.593** |
+| identifier (22) | 0.833 | 0.856 | **0.924** |
 | message (9) | 0.537 | 1.000 | **1.000** |
-| recalled name (14) | 0.750 | 0.554 | **0.810** |
+| recalled name (14) | 0.750 | 0.554 | **0.798** |
 
 Which arm is stronger reverses between corpora: BM25 wins on Go and Rust, the
 embedding model on Python and TypeScript. Merging is ahead on every corpus and
-every query shape, so nobody has to know in advance which arm a question needs.
+never behind on any query shape (messages tie with BM25 at 1.000), so nobody has
+to know in advance which arm a question needs.
 
 ### Ranking code above prose
 
@@ -216,13 +217,14 @@ construction, and the number overstates how general it is.
 
 ### Choice of model
 
-Three models over the same 73 questions:
+Three models over the same 73 questions, measured on the same code as the
+tables above:
 
 | model | dims | disk | vector only | merged |
 | --- | --- | --- | --- | --- |
-| all-MiniLM-L6-v2 | 384 | ~90 MB | 0.604 | 0.718 |
-| bge-small-en-v1.5 | 384 | ~133 MB | 0.627 | **0.733** |
-| bge-base-en-v1.5 | 768 | ~436 MB | **0.637** | 0.689 |
+| all-MiniLM-L6-v2 | 384 | ~90 MB | 0.616 | 0.758 |
+| bge-small-en-v1.5 | 384 | ~133 MB | 0.629 | **0.782** |
+| bge-base-en-v1.5 | 768 | ~436 MB | **0.641** | 0.753 |
 
 The larger model is the better retriever alone and the worse one merged. The
 ordering held before and after doc records were added. Why is not explained
@@ -253,8 +255,8 @@ short document is stronger evidence than the same term in a long one.
 ### Reading cost
 
 Counting the snippets up to and including the first correct hit, a caller takes
-in **439 bytes to reach the answer, against 14 410 bytes for the whole file it
-lives in, 33x less**. This covers the 65 of 73 questions answered inside the top
+in **452 bytes to reach the answer, against 14 410 bytes for the whole file it
+lives in, 32x less**. This covers the 65 of 73 questions answered inside the top
 five, and compares against reading one file end to end, which is what happens
 when a search can only name a filename. It is not a model of what an agent does,
 and says nothing about the 8 questions no arm answered.
@@ -268,10 +270,12 @@ stopword, and one corpus cannot separate that from the change being measured.
 
 ### Known gaps
 
-A description in the reader's own words is the weakest shape at 0.595, and eight
-questions are still unanswered inside the top five. Only one of those is a
-retrieval failure (a chunk no arm surfaces at any depth); the rest rank below
-five. `models` does not find `ModelInfo` because nothing folds plurals.
+A description in the reader's own words is the weakest shape at 0.593, and eight
+questions are still unanswered inside the top five. Every one of them is a
+ranking failure: at least one arm has the answer within its first 200, and the
+merge places it lower. The worst is the vector arm's fourth result for "path to
+the bundled certificate authority file", which the merge drops below 200.
+`models` does not find `ModelInfo` because nothing folds plurals.
 
 ### Tried and not kept
 
