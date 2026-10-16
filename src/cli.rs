@@ -145,13 +145,18 @@ pub fn run(cli: Cli) -> Result<()> {
     }
 }
 
+/// Writes the default config, or keeps the one already there: it holds the
+/// model the index was built with and the user's excludes.
 fn cmd_init(root: &Path) -> Result<()> {
-    let config = Config {
-        root: root.to_path_buf(),
-        ..Default::default()
-    };
-    config.save()?;
-    println!("wrote {}", show_path(&config.config_path()));
+    let config = Config::load(root)?;
+    let path = show_path(&config.config_path());
+    if config.config_path().exists() {
+        config.create_data_dir()?;
+        println!("kept {path}, which already exists");
+    } else {
+        config.save()?;
+        println!("wrote {path}");
+    }
     println!("model: {} ({:?} backend)", config.model, config.backend);
     warn_about_backend(&config);
     Ok(())
@@ -703,6 +708,30 @@ mod tests {
     fn strips_the_windows_verbatim_prefix() {
         assert_eq!(show_path(Path::new(r"\\?\C:\repo")), r"C:\repo");
         assert_eq!(show_path(Path::new("/home/user/repo")), "/home/user/repo");
+    }
+
+    #[test]
+    fn init_keeps_an_existing_config() {
+        let dir = crate::testutil::TempDir::new();
+        cmd_init(dir.path()).unwrap();
+        assert!(dir.path().join(".ripsem/.gitignore").exists());
+
+        let edited = "model = \"all-MiniLM-L6-v2\"\nexclude = [\"vendor/\"]\n";
+        dir.write(".ripsem/config.toml", edited);
+        std::fs::remove_file(dir.path().join(".ripsem/.gitignore")).unwrap();
+        cmd_init(dir.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".ripsem/config.toml")).unwrap(),
+            edited
+        );
+        assert!(dir.path().join(".ripsem/.gitignore").exists());
+
+        dir.write(".ripsem/config.toml", "model = [");
+        assert!(cmd_init(dir.path()).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".ripsem/config.toml")).unwrap(),
+            "model = ["
+        );
     }
 
     #[test]
