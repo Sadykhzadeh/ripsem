@@ -19,8 +19,19 @@ pub fn chunk(text: &str, spec: &LangSpec, max_lines: usize, overlap: usize) -> O
     Some(emitter.out)
 }
 
-fn node_lines(node: &Node) -> usize {
-    node.end_position().row - node.start_position().row + 1
+fn node_lines(node: &Node, text: &str) -> usize {
+    last_row(node, text) - node.start_position().row + 1
+}
+
+/// The row of a node's last line. A node that takes in the newline after its
+/// last line, as a whole file does, ends at the start of the row below it.
+fn last_row(node: &Node, text: &str) -> usize {
+    let body = &text[node.start_byte()..node.end_byte()];
+    let newlines = body[body.trim_end().len()..].matches('\n').count();
+    node.end_position()
+        .row
+        .saturating_sub(newlines)
+        .max(node.start_position().row)
 }
 
 struct Emitter<'a> {
@@ -34,7 +45,7 @@ impl Emitter<'_> {
     /// `enclosing` is the declaration being walked, so every piece of a function
     /// too large for one chunk keeps its name.
     fn walk(&mut self, node: Node, enclosing: Option<&Symbol>) {
-        if node_lines(&node) <= self.max_lines {
+        if node_lines(&node, self.text) <= self.max_lines {
             self.push(&node, &node, enclosing);
             return;
         }
@@ -52,7 +63,7 @@ impl Emitter<'_> {
         let mut group: Option<(Node, Node)> = None;
         let mut lines = 0usize;
         for child in children {
-            let child_lines = node_lines(&child);
+            let child_lines = node_lines(&child, self.text);
             if child_lines > self.max_lines {
                 if let Some((s, e)) = group.take() {
                     self.push(&s, &e, scope);
@@ -88,7 +99,7 @@ impl Emitter<'_> {
         let own = self.first_declaration(start, end, enclosing);
         self.out.push(Chunk {
             start_line: start.start_position().row + 1,
-            end_line: end.end_position().row + 1,
+            end_line: last_row(end, self.text) + 1,
             text: body.to_string(),
             symbol: own.or_else(|| enclosing.cloned()),
         });
@@ -137,7 +148,7 @@ impl Emitter<'_> {
         {
             self.out.push(Chunk {
                 start_line: node.start_position().row + 1,
-                end_line: node.end_position().row + 1,
+                end_line: last_row(&node, self.text) + 1,
                 text: prose,
                 symbol: Some(symbol.clone()),
             });
@@ -617,6 +628,27 @@ mod tests {
             assert!(c.start_line >= 1);
             assert!(c.end_line <= total);
             assert!(c.start_line <= c.end_line);
+        }
+    }
+
+    /// A file ends with the newline after its last line, which its node takes
+    /// in, so the end of a whole-file chunk is not the row that newline opens.
+    #[test]
+    fn a_whole_file_chunk_ends_on_the_last_line() {
+        for (file, src) in [
+            ("x.rs", "fn main() {\n    run();\n}\n"),
+            ("x.py", "def main():\n    run()\n\n\n"),
+            ("x.go", "package main\n\nfunc main() {}\n"),
+            ("x.json", "{\n  \"k\": 1\n}\n"),
+            ("x.rs", "fn main() {\n    run();\n}"),
+        ] {
+            let chunks = chunk_source(file, src, 40);
+            let last = src.trim_end().lines().count();
+            assert_eq!(
+                (chunks[0].start_line, chunks[0].end_line),
+                (1, last),
+                "{file}: {src:?}"
+            );
         }
     }
 }
