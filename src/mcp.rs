@@ -19,7 +19,7 @@ use crate::pipeline;
 /// answer tells it to fall back to `initialize`.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-pub fn serve(config: Config) -> Result<()> {
+pub fn serve(mut config: Config) -> Result<()> {
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     let stdout = std::io::stdout();
@@ -42,7 +42,7 @@ pub fn serve(config: Config) -> Result<()> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        hold_the_index(&mut session, &mut tried, &config);
+        hold_the_index(&mut session, &mut tried, &mut config);
         if let Some(response) = reply(&config, session.as_ref(), &request) {
             writeln!(writer, "{}", serde_json::to_string(&response)?)?;
             writer.flush()?;
@@ -58,14 +58,28 @@ pub fn serve(config: Config) -> Result<()> {
 /// `tried` is the index mtime at the last failed attempt. Opening decodes the
 /// whole file and can fail for a lasting reason (another model, an older
 /// format), so a retry waits for the file to change.
+///
+/// `ripsem model` followed by `ripsem index --force` rebuilds the index for
+/// another model while the server runs. The held index cannot take it, so the
+/// configuration is read again, and when it names another model or backend the
+/// server opens the new index under it.
 fn hold_the_index(
     session: &mut Option<pipeline::Searcher>,
     tried: &mut Option<std::time::SystemTime>,
-    config: &Config,
+    config: &mut Config,
 ) {
     if let Some(searcher) = session {
-        let _ = searcher.refresh();
-        return;
+        if searcher.refresh().is_ok() {
+            return;
+        }
+        match Config::load(&config.root) {
+            Ok(fresh) if fresh.backend != config.backend || fresh.model != config.model => {
+                *config = fresh;
+                *session = None;
+                *tried = None;
+            }
+            _ => return,
+        }
     }
     let mtime = std::fs::metadata(config.index_path())
         .and_then(|m| m.modified())
@@ -553,7 +567,7 @@ mod tests {
 
         let dir = TempDir::new();
         dir.write("auth.rs", "fn authenticate(user) { verify password }");
-        let config = Config {
+        let mut config = Config {
             backend: Backend::Hash,
             root: dir.path().to_path_buf(),
             ..Default::default()
@@ -561,7 +575,7 @@ mod tests {
 
         let mut session = None;
         let mut tried = None;
-        hold_the_index(&mut session, &mut tried, &config);
+        hold_the_index(&mut session, &mut tried, &mut config);
         assert!(session.is_none(), "there is no index to hold yet");
         assert!(
             tried.is_none(),
@@ -569,7 +583,7 @@ mod tests {
         );
 
         pipeline::index_repo(&config, false).unwrap();
-        hold_the_index(&mut session, &mut tried, &config);
+        hold_the_index(&mut session, &mut tried, &mut config);
         assert!(
             session.is_some(),
             "the index exists now and must be held instead of reopened per call"
@@ -597,20 +611,88 @@ mod tests {
 
         let mut session = None;
         let mut tried = None;
-        hold_the_index(&mut session, &mut tried, &config);
+        hold_the_index(&mut session, &mut tried, &mut config);
         assert!(session.is_none(), "the index is not usable");
         let first = tried;
         assert!(first.is_some(), "the attempt has to be remembered");
 
-        hold_the_index(&mut session, &mut tried, &config);
+        hold_the_index(&mut session, &mut tried, &mut config);
         assert_eq!(tried, first, "the same file must not be decoded again");
 
         // A rebuild is a new file and is tried again. The pause keeps the
         // mtime from repeating (see `searcher_hot_reloads_a_rebuilt_index`).
         std::thread::sleep(std::time::Duration::from_millis(20));
         pipeline::index_repo(&config, true).unwrap();
-        hold_the_index(&mut session, &mut tried, &config);
+        hold_the_index(&mut session, &mut tried, &mut config);
         assert!(session.is_some(), "a rebuilt index has to be picked up");
+    }
+
+    /// `ripsem model set` and `ripsem index --force` while the server runs.
+    #[test]
+    fn the_server_moves_to_an_index_rebuilt_for_another_model() {
+        use crate::config::Backend;
+        use crate::testutil::TempDir;
+
+        let dir = TempDir::new();
+        dir.write("auth.rs", "fn authenticate(user) { verify password }");
+        let mut config = Config {
+            backend: Backend::Hash,
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+
+        let mut session = None;
+        let mut tried = None;
+        hold_the_index(&mut session, &mut tried, &mut config);
+        assert_eq!(session.as_ref().unwrap().model(), "bge-small-en-v1.5");
+
+        let mut switched = Config::load(dir.path()).unwrap();
+        switched.model = "all-MiniLM-L6-v2".into();
+        switched.save().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        pipeline::index_repo(&switched, true).unwrap();
+
+        hold_the_index(&mut session, &mut tried, &mut config);
+        assert_eq!(config.model, "all-MiniLM-L6-v2");
+        let searcher = session.as_ref().expect("the rebuilt index is held");
+        assert_eq!(searcher.model(), "all-MiniLM-L6-v2");
+        let hits = searcher.query("verify password", 5).unwrap();
+        assert_eq!(hits[0].path, "auth.rs");
+    }
+
+    /// A file the server cannot use and the configuration does not explain,
+    /// here one from a newer ripsem, leaves the index it holds answering.
+    #[test]
+    fn an_unusable_rebuild_leaves_the_held_index_answering() {
+        use crate::config::Backend;
+        use crate::testutil::TempDir;
+
+        let dir = TempDir::new();
+        dir.write("auth.rs", "fn authenticate(user) { verify password }");
+        let mut config = Config {
+            backend: Backend::Hash,
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+
+        let mut session = None;
+        let mut tried = None;
+        hold_the_index(&mut session, &mut tried, &mut config);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut newer = b"ripsem".to_vec();
+        newer.extend_from_slice(&(crate::index::FORMAT_VERSION + 1).to_le_bytes());
+        std::fs::write(config.index_path(), newer).unwrap();
+
+        hold_the_index(&mut session, &mut tried, &mut config);
+        let searcher = session.as_ref().expect("the held index is kept");
+        assert_eq!(
+            searcher.query("verify password", 5).unwrap()[0].path,
+            "auth.rs"
+        );
     }
 
     #[test]

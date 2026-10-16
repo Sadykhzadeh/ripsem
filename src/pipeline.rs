@@ -426,26 +426,29 @@ fn file_mtime(path: &Path) -> Option<std::time::SystemTime> {
 }
 
 impl Searcher {
+    /// Reloads the index if its file has changed, and says whether it did. A
+    /// file this searcher cannot use, unreadable or built for another model or
+    /// backend, is an error once and is not read again until it changes, while
+    /// the index already held keeps answering.
     pub fn refresh(&mut self) -> Result<bool> {
         let mtime = file_mtime(&self.index_path);
         if mtime == self.index_mtime {
             return Ok(false);
         }
+        self.index_mtime = mtime;
         let index = Index::load(&self.index_path)?;
-        if index.dims != self.index.dims {
-            return Ok(false);
-        }
-        // Keep the current index if the new one was built with another model
-        // or backend.
-        if !index.built_for(self.index.backend, &self.model) {
-            return Ok(false);
+        if index.dims != self.index.dims || !index.built_for(self.index.backend, &self.model) {
+            anyhow::bail!(
+                "index was rebuilt with {}, and this search embeds queries with {}",
+                index.built_with(),
+                self.index.built_with()
+            );
         }
         #[cfg(feature = "hnsw")]
         {
             self.ann_map = index.ann.as_deref().and_then(crate::ann::load);
         }
         self.index = index;
-        self.index_mtime = mtime;
         Ok(true)
     }
 
