@@ -1,0 +1,30 @@
+name: Bug report
+description: Something fails, crashes or behaves differently from the README
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command you ran, what you expected and what you got.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: ripsem --version
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and install method
+      placeholder: Ubuntu 24.04, release binary
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: ripsem status --json
+      render: json
