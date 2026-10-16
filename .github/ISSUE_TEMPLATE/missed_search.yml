@@ -1,0 +1,35 @@
+name: Missed search
+description: A query that should have found some code and did not
+labels: [search quality]
+body:
+  - type: input
+    id: query
+    attributes:
+      label: Query
+    validations:
+      required: true
+  - type: input
+    id: expected
+    attributes:
+      label: Where the answer is
+      placeholder: src/auth/session.rs:40-72
+    validations:
+      required: true
+  - type: textarea
+    id: got
+    attributes:
+      label: What came back
+      description: The output of the search, or the first few hits.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: repository
+    attributes:
+      label: Repository and commit, if public
+      description: A public repository lets the query become a benchmark question.
+  - type: input
+    id: version
+    attributes:
+      label: Version and model
+      placeholder: ripsem 0.1.0, bge-small-en-v1.5
