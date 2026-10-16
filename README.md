@@ -1,5 +1,8 @@
 # ripsem
 
+[![ci](https://github.com/Sadykhzadeh/ripsem/actions/workflows/ci.yml/badge.svg)](https://github.com/Sadykhzadeh/ripsem/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 Local, offline code search that answers one question: where is the code that
 does this? Ask with an identifier, an error string, or a plain description of
 the behaviour. One query, one ranked answer. No account, no API key, no
@@ -10,6 +13,46 @@ Every query runs through two independent retrievers and their rankings are
 merged: BM25 over code-aware tokens, and vector similarity from the embedding
 model. A literal identifier match cannot be lost to semantic distance, and a
 question with no shared words still finds the right function.
+
+## Quick start
+
+```
+cd your-repo
+ripsem index
+ripsem search "strip the auth header when redirecting to another host"
+```
+
+On [requests](https://github.com/psf/requests) v2.34.2 that prints:
+
+```
+src/requests/sessions.py:154-184  fn SessionRedirectMixin::should_strip_auth  (0.816)
+    def should_strip_auth(self, old_url: str, new_url: str) -> bool:
+            """Decide whether Authorization header should be removed when redirecting"""
+
+src/requests/sessions.py:309-332  fn SessionRedirectMixin::rebuild_auth  (0.766)
+    def rebuild_auth(
+            self, prepared_request: PreparedRequest, response: Response
+
+tests/test_requests.py:1924-1960  fn TestRequests::test_should_strip_auth_https_upgrade  (0.745)
+    def test_should_strip_auth_https_upgrade(self):
+            s = requests.Session()
+```
+
+(`-k 3 --context 2`; the default is ten hits with three lines each.)
+
+The first `index` downloads the model (~133 MB) and embeds the repository;
+later runs re-embed only files that changed. `ripsem install claude-code` hands
+the same search to a coding agent (see [below](#use-with-coding-agents)).
+
+### Why not grep?
+
+grep answers "where does this string occur". That is the right question when you
+know the string. ripsem is for when you know what the code does but not what it
+is called: a description finds the function, and an identifier or an error
+message still finds its exact match, because the lexical arm sees it literally. Each hit is a whole function or type with its name, not a matching
+line, so a reader or an agent can tell a definition from a call site without
+opening the file. Everything runs locally: no server, no account, nothing leaves
+the machine.
 
 ## Install
 
@@ -130,16 +173,28 @@ ripsem index --force              # rebuild after switching
 
 The model downloads once on first use, then everything is offline.
 
-## Use with Claude Code
+## Use with coding agents
 
 ```
 ripsem index
 ripsem install claude-code        # writes ripsem into .mcp.json
+ripsem install cursor             # writes ripsem into .cursor/mcp.json
 ```
 
 `ripsem mcp` speaks MCP over stdio and exposes a single `search` tool. After
-`install claude-code`, restart Claude Code in the directory and it can call
-`search` directly. `ripsem install cursor` does the same via `.cursor/mcp.json`.
+`install`, restart the agent in the directory and it can call `search`
+directly. Any other MCP client takes the same entry in its own config:
+
+```json
+{
+  "mcpServers": {
+    "ripsem": { "command": "ripsem", "args": ["mcp"] }
+  }
+}
+```
+
+The server finds the index from the directory it starts in. If the client
+starts it somewhere else, add `"--path", "/path/to/repo"` to `args`.
 
 ## Configuration
 
