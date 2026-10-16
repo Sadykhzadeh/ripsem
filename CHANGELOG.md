@@ -17,8 +17,8 @@ First public release.
   also as JSON (`ripsem/status/v1`).
 - `ripsem watch` keeps the index in sync as files change.
 - The index lives in `.ripsem/index.bin`, versioned and stored with bitcode. An
-  index from another version or built by another backend is rebuilt by
-  `ripsem index` instead of being misread. `.ripsem/.gitignore` keeps it out of
-  git.
+  index from another version, built by another backend or chunked with other
+  settings is rebuilt by `ripsem index` instead of being misread or reused.
+  `.ripsem/.gitignore` keeps it out of git.
 - Release binaries for Linux x86_64 (glibc 2.35 or newer), macOS arm64 and
   Windows x86_64.

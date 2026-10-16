@@ -501,3 +501,33 @@ fn force_reindex_reembeds_everything() {
     assert_eq!(forced.embedded, 2);
     assert_eq!(forced.reused, 0);
 }
+
+#[test]
+fn changing_the_chunk_settings_chunks_every_file_again() {
+    use ripsem::index::Index;
+
+    let dir = TempDir::new();
+    let lines: String = (1..=30)
+        .map(|n| format!("row {n} of the notes\n"))
+        .collect();
+    dir.write("a.txt", &lines);
+    dir.write("b.txt", &lines);
+    let mut config = config_for(&dir.path);
+    let first = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(first.chunks, 2);
+
+    config.chunk_lines = 10;
+    config.chunk_overlap = 0;
+    let built = Index::load(&config.index_path()).unwrap();
+    let drift = pipeline::drift(&config, &built).unwrap();
+    assert_eq!(drift.modified, 2, "a rebuild would cut both files again");
+
+    let second = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!((second.embedded, second.reused), (2, 0));
+    assert_eq!(second.chunks, 6);
+    let rebuilt = Index::load(&config.index_path()).unwrap();
+    assert!(pipeline::drift(&config, &rebuilt).unwrap().is_current());
+
+    let third = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!((third.embedded, third.reused), (0, 2));
+}

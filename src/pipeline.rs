@@ -40,9 +40,11 @@ impl Drift {
 /// Measures drift with the same walk and content hash the incremental index
 /// uses, so it reports what a rebuild would touch. A file with no chunks
 /// ([`chunk::is_blank`]) is not counted as new, or the count could never reach
-/// zero.
+/// zero. Under other chunk settings a rebuild cuts every file again, so every
+/// indexed file counts as changed.
 pub fn drift(config: &Config, index: &Index) -> Result<Drift> {
     let indexed = index.file_hashes();
+    let rechunk = index.chunking != chunk::Chunking::of(config);
     let present: Vec<(String, u64)> = walk::collect(config)?
         .par_iter()
         .filter_map(|path| {
@@ -63,7 +65,7 @@ pub fn drift(config: &Config, index: &Index) -> Result<Drift> {
     for (path, hash) in &present {
         on_disk.insert(path.as_str());
         match indexed.get(path.as_str()) {
-            Some(known) if known == hash => {}
+            Some(known) if known == hash && !rechunk => {}
             Some(_) => drift.modified += 1,
             None => drift.added += 1,
         }
@@ -97,9 +99,11 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     let mut prev_chunks: HashMap<String, Vec<Record>> = HashMap::new();
     let mut prev_ann = None;
     let mut reusable = false;
+    let chunking = chunk::Chunking::of(config);
     if let Some(prev) = prev
         && prev.dims == dims
         && prev.built_for(config.backend, &config.model)
+        && prev.chunking == chunking
     {
         reusable = true;
         prev_ann = prev.ann;
@@ -128,6 +132,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         .collect();
 
     let mut index = Index::new(dims, config.backend, config.model.clone());
+    index.chunking = chunking;
     let mut embedded = 0;
     let mut reused = 0;
     let mut queue = Queue::default();

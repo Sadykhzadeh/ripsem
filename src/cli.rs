@@ -176,6 +176,9 @@ struct IndexFacts {
     index_backend: Backend,
     index_model: String,
     stale: bool,
+    /// Built under other chunk settings, so `ripsem index` cuts every file
+    /// again.
+    rechunk: bool,
     /// `None` when the tree could not be walked to compare against.
     drift: Option<pipeline::Drift>,
 }
@@ -266,6 +269,7 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
                     index_backend: index.backend,
                     index_model: index.model.clone(),
                     stale: !index.built_for(config.backend, &config.model),
+                    rechunk: index.chunking != crate::chunk::Chunking::of(&config),
                     drift,
                 };
                 (Some(facts), None)
@@ -306,6 +310,12 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
             }
             if f.ann {
                 println!("ann:    present (approximate search)");
+            }
+            if f.rechunk {
+                println!(
+                    "note:   chunk settings differ from the ones the index was built with; \
+                     `ripsem index` chunks every file again"
+                );
             }
             if f.stale {
                 println!(
@@ -744,6 +754,7 @@ mod tests {
             index_backend: Backend::Hash,
             index_model: "bge-small-en-v1.5".into(),
             stale: false,
+            rechunk: false,
             drift: Some(pipeline::Drift {
                 added: 1,
                 modified: 2,

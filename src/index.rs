@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use bitcode::{Decode, Encode};
 use rayon::prelude::*;
 
+use crate::chunk::Chunking;
 use crate::config::Backend;
 use crate::lexical::{TermHash, TermVector, Weights};
 use crate::quant::{self, QuantizedVector};
@@ -14,7 +15,7 @@ use crate::symbol::Symbol;
 
 /// Changes whenever the bytes of an index would, including on a bitcode
 /// upgrade: bitcode keeps its encoding only within one 0.x series.
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 
 /// Every index file starts with these bytes and then [`FORMAT_VERSION`] as a
 /// little-endian u32, so a file from another ripsem is recognised before its
@@ -46,6 +47,7 @@ pub struct Index {
     pub dims: usize,
     pub backend: Backend,
     pub model: String,
+    pub chunking: Chunking,
     pub records: Vec<Record>,
     pub ann: Option<Vec<u8>>,
 }
@@ -62,6 +64,7 @@ impl Index {
             dims,
             backend,
             model,
+            chunking: Chunking::default(),
             records: Vec::new(),
             ann: None,
         }
@@ -762,7 +765,7 @@ mod tests {
         let bytes = bitcode::encode(&sample_index());
         assert_eq!(
             (FORMAT_VERSION, crate::fingerprint::content_hash(&bytes)),
-            (8, 0xe38d_fe3b_39c8_7ec0)
+            (9, 0x31d7_c0e8_f4c3_1bfa)
         );
     }
 

@@ -213,7 +213,9 @@ exclude = []
 
 `chunk_lines` and `chunk_overlap` size the line windows used for plain-text
 files and languages without a parser. `max_chunk_lines` caps a single semantic
-chunk; larger functions are split. `exclude` takes gitignore-style globs.
+chunk; larger functions are split. After changing any of the three, the next
+`ripsem index` chunks and embeds every file again. `exclude` takes
+gitignore-style globs.
 
 `skip_generated` leaves out files that are committed but written by a machine:
 lock files, `*.min.js`, `*.min.css` and source maps. `.gitignore` does not cover
