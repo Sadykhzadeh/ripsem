@@ -334,8 +334,23 @@ fn searcher_rejects_a_same_dim_different_model_index() {
     rebuilt.records.clear();
     rebuilt.save(&config.index_path()).unwrap();
 
-    assert!(!searcher.refresh().unwrap());
+    let err = searcher.refresh().unwrap_err().to_string();
+    assert!(err.contains("all-MiniLM-L6-v2"), "got: {err}");
     assert_eq!(searcher.model(), original_model);
+    assert_eq!(searcher.record_count(), original_records);
+
+    // Until the file changes again it is not read again: decoding a large
+    // index on every request would cost each search as much as opening one.
+    // Bytes that do not decode, under the same mtime, show it is not read.
+    let refused = modified(&config.index_path());
+    std::fs::write(config.index_path(), b"not an index").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(config.index_path())
+        .unwrap()
+        .set_modified(refused)
+        .unwrap();
+    assert!(!searcher.refresh().unwrap());
     assert_eq!(searcher.record_count(), original_records);
 }
 
