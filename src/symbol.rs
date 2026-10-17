@@ -1,6 +1,6 @@
 use bitcode::{Decode, Encode};
 
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Encode, Decode)]
 pub struct Symbol {
     pub kind: String,
     pub name: String,
@@ -31,6 +31,15 @@ impl Declaration {
     /// An `impl` block adds to a type declared elsewhere.
     pub fn is_extension(&self) -> bool {
         self.symbol.kind == "impl"
+    }
+
+    /// A block whose members are declarations searched for on their own, as
+    /// a class's methods are.
+    pub fn is_container(&self) -> bool {
+        matches!(
+            self.symbol.kind.as_str(),
+            "impl" | "class" | "trait" | "interface" | "mod"
+        )
     }
 }
 

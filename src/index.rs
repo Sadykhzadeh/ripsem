@@ -83,6 +83,16 @@ impl Record {
             || (named_like_a_class && SUFFIXES.iter().any(|s| stem.ends_with(s)))
     }
 
+    /// The declaration this record is one piece of, when it is too large for
+    /// one chunk: the pieces carry its symbol without holding all of it.
+    pub fn piece_of(&self) -> Option<&Symbol> {
+        let symbol = self.symbol.as_ref()?;
+        let whole = self.declarations.iter().any(|d| {
+            d.symbol == *symbol && self.start_line <= d.start_line && d.end_line <= self.end_line
+        });
+        (!whole).then_some(symbol)
+    }
+
     /// The declaration a query names, by the name typed or spelled out in
     /// words, among those the record holds. `Road::quote_cost` names both
     /// `Road` and its method; the one named in full wins, then one that is not
@@ -377,7 +387,7 @@ impl Index {
     /// `k`, so the caller still gets `k` distinct places.
     fn best_of_each_place(&self, ranked: Vec<Candidate>, k: usize) -> Vec<Hit> {
         let mut taken: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
-        let mut declared: std::collections::HashSet<(&str, &str)> =
+        let mut split: std::collections::HashSet<(&str, &Symbol)> =
             std::collections::HashSet::new();
         // `k` comes from the caller, so cap the reservation at the index size.
         let mut out = Vec::with_capacity(k.min(self.records.len()));
@@ -393,8 +403,8 @@ impl Index {
             {
                 continue;
             }
-            if let Some(symbol) = &record.symbol
-                && !declared.insert((record.path.as_str(), symbol.name.as_str()))
+            if let Some(symbol) = record.piece_of()
+                && !split.insert((record.path.as_str(), symbol))
             {
                 continue;
             }
@@ -875,6 +885,32 @@ mod tests {
 
         let hits = index.search(&[1.0, 0.0, 0.0], 2);
         assert_eq!(paths(&index, &hits), ["big.rs", "small.rs"]);
+    }
+
+    /// A type and its `impl` blocks share a name but are separate places.
+    #[test]
+    fn a_type_and_its_impl_are_two_places() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        for (start, kind, vector) in [
+            (1, "struct", vec![1.0, 0.0, 0.0]),
+            (50, "impl", vec![0.9, 0.1, 0.0]),
+        ] {
+            let mut record = placed("config.rs", start, start + 10, vector);
+            let symbol = Symbol {
+                kind: kind.into(),
+                name: "Config".into(),
+            };
+            record.declarations = vec![Declaration {
+                symbol: symbol.clone(),
+                start_line: start,
+                end_line: start + 10,
+            }];
+            record.symbol = Some(symbol);
+            index.records.push(record);
+        }
+
+        let hits = index.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(hits.len(), 2);
     }
 
     #[test]
