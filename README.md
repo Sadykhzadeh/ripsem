@@ -242,18 +242,18 @@ model, so the test is `#[ignore]`d.
 
 | corpus | language | chunks | vector only | lexical only | merged |
 | --- | --- | --- | --- | --- | --- |
-| ripsem | Rust | 147 | 0.611 | 0.675 | **0.778** |
-| requests v2.34.2 | Python | 909 | 0.700 | 0.610 | **0.796** |
+| ripsem | Rust | 147 | 0.611 | 0.668 | **0.778** |
+| requests v2.34.2 | Python | 907 | 0.700 | 0.602 | **0.796** |
 | mux v1.8.1 | Go | 400 | 0.576 | 0.736 | **0.875** |
 | got v14.4.5 | TypeScript | 853 | 0.608 | 0.542 | **0.718** |
-| all | | 2309 | 0.629 | 0.631 | **0.782** |
+| all | | 2307 | 0.629 | 0.626 | **0.782** |
 
 | query shape | vector only | lexical only | merged |
 | --- | --- | --- | --- |
-| description (28) | 0.438 | 0.373 | **0.593** |
+| description (28) | 0.438 | 0.368 | **0.593** |
 | identifier (22) | 0.833 | 0.856 | **0.924** |
 | message (9) | 0.537 | 1.000 | **1.000** |
-| recalled name (14) | 0.750 | 0.554 | **0.798** |
+| recalled name (14) | 0.750 | 0.542 | **0.798** |
 
 Which arm is stronger reverses between corpora: BM25 wins on Go and Rust, the
 embedding model on Python and TypeScript. Merging is ahead on every corpus and
@@ -312,8 +312,8 @@ short document is stronger evidence than the same term in a long one.
 ### Reading cost
 
 Counting the snippets up to and including the first correct hit, a caller takes
-in **452 bytes to reach the answer, against 14 410 bytes for the whole file it
-lives in, 32x less**. This covers the 65 of 73 questions answered inside the top
+in **452 bytes to reach the answer, against 14 164 bytes for the whole file it
+lives in, 31x less**. This covers the 65 of 73 questions answered inside the top
 five, and compares against reading one file end to end, which is what happens
 when a search can only name a filename. It is not a model of what an agent does,
 and says nothing about the 8 questions no arm answered.
