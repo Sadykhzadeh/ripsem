@@ -244,8 +244,8 @@ jobs:
           jq --arg v "$version" '.version = $v | .packages[0].version = $v' server.json > server.tmp
           mv server.tmp server.json
           ./mcp-publisher login github-oidc
-          for attempt in 1 2 3 4 5; do
+          for attempt in 1 2 3 4; do
             ./mcp-publisher publish && exit 0
             sleep 30
           done
-          exit 1
+          ./mcp-publisher publish
