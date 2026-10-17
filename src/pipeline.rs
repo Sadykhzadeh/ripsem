@@ -119,7 +119,8 @@ const UNRELATED: [&str; 12] = [
 ];
 
 /// The noise floor is measured again once more than one chunk in this many
-/// was embedded since it last was. An edit moves it too little to matter.
+/// has been embedded since it last was, counted across runs. One edit moves it
+/// too little to matter.
 const NOISE_DRIFT: usize = 10;
 
 pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
@@ -137,6 +138,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     let mut prev_chunks: HashMap<String, Vec<Record>> = HashMap::new();
     let mut prev_ann = None;
     let mut prev_floor = None;
+    let mut embedded_since_floor = 0;
     let mut reusable = false;
     let mut recut: Vec<Record> = Vec::new();
     let chunking = chunk::Chunking::of(config);
@@ -145,9 +147,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         && prev.built_for(config.backend, &config.model)
     {
         prev_floor = prev.noise_floor;
-        // Cut under other settings, a file's records cannot be kept, but a
-        // vector depends only on the text and the model, so every chunk the
-        // new cut leaves unchanged keeps its vector.
+        embedded_since_floor = prev.embedded_since_floor;
         if prev.chunking == chunking {
             reusable = true;
             prev_ann = prev.ann;
@@ -269,7 +269,8 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     }
 
     index.noise_floor = prev_floor;
-    let drifted = queue.embedded * NOISE_DRIFT > index.records.len();
+    index.embedded_since_floor = embedded_since_floor + queue.embedded;
+    let drifted = index.embedded_since_floor * NOISE_DRIFT > index.records.len();
     if !index.records.is_empty() && (prev_floor.is_none() || drifted) {
         let model = match &embedder {
             Some(built) => built,
