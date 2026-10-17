@@ -232,10 +232,35 @@ fn wants_ann(records: usize) -> bool {
 /// window gives groups of closer length.
 const EMBED_WINDOW: usize = 4096;
 
-/// Chunks per model call. The runtime pads every text to the longest in the
-/// call, so groups of similar length waste little; much below this, per-call
-/// overhead dominates.
+/// Chunks per model call at most. The runtime pads every text to the longest
+/// in the call, so groups of similar length waste little; much below this,
+/// per-call overhead dominates for short texts.
 const EMBED_GROUP: usize = 32;
+
+/// Bytes per model call at most, counting every text at the length of the
+/// longest. The runtime's memory grows with the padded batch, and with the
+/// square of its length in attention, so long chunks go a few at a time.
+const EMBED_BYTES: usize = 8192;
+
+/// Splits indices sorted by text length into model calls within
+/// [`EMBED_GROUP`] and [`EMBED_BYTES`]. A text longer than the byte budget
+/// goes alone.
+fn embed_groups<'a>(order: &'a [usize], texts: &[String]) -> Vec<&'a [usize]> {
+    let mut groups = Vec::new();
+    let mut start = 0;
+    for end in 1..=order.len() {
+        let size = end - start;
+        let closes = match order.get(end) {
+            None => true,
+            Some(&next) => size == EMBED_GROUP || (size + 1) * texts[next].len() > EMBED_BYTES,
+        };
+        if closes {
+            groups.push(&order[start..end]);
+            start = end;
+        }
+    }
+    groups
+}
 
 struct Pending {
     path: String,
@@ -295,7 +320,7 @@ impl Queue {
         let mut order: Vec<usize> = (0..self.texts.len()).collect();
         order.sort_by_key(|&i| self.texts[i].len());
         let mut vectors: Vec<Vec<f32>> = vec![Vec::new(); self.texts.len()];
-        for group in order.chunks(EMBED_GROUP) {
+        for group in embed_groups(&order, &self.texts) {
             let texts: Vec<String> = group
                 .iter()
                 .map(|&i| std::mem::take(&mut self.texts[i]))
@@ -598,6 +623,23 @@ mod tests {
         });
         assert!(embedder.get().is_err());
         assert!(embedder.get().is_err());
+    }
+
+    #[test]
+    fn long_texts_are_embedded_a_few_at_a_time() {
+        let mut texts: Vec<String> = (0..40).map(|_| "x".repeat(100)).collect();
+        texts.extend((0..10).map(|_| "y".repeat(2000)));
+        texts.push("z".repeat(10_000));
+        let order: Vec<usize> = (0..texts.len()).collect();
+        let sizes: Vec<usize> = embed_groups(&order, &texts)
+            .iter()
+            .map(|g| g.len())
+            .collect();
+        // 32 short ones, then the other 8, since a long one would pad all nine
+        // to 2000 bytes. The long ones go four at a time, the longest alone.
+        assert_eq!(sizes, [32, 8, 4, 4, 2, 1]);
+        assert_eq!(sizes.iter().sum::<usize>(), texts.len());
+        assert!(embed_groups(&[], &texts).is_empty());
     }
 
     #[test]
