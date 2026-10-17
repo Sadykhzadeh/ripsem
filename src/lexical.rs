@@ -72,7 +72,8 @@ pub fn query_names(text: &str) -> Vec<TermHash> {
     out
 }
 
-/// A capital that opens the query only starts a sentence.
+/// A capital that opens the query only starts a sentence, and a full stop
+/// or comma after a word only ends a clause.
 fn written_as_code(text: &str, word: &str, position: usize) -> bool {
     let mut chars = word.chars();
     let first_upper = chars.next().is_some_and(char::is_uppercase);
@@ -80,9 +81,11 @@ fn written_as_code(text: &str, word: &str, position: usize) -> bool {
         || chars.any(char::is_uppercase)
         || (first_upper && position > 0)
         || text.split_whitespace().any(|token| {
-            token.len() > word.len()
-                && token.contains(word)
-                && token.contains([':', '.', '(', '#', '<', '$', '@'])
+            let token = token.trim_end_matches(['.', ',', ';', ':', '!', '?', '"', '\'']);
+            token.contains(word)
+                && (token.contains('`')
+                    || (token.len() > word.len()
+                        && token.contains([':', '.', '(', '#', '<', '$', '@'])))
         })
 }
 
@@ -317,6 +320,8 @@ mod tests {
         assert!(named("what does Searcher::refresh do", "refresh"));
         assert!(named("fn quote_cost", "quote_cost"));
         assert!(named("where is Router defined", "Router"));
+        assert!(named("what calls `refresh` here", "refresh"));
+        assert!(named("who calls refresh() first", "refresh"));
         assert!(named("request", "request"));
     }
 
@@ -325,6 +330,8 @@ mod tests {
         assert!(!named("abort a request when it takes too long", "request"));
         assert!(!named("Match an incoming request", "Match"));
         assert!(!named("keep the index up to date", "index"));
+        assert!(!named("abort a slow url request.", "request"));
+        assert!(!named("where is the timeout set, and how long", "set"));
     }
 
     #[test]
