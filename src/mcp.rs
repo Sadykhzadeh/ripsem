@@ -1,7 +1,7 @@
 use std::io::{BufRead, Write};
 use std::path::{Component, Path, PathBuf, Prefix};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::config::Config;
@@ -169,10 +169,11 @@ fn tool_schema() -> Value {
             "properties": {
                 "query": { "type": "string", "description": "What you are looking for: an identifier, an error message, or a description of the behaviour." },
                 "path": { "type": "string", "description": "Optional subdirectory (relative to the repo) to limit results to, e.g. 'src/embed'." },
-                "limit": { "type": "integer", "description": "Maximum number of results (default 5)." },
-                "min_score": { "type": "number", "description": "Drop hits below this confidence (0–1): semantic similarity, or the share of query terms found literally, whichever is higher. Default: no filter." }
+                "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "description": format!("Maximum number of results (default {DEFAULT_LIMIT}, at most {MAX_LIMIT}).") },
+                "min_score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Drop hits below this confidence (0–1): semantic similarity, or the share of query terms found literally, whichever is higher. Default: no filter." }
             },
-            "required": ["query"]
+            "required": ["query"],
+            "additionalProperties": false
         }
     })
 }
@@ -183,12 +184,6 @@ fn handle_call(
     id: Value,
     request: &Value,
 ) -> Value {
-    let args = request
-        .get("params")
-        .and_then(|p| p.get("arguments"))
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-
     let name = request
         .get("params")
         .and_then(|p| p.get("name"))
@@ -198,29 +193,20 @@ fn handle_call(
         return error(id, -32602, "unknown tool");
     }
 
-    // Arguments that do not fit the input schema are a tool error, which the
-    // model sees and can correct, rather than a protocol error.
-    let query = match args.get("query").and_then(|q| q.as_str()) {
-        Some(q) if q.trim().is_empty() => return failed(id, &anyhow!("'query' is empty")),
-        Some(q) => q,
-        None => return failed(id, &anyhow!("missing 'query'")),
-    };
-    let limit = args
-        .get("limit")
-        .and_then(|l| l.as_u64())
-        .map(|l| l as usize)
-        .unwrap_or(5);
-    let min_score = args
-        .get("min_score")
-        .and_then(|v| v.as_f64())
-        .map(|v| v as f32);
-
-    let prefix = match args.get("path").and_then(|p| p.as_str()) {
-        Some(raw) => match scope_prefix(raw, &config.root) {
-            Ok(prefix) => prefix,
-            Err(e) => return failed(id, &e),
-        },
-        None => None,
+    let args = request
+        .get("params")
+        .and_then(|p| p.get("arguments"))
+        .filter(|a| !a.is_null())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let Call {
+        query,
+        limit,
+        min_score,
+        prefix,
+    } = match parse_call(&args, &config.root) {
+        Ok(call) => call,
+        Err(e) => return failed(id, &e),
     };
 
     let result = match session {
@@ -240,6 +226,68 @@ fn handle_call(
         }
         Err(e) => failed(id, &e),
     }
+}
+
+const ARGUMENTS: [&str; 4] = ["query", "path", "limit", "min_score"];
+const DEFAULT_LIMIT: usize = 5;
+const MAX_LIMIT: usize = 50;
+
+struct Call<'a> {
+    query: &'a str,
+    limit: usize,
+    min_score: Option<f32>,
+    prefix: Option<String>,
+}
+
+/// Arguments that do not fit the input schema are a tool error, which the
+/// model sees and can correct, rather than a protocol error. A `null`
+/// argument is one left out.
+fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
+    let args = args
+        .as_object()
+        .ok_or_else(|| anyhow!("the arguments must be an object with a 'query'"))?;
+    if let Some(name) = args.keys().find(|k| !ARGUMENTS.contains(&k.as_str())) {
+        bail!("unknown argument '{name}'; the arguments are query, path, limit and min_score");
+    }
+    let given = |name: &str| args.get(name).filter(|v| !v.is_null());
+
+    let query = match given("query") {
+        None => bail!("missing 'query'"),
+        Some(Value::String(q)) if q.trim().is_empty() => bail!("'query' is empty"),
+        Some(Value::String(q)) => q.as_str(),
+        Some(other) => bail!("'query' must be a string, not {other}"),
+    };
+    let limit = match given("limit") {
+        None => DEFAULT_LIMIT,
+        Some(v) => v
+            .as_u64()
+            .or_else(|| v.as_f64().filter(|f| f.fract() == 0.0).map(|f| f as u64))
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| (1..=MAX_LIMIT).contains(n))
+            .ok_or_else(|| {
+                anyhow!("'limit' must be a whole number from 1 to {MAX_LIMIT}, not {v}")
+            })?,
+    };
+    let min_score = match given("min_score") {
+        None => None,
+        Some(v) => Some(
+            v.as_f64()
+                .filter(|s| (0.0..=1.0).contains(s))
+                .ok_or_else(|| anyhow!("'min_score' must be a number from 0 to 1, not {v}"))?
+                as f32,
+        ),
+    };
+    let prefix = match given("path") {
+        None => None,
+        Some(Value::String(raw)) => scope_prefix(raw, root)?,
+        Some(other) => bail!("'path' must be a string, not {other}"),
+    };
+    Ok(Call {
+        query,
+        limit,
+        min_score,
+        prefix,
+    })
 }
 
 fn failed(id: Value, e: &anyhow::Error) -> Value {
@@ -473,6 +521,100 @@ mod tests {
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("'query' is empty"), "got: {text}");
+    }
+
+    fn tool_error(arguments: Value) -> String {
+        let cfg = Config::default();
+        let resp = handle(
+            &cfg,
+            None,
+            &req(
+                "tools/call",
+                json!({ "name": "search", "arguments": arguments }),
+            ),
+        )
+        .unwrap();
+        assert_eq!(resp["result"]["isError"], true, "{arguments}: {resp}");
+        resp["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn a_limit_outside_the_schema_is_a_tool_error() {
+        for limit in [
+            json!(-1),
+            json!(0),
+            json!(51),
+            json!(1e12),
+            json!(2.5),
+            json!("10"),
+        ] {
+            let text = tool_error(json!({ "query": "x", "limit": limit }));
+            assert!(
+                text.contains("'limit' must be a whole number from 1 to 50"),
+                "{limit}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_limit_inside_the_schema_is_taken() {
+        let root = Path::new("/repo");
+        let limit = |args: Value| parse_call(&args, root).unwrap().limit;
+        assert_eq!(limit(json!({ "query": "x" })), 5);
+        assert_eq!(limit(json!({ "query": "x", "limit": null })), 5);
+        assert_eq!(limit(json!({ "query": "x", "limit": 1 })), 1);
+        assert_eq!(limit(json!({ "query": "x", "limit": 50 })), 50);
+        assert_eq!(limit(json!({ "query": "x", "limit": 8.0 })), 8);
+    }
+
+    #[test]
+    fn a_min_score_outside_the_schema_is_a_tool_error() {
+        for min_score in [json!("high"), json!(true), json!(-0.1), json!(1.5)] {
+            let text = tool_error(json!({ "query": "x", "min_score": min_score }));
+            assert!(
+                text.contains("'min_score' must be a number from 0 to 1"),
+                "{min_score}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn arguments_of_the_wrong_type_are_a_tool_error() {
+        let text = tool_error(json!({ "query": 7 }));
+        assert!(text.contains("'query' must be a string"), "got: {text}");
+        let text = tool_error(json!({ "query": "x", "path": ["src"] }));
+        assert!(text.contains("'path' must be a string"), "got: {text}");
+        let text = tool_error(json!("find the parser"));
+        assert!(text.contains("must be an object"), "got: {text}");
+    }
+
+    /// An argument the schema does not name would otherwise be dropped, and
+    /// the model would take the default for what it asked.
+    #[test]
+    fn an_unknown_argument_is_a_tool_error() {
+        let text = tool_error(json!({ "query": "x", "top_k": 20 }));
+        assert!(text.contains("unknown argument 'top_k'"), "got: {text}");
+    }
+
+    #[test]
+    fn the_schema_states_the_bounds_it_enforces() {
+        let schema = &tool_schema()["inputSchema"];
+        assert_eq!(schema["properties"]["limit"]["minimum"], 1);
+        assert_eq!(schema["properties"]["limit"]["maximum"], MAX_LIMIT);
+        assert_eq!(schema["properties"]["min_score"]["minimum"], 0);
+        assert_eq!(schema["properties"]["min_score"]["maximum"], 1);
+        assert_eq!(schema["additionalProperties"], false);
+        let named: Vec<&str> = schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(named.len(), ARGUMENTS.len());
+        assert!(ARGUMENTS.iter().all(|a| named.contains(a)));
     }
 
     #[test]
