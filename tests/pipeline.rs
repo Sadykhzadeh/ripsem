@@ -732,6 +732,12 @@ fn a_search_for_a_large_declaration_reports_all_of_it() {
         "{}",
         first.snippet
     );
+    assert!(
+        hits[1..]
+            .iter()
+            .all(|h| h.path != "cli.rs" || h.end_line > 82 || h.start_line < 1),
+        "a piece of the declaration repeats its lines: {hits:#?}"
+    );
 }
 
 /// Other chunk settings cut files again, but a chunk whose text the new cut

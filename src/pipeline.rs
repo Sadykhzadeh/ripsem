@@ -92,6 +92,10 @@ pub struct SearchHit {
 
 const SNIPPET_BYTES: usize = 400;
 
+/// Hits fetched beyond the number asked for, to replace those a wider hit
+/// above them covers.
+const SPARE_HITS: usize = 5;
+
 /// Queries about anything but code, to measure how closely unrelated text
 /// matches an index.
 const UNRELATED: [&str; 12] = [
@@ -646,6 +650,8 @@ impl Searcher {
         let qv = self.embedder.get()?.embed_query(query)?;
         let terms = crate::lexical::query_terms(query);
         let names = crate::lexical::query_names(query);
+        let wanted = k;
+        let k = k.saturating_add(SPARE_HITS);
 
         #[cfg(feature = "hnsw")]
         if prefix.is_none()
@@ -656,20 +662,31 @@ impl Searcher {
                 .into_iter()
                 .map(|(record_idx, score)| crate::index::Hit { score, record_idx })
                 .collect();
-            return Ok(self
-                .index
-                .search_fused_with(&dense, &qv, &terms, &names, k)
-                .into_iter()
-                .map(|h| self.hit(h.record_idx, h.score, &names))
-                .collect());
+            let hits = self.index.search_fused_with(&dense, &qv, &terms, &names, k);
+            return Ok(self.places(hits, &names, wanted));
         }
 
-        Ok(self
-            .index
-            .search_fused(&qv, &terms, &names, k, prefix)
-            .into_iter()
-            .map(|h| self.hit(h.record_idx, h.score, &names))
-            .collect())
+        let hits = self.index.search_fused(&qv, &terms, &names, k, prefix);
+        Ok(self.places(hits, &names, wanted))
+    }
+
+    /// A hit reported as a whole declaration covers the pieces of it that rank
+    /// below, which would only repeat its lines.
+    fn places(&self, hits: Vec<crate::index::Hit>, names: &[TermHash], k: usize) -> Vec<SearchHit> {
+        let mut out: Vec<SearchHit> = Vec::with_capacity(k);
+        for h in hits {
+            if out.len() == k {
+                break;
+            }
+            let hit = self.hit(h.record_idx, h.score, names);
+            let covered = out.iter().any(|o| {
+                o.path == hit.path && o.start_line <= hit.start_line && hit.end_line <= o.end_line
+            });
+            if !covered {
+                out.push(hit);
+            }
+        }
+        out
     }
 
     /// A record holding the declaration the query names is reported as that
