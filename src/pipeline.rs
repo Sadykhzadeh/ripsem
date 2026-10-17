@@ -164,7 +164,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
                 path: rel.clone(),
                 start_line: c.start_line,
                 end_line: c.end_line,
-                snippet: truncate(&c.text, 400),
+                snippet: truncate(&dedent(&c.text), 400),
                 file_hash: hash,
                 terms: crate::lexical::TermVector::new(
                     &c.text,
@@ -587,6 +587,22 @@ pub(crate) fn relative(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// Strips the indentation every line shares, so a method deep inside a class
+/// reads from the margin and the snippet spends no bytes on it.
+fn dedent(text: &str) -> String {
+    let indent = |line: &str| line.len() - line.trim_start_matches([' ', '\t']).len();
+    let common = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(indent)
+        .min()
+        .unwrap_or(0);
+    text.lines()
+        .map(|line| line.get(common.min(indent(line))..).unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -616,6 +632,14 @@ mod tests {
             backend: Backend::Hash,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_snippet_keeps_only_the_indentation_its_lines_do_not_share() {
+        let method = "    def load(self):\n\n        return self.path\n";
+        assert_eq!(dedent(method), "def load(self):\n\n    return self.path");
+        assert_eq!(dedent("\tif x:\n\t\ty()"), "if x:\n\ty()");
+        assert_eq!(dedent("a\n  b"), "a\n  b");
     }
 
     #[test]
