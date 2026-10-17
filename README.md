@@ -32,7 +32,8 @@ ranges.
   vector similarity from a local embedding model, merged into one ranking. A
   chunk holding every term of an identifier or an error message comes first.
 - **Answers are declarations.** A hit is a whole function or type, named after
-  it, in 17 languages, so a definition reads apart from a call site.
+  it, in 17 languages, so a definition reads apart from a call site. A search
+  for a name lands on its declaration, with its own lines and label.
 - **Made for coding agents.** `ripsem install claude-code` or `ripsem install
   cursor` adds an MCP server that keeps its index current while the agent edits,
   and tells the agent when to use it.
@@ -43,16 +44,6 @@ ranges.
 
 1. Install ripsem:
 
-    **macOS and Linux:**
-    ```bash
-    curl -fsSL https://raw.githubusercontent.com/Sadykhzadeh/ripsem/master/install.sh | sh
-    ```
-
-    **Windows:**
-    ```powershell
-    irm https://raw.githubusercontent.com/Sadykhzadeh/ripsem/master/install.ps1 | iex
-    ```
-
     **npm (any platform):**
     ```bash
     npm install -g ripsem
@@ -61,6 +52,16 @@ ranges.
     **Cargo:**
     ```bash
     cargo install --locked ripsem
+    ```
+
+    **macOS and Linux, without npm or Rust:**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/Sadykhzadeh/ripsem/master/install.sh | sh
+    ```
+
+    **Windows, without npm or Rust:**
+    ```powershell
+    irm https://raw.githubusercontent.com/Sadykhzadeh/ripsem/master/install.ps1 | iex
     ```
 
 2. In your repository, build the index and ask it something:
@@ -74,7 +75,7 @@ ranges.
    `ripsem install cursor` (see [below](#use-with-coding-agents)).
 
 The first `index` downloads the model (~133 MB) and embeds the repository;
-later runs re-embed only files that changed.
+later runs embed only the code that changed.
 
 ### Why not grep?
 
@@ -88,7 +89,7 @@ opening the file.
 
 ## Install
 
-The install scripts and npm put the prebuilt binary from the latest
+npm and the install scripts put the prebuilt binary from the latest
 [release](https://github.com/Sadykhzadeh/ripsem/releases) on your `PATH`, after
 checking it against the release's `SHA256SUMS`. The scripts install to
 `~/.local/bin` and `%LOCALAPPDATA%\Programs\ripsem`; `RIPSEM_INSTALL_DIR`
@@ -221,12 +222,19 @@ ripsem install cursor             # .cursor/mcp.json and a rule in .cursor/rules
 note that tells the agent to reach for `search` before grepping. Restart the
 agent in the directory and it can call `search` directly.
 
+The server sends the same note as its MCP instructions. Claude Code loads the
+descriptions of MCP tools only when the model looks a tool up, so the model
+learns that `search` exists, and when to use it, from the instructions and the
+note in `CLAUDE.md`.
+
 `ripsem mcp` speaks MCP over stdio and exposes a single `search` tool: a
-`query`, and optionally a `path` to stay inside, a `limit` (default 5) and a
-`min_score`. In a directory with a `.ripsem` directory the server keeps the
-index current by itself: it builds the index on its first start and re-embeds
-every file the agent changes. Running `ripsem index` once beforehand has the
-index ready before the first search.
+`query`, and optionally a `path` to stay inside, a `limit` (default 5, at most
+50) and a `min_score`. An argument outside the schema comes back as a tool
+error that names what is expected, so the agent can correct the call. In a
+directory with a `.ripsem` directory the server keeps the index current by
+itself: it builds the index on its first start and re-embeds the code the
+agent changes. Running `ripsem index` once beforehand has the index ready
+before the first search.
 
 Any other MCP client takes the same entry in its own config:
 
@@ -305,13 +313,18 @@ flowchart LR
    words the code itself rarely uses.
 3. **Embed and tokenise.** Each chunk gets a vector from the local model,
    stored as int8, and a set of terms in which identifiers are kept whole and
-   also split at `snake_case` and `camelCase` boundaries.
+   also split at `snake_case` and `camelCase` boundaries. Every chunk also
+   lists the declarations it holds, with their lines.
 4. **Search.** The query runs through both arms and their rankings are merged
    by reciprocal rank fusion. A chunk holding every informative term of the
    query comes first, which is what makes identifiers and error messages
-   reliable; below that, code ranks above prose that describes it.
-5. **Keep up.** The index is one file, `.ripsem/index.bin`. A re-run embeds only
-   files whose content changed; a new model or new chunk settings rebuild it.
+   reliable. A query that names a declaration, typed as code or spelled out in
+   words, puts the chunk declaring it above the chunks that only use it, and
+   reports that declaration. Below that, code ranks above tests, unless the
+   query asks for tests, and above prose that describes it.
+5. **Keep up.** The index is one file, `.ripsem/index.bin`. A re-run reads only
+   files whose content changed and embeds only the chunks whose text changed;
+   a new model or new chunk settings rebuild it.
    `ripsem watch` keeps it current as files change, and the MCP server picks up
    a rebuilt index without a restart.
 
@@ -335,7 +348,8 @@ restart the agent in the repository after `install`. In Claude Code, `/mcp`
 lists the servers it has connected to.
 
 **The first index takes a while.** It downloads the model once and embeds every
-file. Every later run embeds only the files that changed. The model is cached in
+file, showing the chunks embedded so far and an estimate of the time left.
+Every later run embeds only the code that changed. The model is cached in
 `~/.cache/ripsem` on Linux, `~/Library/Caches/ripsem` on macOS and
 `%LOCALAPPDATA%\ripsem\cache` on Windows.
 
