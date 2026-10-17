@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::{Value, json};
 
 use crate::config::{Backend, Config};
@@ -89,6 +89,11 @@ pub enum Command {
         #[command(subcommand)]
         target: InstallCmd,
     },
+    /// Print the completion script for a shell.
+    Completions {
+        /// bash, zsh, fish, powershell or elvish.
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Subcommand)]
@@ -154,6 +159,10 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Mcp => mcp::serve(Config::load(&root)?),
         Command::Model { action } => cmd_model(&root, action),
         Command::Install { target } => cmd_install(&root, target),
+        Command::Completions { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "ripsem", &mut std::io::stdout());
+            Ok(())
+        }
     }
 }
 
