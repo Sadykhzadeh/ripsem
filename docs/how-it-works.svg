@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="372" viewBox="0 0 900 372" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9198a1"/></marker></defs>
+<rect x="12" y="34" width="628" height="140" rx="10" fill="none" stroke="#30363d" stroke-width="1.5"/>
+<text x="26" y="24" font-size="14" font-weight="600" fill="#9198a1">ripsem index</text>
+<rect x="30" y="84" width="110" height="40" rx="7" fill="#161b22" stroke="#6e7681" stroke-width="1.2"/>
+<text x="85.0" y="109.0" font-size="14" text-anchor="middle" fill="#e6edf3">files</text>
+<rect x="180" y="76" width="210" height="56" rx="7" fill="#161b22" stroke="#6e7681" stroke-width="1.2"/>
+<text x="285.0" y="101.0" font-size="14" text-anchor="middle" fill="#e6edf3">chunks</text>
+<text x="285.0" y="119.0" font-size="12" text-anchor="middle" fill="#9198a1">functions, types, doc comments</text>
+<rect x="440" y="50" width="180" height="40" rx="7" fill="#161b22" stroke="#6e7681" stroke-width="1.2"/>
+<text x="530.0" y="75.0" font-size="14" text-anchor="middle" fill="#e6edf3">embedding vectors</text>
+<rect x="440" y="118" width="180" height="40" rx="7" fill="#161b22" stroke="#6e7681" stroke-width="1.2"/>
+<text x="530.0" y="143.0" font-size="14" text-anchor="middle" fill="#e6edf3">code-aware terms</text>
+<path d="M140,104 L178,104" fill="none" stroke="#9198a1" stroke-width="1.5" marker-end="url(#a)"/>
+<path d="M390,104 L415,104 L415,70 L438,70" fill="none" stroke="#9198a1" stroke-width="1.5" marker-end="url(#a)"/>
+<path d="M415,104 L415,138 L438,138" fill="none" stroke="#9198a1" stroke-width="1.5" marker-end="url(#a)"/>
+<rect x="12" y="216" width="876" height="142" rx="10" fill="none" stroke="#30363d" stroke-width="1.5"/>
+<text x="26" y="206" font-size="14" font-weight="600" fill="#9198a1">ripsem search, MCP search</text>
+<rect x="30" y="267" width="110" height="40" rx="7" fill="#161b22" stroke="#6e7681" stroke-width="1.2"/>
+<text x="85.0" y="292.0" font-size="14" text-anchor="middle" fill="#e6edf3">query</text>
+<rect x="200" y="230" width="220" height="48" rx="7" fill="#161b22" stroke="#6e7681" stroke-width="1.2"/>
+<text x="310.0" y="251.0" font-size="14" text-anchor="middle" fill="#e6edf3">vector similarity</text>
+<text x="310.0" y="269.0" font-size="12" text-anchor="middle" fill="#9198a1">to the embedding vectors</text>
+<rect x="200" y="296" width="220" height="48" rx="7" fill="#161b22" stroke="#6e7681" stroke-width="1.2"/>
+<text x="310.0" y="317.0" font-size="14" text-anchor="middle" fill="#e6edf3">BM25</text>
+<text x="310.0" y="335.0" font-size="12" text-anchor="middle" fill="#9198a1">over the code-aware terms</text>
+<rect x="480" y="267" width="130" height="40" rx="7" fill="#161b22" stroke="#6e7681" stroke-width="1.2"/>
+<text x="545.0" y="292.0" font-size="14" text-anchor="middle" fill="#e6edf3">rank fusion</text>
+<rect x="650" y="259" width="220" height="56" rx="7" fill="#161b22" stroke="#6e7681" stroke-width="1.2"/>
+<text x="760.0" y="284.0" font-size="14" text-anchor="middle" fill="#e6edf3">ranked places</text>
+<text x="760.0" y="302.0" font-size="12" text-anchor="middle" fill="#9198a1">path, lines, declaration</text>
+<path d="M140,287 L170,287 L170,254 L198,254" fill="none" stroke="#9198a1" stroke-width="1.5" marker-end="url(#a)"/>
+<path d="M170,287 L170,320 L198,320" fill="none" stroke="#9198a1" stroke-width="1.5" marker-end="url(#a)"/>
+<path d="M420,254 L450,254 L450,287 L478,287" fill="none" stroke="#9198a1" stroke-width="1.5" marker-end="url(#a)"/>
+<path d="M420,320 L450,320 L450,287" fill="none" stroke="#9198a1" stroke-width="1.5"/>
+<path d="M610,287 L648,287" fill="none" stroke="#9198a1" stroke-width="1.5" marker-end="url(#a)"/>
+</svg>
