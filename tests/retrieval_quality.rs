@@ -1095,6 +1095,21 @@ fn a_declared_name_leads_to_its_declaration() {
                 if place == Some(1) && rank != Some(1) {
                     mislabelled += 1;
                 }
+                if rank != Some(1) {
+                    let first = hits.first().map(|h| {
+                        format!(
+                            "{}:{}-{} {}",
+                            h.path,
+                            h.start_line,
+                            h.end_line,
+                            h.symbol.as_ref().map(|s| s.label()).unwrap_or_default()
+                        )
+                    });
+                    eprintln!(
+                        "  miss [{}] {} at {}:{}, first {:?}",
+                        corpus.name, d.name, d.path, d.line, first
+                    );
+                }
                 here.record(rank);
                 named.record(rank);
                 located.record(place);
