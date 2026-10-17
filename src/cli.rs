@@ -583,10 +583,71 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
     }
 }
 
+/// What an agent is told about the `search` tool, so it reaches for it before
+/// guessing names with grep.
+const AGENT_NOTE: &str = "This repository is indexed by ripsem. To find where something is
+implemented, call the `search` tool of the `ripsem` MCP server first, with an
+identifier, an error message or a plain description of the behaviour. Use grep
+when every occurrence of a string is needed.";
+
+/// Writes the config as `init` does, because a `.ripsem` directory is what lets
+/// the server keep the index current, then the server entry and the note.
 fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
-    let (rel, name) = match target {
-        InstallCmd::ClaudeCode => (".mcp.json", "Claude Code"),
-        InstallCmd::Cursor => (".cursor/mcp.json", "Cursor"),
+    let config = Config::load(root)?;
+    if !config.config_path().exists() {
+        config.save()?;
+    }
+    let name = match target {
+        InstallCmd::ClaudeCode => "Claude Code",
+        InstallCmd::Cursor => "Cursor",
+    };
+    add_server(root, &target)?;
+    add_note(root, &target)?;
+    println!("restart {name} in this directory to pick it up");
+    Ok(())
+}
+
+fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
+    let (path, note) = match target {
+        InstallCmd::ClaudeCode => (
+            root.join("CLAUDE.md"),
+            format!("## Code search\n\n{AGENT_NOTE}\n"),
+        ),
+        InstallCmd::Cursor => (
+            root.join(".cursor/rules/ripsem.mdc"),
+            format!(
+                "---\ndescription: Finding code in this repository\nalwaysApply: true\n---\n\n{AGENT_NOTE}\n"
+            ),
+        ),
+    };
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", show_path(&path))),
+    };
+    if existing.contains("ripsem") {
+        println!(
+            "{} already mentions ripsem; left as it is",
+            show_path(&path)
+        );
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let text = match existing.trim().is_empty() {
+        true => note,
+        false => format!("{}\n\n{note}", existing.trim_end()),
+    };
+    std::fs::write(&path, text)?;
+    println!("added a note on when to use it to {}", show_path(&path));
+    Ok(())
+}
+
+fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
+    let rel = match target {
+        InstallCmd::ClaudeCode => ".mcp.json",
+        InstallCmd::Cursor => ".cursor/mcp.json",
     };
     let path = root.join(rel);
     if let Some(parent) = path.parent() {
@@ -643,7 +704,6 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
 
     std::fs::write(&path, serde_json::to_string_pretty(&doc)? + "\n")?;
     println!("added ripsem to {}", show_path(&path));
-    println!("restart {name} in this directory to pick it up");
     Ok(())
 }
 
@@ -891,6 +951,29 @@ mod tests {
         std::fs::write(&path, mine).unwrap();
         cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), mine);
+    }
+
+    #[test]
+    fn install_opts_the_directory_in_and_tells_the_agent_once() {
+        let dir = crate::testutil::TempDir::new();
+        let claude = dir.path().join("CLAUDE.md");
+        std::fs::write(&claude, "# Project\n\nBuild with make.\n").unwrap();
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+
+        assert!(dir.path().join(".ripsem/config.toml").exists());
+        let text = std::fs::read_to_string(&claude).unwrap();
+        assert!(text.starts_with("# Project\n\nBuild with make.\n\n## Code search\n"));
+        assert_eq!(text.matches("indexed by ripsem").count(), 1);
+    }
+
+    #[test]
+    fn install_cursor_writes_an_always_applied_rule() {
+        let dir = crate::testutil::TempDir::new();
+        cmd_install(dir.path(), InstallCmd::Cursor).unwrap();
+        let rule = std::fs::read_to_string(dir.path().join(".cursor/rules/ripsem.mdc")).unwrap();
+        assert!(rule.starts_with("---\ndescription: "), "{rule}");
+        assert!(rule.contains("alwaysApply: true") && rule.contains("`search` tool"));
     }
 
     #[test]
