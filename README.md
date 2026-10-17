@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="#install">Install</a> ·
+  <a href="#get-started">Get started</a> ·
   <a href="#usage">Usage</a> ·
   <a href="#use-with-coding-agents">Coding agents</a> ·
   <a href="#how-it-works">How it works</a> ·
@@ -39,17 +39,42 @@ ranges.
 - **Offline.** No account, no API key, no service. The model downloads once and
   runs on your CPU, and the index is one file inside your repository.
 
-## Quick start
+## Get started
 
-```
-cd your-repo
-ripsem index
-ripsem search "strip the auth header when redirecting to another host"
-```
+1. Install ripsem:
+
+    **macOS and Linux:**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/Sadykhzadeh/ripsem/master/install.sh | sh
+    ```
+
+    **Windows:**
+    ```powershell
+    irm https://raw.githubusercontent.com/Sadykhzadeh/ripsem/master/install.ps1 | iex
+    ```
+
+    **npm (any platform):**
+    ```bash
+    npm install -g ripsem
+    ```
+
+    **Cargo:**
+    ```bash
+    cargo install --locked ripsem
+    ```
+
+2. In your repository, build the index and ask it something:
+
+    ```bash
+    ripsem index
+    ripsem search "strip the auth header when redirecting to another host"
+    ```
+
+3. Hand the same search to your coding agent with `ripsem install claude-code` or
+   `ripsem install cursor` (see [below](#use-with-coding-agents)).
 
 The first `index` downloads the model (~133 MB) and embeds the repository;
-later runs re-embed only files that changed. `ripsem install claude-code` hands
-the same search to a coding agent (see [below](#use-with-coding-agents)).
+later runs re-embed only files that changed.
 
 ### Why not grep?
 
@@ -63,34 +88,25 @@ opening the file.
 
 ## Install
 
-Every [release](https://github.com/Sadykhzadeh/ripsem/releases) has a prebuilt
-binary for each platform below, built with the embedding runtime and
-tree-sitter (the model itself downloads on first use), and a `SHA256SUMS` file
-to check the archives against. Unpack one and put `ripsem` on your `PATH`; on
-Windows, keep `DirectML.dll` next to `ripsem.exe`.
+The install scripts and npm put the prebuilt binary from the latest
+[release](https://github.com/Sadykhzadeh/ripsem/releases) on your `PATH`, after
+checking it against the release's `SHA256SUMS`. The scripts install to
+`~/.local/bin` and `%LOCALAPPDATA%\Programs\ripsem`; `RIPSEM_INSTALL_DIR`
+overrides that. The release archives can also be unpacked by hand; on Windows,
+keep `DirectML.dll` next to `ripsem.exe`.
 
-| archive | runs on |
+| platform | runs on |
 | --- | --- |
 | `x86_64-unknown-linux-gnu` | glibc 2.35, libstdc++ 12 and OpenSSL 3 or newer: Ubuntu 22.04, Debian 12 and later |
 | `aarch64-apple-darwin` | macOS 13.4 or newer on Apple silicon |
 | `x86_64-pc-windows-msvc` | Windows 10 or newer with the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) |
 
 The embedding runtime in the x86-64 builds needs a CPU with AVX2 (Intel
-Haswell, AMD Excavator or newer).
+Haswell, AMD Excavator or newer). The binaries are built with the embedding
+runtime and tree-sitter; the model itself downloads on first use.
 
-The same builds come from npm, as `ripsem` for every platform above:
-
-```
-npm install -g ripsem             # or run it without installing: npx ripsem
-```
-
-To build from source instead, with Rust 1.90 or newer:
-
-```
-cargo install --locked ripsem
-```
-
-The build downloads a prebuilt ONNX Runtime. It needs a C and C++ compiler, plus
+`cargo install` builds from source, with Rust 1.90 or newer. The build
+downloads a prebuilt ONNX Runtime, and needs a C and C++ compiler, plus
 pkg-config and the OpenSSL headers on Linux (`build-essential pkg-config
 libssl-dev` on Debian and Ubuntu).
 
