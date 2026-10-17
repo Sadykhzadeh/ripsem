@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -305,12 +306,45 @@ struct Queue {
     pending: Vec<Pending>,
     texts: Vec<String>,
     embedded: usize,
+    /// Chunks queued so far that need the model, the progress total.
+    awaiting: usize,
+    /// Progress is measured in the bytes the model reads: chunks go to it
+    /// shortest first, so counting chunks would promise the end long before
+    /// it comes.
+    awaiting_bytes: usize,
+    embedded_bytes: usize,
+    reported: Option<std::time::Instant>,
 }
 
 impl Queue {
     fn push(&mut self, pending: Pending, text: String) {
+        if pending.vector.is_none() {
+            self.awaiting += 1;
+            self.awaiting_bytes += model_bytes(&text);
+        }
         self.pending.push(pending);
         self.texts.push(text);
+    }
+
+    /// The first index of a large repository embeds for minutes. A terminal
+    /// shows the bar; a log, which the bar does not draw into, gets a line
+    /// every [`REPORT_EVERY`] once embedding has lasted that long.
+    fn report(&mut self, pb: &ProgressBar) {
+        pb.set_length(self.awaiting_bytes as u64);
+        pb.set_position(self.embedded_bytes as u64);
+        pb.set_message(format!(
+            "{}/{} chunks embedded",
+            self.embedded, self.awaiting
+        ));
+        if std::io::stderr().is_terminal() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let last = *self.reported.get_or_insert(now);
+        if now.duration_since(last) >= REPORT_EVERY {
+            self.reported = Some(now);
+            eprintln!("embedded {} of {} chunks", self.embedded, self.awaiting);
+        }
     }
 
     fn is_full(&self) -> bool {
@@ -375,12 +409,15 @@ impl Queue {
                 embedder.insert(built)
             }
         };
+        pb.set_style(embedding_style());
+        self.report(pb);
         order.sort_by_key(|&i| self.texts[i].len());
         for group in embed_groups(order, &self.texts) {
             let texts: Vec<String> = group
                 .iter()
                 .map(|&i| std::mem::take(&mut self.texts[i]))
                 .collect();
+            self.embedded_bytes += texts.iter().map(|t| model_bytes(t)).sum::<usize>();
             let embedded = embedder.embed_documents(&texts)?;
             if embedded.len() != texts.len() {
                 anyhow::bail!(
@@ -393,7 +430,7 @@ impl Queue {
                 vectors[i] = vector;
             }
             self.embedded += group.len();
-            pb.set_message(format!("{} chunks embedded", self.embedded));
+            self.report(pb);
         }
         Ok(())
     }
@@ -696,11 +733,23 @@ fn truncate(s: &str, max: usize) -> String {
 
 fn progress(len: u64) -> ProgressBar {
     let pb = ProgressBar::new(len);
-    if let Ok(style) = ProgressStyle::with_template("{spinner} {pos}/{len} files  {wide_msg}") {
+    if let Ok(style) = ProgressStyle::with_template("{spinner} {pos}/{len} files") {
         pb.set_style(style);
     }
     pb
 }
+
+fn embedding_style() -> ProgressStyle {
+    ProgressStyle::with_template("{spinner} {bar:30} {msg}, {eta} left")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+}
+
+/// The models read at most 512 tokens, a few bytes each, of a longer text.
+fn model_bytes(text: &str) -> usize {
+    text.len().min(2048)
+}
+
+const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[cfg(test)]
 mod tests {
