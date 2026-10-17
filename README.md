@@ -78,6 +78,12 @@ Windows, keep `DirectML.dll` next to `ripsem.exe`.
 The embedding runtime in the x86-64 builds needs a CPU with AVX2 (Intel
 Haswell, AMD Excavator or newer).
 
+The same builds come from npm, as `ripsem` for every platform above:
+
+```
+npm install -g ripsem             # or run it without installing: npx ripsem
+```
+
 To build from source instead, with Rust 1.90 or newer:
 
 ```
@@ -215,6 +221,9 @@ Any other MCP client takes the same entry in its own config:
   }
 }
 ```
+
+Without ripsem installed, the client can start it through npm with
+`"command": "npx", "args": ["-y", "ripsem", "mcp"]`.
 
 The server finds the index from the directory it starts in. To point it at a
 repository elsewhere, add `"--path", "/path/to/repo"` to `args`; `install
