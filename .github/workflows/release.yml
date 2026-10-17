@@ -223,3 +223,29 @@ jobs:
           for package in staged/ripsem-*/ staged/ripsem/; do
             npm publish --access public "$package"
           done
+
+  # Lists the npm package in the MCP Registry, where clients and catalogues
+  # find servers. The registry trusts this workflow through GitHub's OIDC
+  # token, so no secret is stored here. It reads the published package to
+  # check its mcpName, and a new version can take a moment to appear on npm.
+  mcp-registry:
+    needs: npm
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Publish
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          curl -fsSL https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz | tar -xz mcp-publisher
+          jq --arg v "$version" '.version = $v | .packages[0].version = $v' server.json > server.tmp
+          mv server.tmp server.json
+          ./mcp-publisher login github-oidc
+          for attempt in 1 2 3 4; do
+            ./mcp-publisher publish && exit 0
+            sleep 30
+          done
+          ./mcp-publisher publish

@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -50,14 +51,17 @@ pub enum Command {
         /// outside the repository is an error.
         #[arg(long = "in", value_name = "PREFIX")]
         within: Option<String>,
-        /// Number of snippet lines to print per hit in the human output. `0`
-        /// prints just the location header with no snippet body. Ignored by
-        /// `--json`, which always returns the whole stored snippet.
-        #[arg(long, value_name = "LINES", default_value_t = 3)]
-        context: usize,
-        /// Drop hits whose confidence is below this threshold, keeping only
-        /// strong matches. Confidence is 0–1: semantic similarity, or the share
-        /// of the query's terms found literally, whichever is higher. Absent
+        /// Number of snippet lines to print per hit in the human output: 3 in
+        /// a terminal, and the whole snippet when the output goes to another
+        /// program, such as an agent's shell tool. `0` prints just the
+        /// location header with no snippet body. Ignored by `--json`, which
+        /// always returns the whole snippet.
+        #[arg(long, value_name = "LINES")]
+        context: Option<usize>,
+        /// Drop hits scoring below this, keeping only strong matches. A score
+        /// runs from 0, no closer than unrelated text in this repository, to
+        /// 1, every term of the query found literally or an identical text,
+        /// and falls with rank, so this keeps the top of the ranking. Absent
         /// means no filtering. Applies to both the human and `--json` output.
         #[arg(long, value_name = "SCORE")]
         min_score: Option<f32>,
@@ -121,7 +125,7 @@ pub enum InstallCmd {
 }
 
 pub fn run(cli: Cli) -> Result<()> {
-    let root = match cli.path {
+    let root = match &cli.path {
         Some(path) => path
             .canonicalize()
             .map_err(|_| anyhow::anyhow!("no such directory: {}", path.display()))?,
@@ -156,7 +160,7 @@ pub fn run(cli: Cli) -> Result<()> {
         ),
         Command::Watch => watch::run(Config::load(&root)?),
         Command::Status { json } => cmd_status(&root, json),
-        Command::Mcp => mcp::serve(Config::load(&root)?),
+        Command::Mcp => mcp::serve(Config::load(&root)?, cli.path.is_some()),
         Command::Model { action } => cmd_model(&root, action),
         Command::Install { target } => cmd_install(&root, target),
         Command::Completions { shell } => {
@@ -399,11 +403,12 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
     }
     let stats = pipeline::index_repo(&config, force)?;
     println!(
-        "{}: {} embedded, {} unchanged -> {}",
+        "{}: {} changed, {} unchanged -> {}, {} embedded",
         plural(stats.files, "file"),
         stats.embedded,
         stats.reused,
-        plural(stats.chunks, "chunk")
+        plural(stats.chunks, "chunk"),
+        stats.vectors
     );
     warn_about_backend(&config);
     Ok(())
@@ -481,10 +486,14 @@ fn cmd_search(
     limit: usize,
     as_json: bool,
     within: Option<&str>,
-    context: usize,
+    context: Option<usize>,
     min_score: Option<f32>,
     count_by_file: bool,
 ) -> Result<()> {
+    let context = context.unwrap_or(match std::io::stdout().is_terminal() {
+        true => 3,
+        false => usize::MAX,
+    });
     let config = Config::load(root)?;
     // Same normalisation as the MCP `search` tool.
     let prefix = match within {
@@ -622,13 +631,6 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
     }
 }
 
-/// What an agent is told about the `search` tool, so it reaches for it before
-/// guessing names with grep.
-const AGENT_NOTE: &str = "This repository is indexed by ripsem. To find where something is
-implemented, call the `search` tool of the `ripsem` MCP server first, with an
-identifier, an error message or a plain description of the behaviour. Use grep
-when every occurrence of a string is needed.";
-
 /// Writes the config as `init` does, because a `.ripsem` directory is what lets
 /// the server keep the index current, then the server entry and the note.
 fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
@@ -650,12 +652,13 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
     let (path, note) = match target {
         InstallCmd::ClaudeCode => (
             root.join("CLAUDE.md"),
-            format!("## Code search\n\n{AGENT_NOTE}\n"),
+            format!("## Code search\n\n{}\n", mcp::INSTRUCTIONS),
         ),
         InstallCmd::Cursor => (
             root.join(".cursor/rules/ripsem.mdc"),
             format!(
-                "---\ndescription: Finding code in this repository\nalwaysApply: true\n---\n\n{AGENT_NOTE}\n"
+                "---\ndescription: Finding code in this repository\nalwaysApply: true\n---\n\n{}\n",
+                mcp::INSTRUCTIONS
             ),
         ),
     };

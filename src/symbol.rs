@@ -1,6 +1,6 @@
 use bitcode::{Decode, Encode};
 
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Encode, Decode)]
 pub struct Symbol {
     pub kind: String,
     pub name: String,
@@ -9,6 +9,37 @@ pub struct Symbol {
 impl Symbol {
     pub fn label(&self) -> String {
         format!("{} {}", self.kind, self.name)
+    }
+
+    /// The name without the declarations it sits in: `refresh` for
+    /// `Searcher::refresh`.
+    pub fn leaf(&self) -> &str {
+        self.name.rsplit("::").next().unwrap_or(&self.name)
+    }
+}
+
+/// One of the declarations a chunk holds, with the lines it spans. A chunk
+/// groups small neighbours, so the one a search asks for is often not the first.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct Declaration {
+    pub symbol: Symbol,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+impl Declaration {
+    /// An `impl` block adds to a type declared elsewhere.
+    pub fn is_extension(&self) -> bool {
+        self.symbol.kind == "impl"
+    }
+
+    /// A block whose members are declarations searched for on their own, as
+    /// a class's methods are.
+    pub fn is_container(&self) -> bool {
+        matches!(
+            self.symbol.kind.as_str(),
+            "impl" | "class" | "trait" | "interface" | "mod"
+        )
     }
 }
 

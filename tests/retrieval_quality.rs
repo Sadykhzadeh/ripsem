@@ -658,10 +658,11 @@ fn evaluate(model: &str, announce_misses: bool) -> Evaluation {
         for query in corpus.queries {
             let vector = embedder.embed_query(query.text).unwrap();
             let terms = ripsem::lexical::query_terms(query.text);
+            let names = ripsem::lexical::query_names(query.text);
             let ranked = [
                 index.dense_ranking(&vector, DEPTH, None),
                 index.lexical_ranking(&terms, DEPTH, None).hits().to_vec(),
-                index.search_fused(&vector, &terms, DEPTH, None),
+                index.search_fused(&vector, &terms, &names, DEPTH, None),
             ];
             for (arm, hits) in ranked.iter().enumerate() {
                 let rank = rank_of(&index, hits, query.targets);
@@ -807,7 +808,8 @@ fn misses() {
             for query in corpus.queries {
                 let vector = embedder.embed_query(query.text).unwrap();
                 let terms = ripsem::lexical::query_terms(query.text);
-                let shown = index.search_fused(&vector, &terms, DEPTH, None);
+                let names = ripsem::lexical::query_names(query.text);
+                let shown = index.search_fused(&vector, &terms, &names, DEPTH, None);
                 if rank_of(&index, &shown, query.targets).is_some() {
                     continue;
                 }
@@ -817,7 +819,10 @@ fn misses() {
                         "lexical",
                         index.lexical_ranking(&terms, DEEP, None).hits().to_vec(),
                     ),
-                    ("fused", index.search_fused(&vector, &terms, DEEP, None)),
+                    (
+                        "fused",
+                        index.search_fused(&vector, &terms, &names, DEEP, None),
+                    ),
                 ];
                 let reach: Vec<String> = deep
                     .iter()
@@ -874,7 +879,8 @@ fn measure(config: &Config, queries: &[Query], generated: &HashSet<String>) -> O
     for query in queries {
         let vector = embedder.embed_query(query.text).unwrap();
         let terms = ripsem::lexical::query_terms(query.text);
-        let hits = index.search_fused(&vector, &terms, DEPTH, None);
+        let names = ripsem::lexical::query_names(query.text);
+        let hits = index.search_fused(&vector, &terms, &names, DEPTH, None);
         outcome.score.record(rank_of(&index, &hits, query.targets));
         outcome.total_results += hits.len();
         outcome.wasted_results += hits
@@ -974,4 +980,151 @@ fn files_only_the_defaults_drop(config: &Config) -> HashSet<String> {
         ..config.clone()
     });
     indexed(config).difference(&kept).cloned().collect()
+}
+
+struct Declared {
+    path: String,
+    name: String,
+    line: usize,
+}
+
+/// Every declaration the parser names in the indexed files, read from the tree
+/// rather than from the chunks, so how a file is cut cannot decide the answer.
+#[cfg(feature = "treesitter")]
+fn declared_in(root: &Path, index: &Index) -> Vec<Declared> {
+    fn walk(
+        node: tree_sitter::Node,
+        text: &str,
+        enclosing: Option<&ripsem::symbol::Symbol>,
+        path: &str,
+        out: &mut Vec<Declared>,
+    ) {
+        let declared = ripsem::symbol::declaration(&node, text, enclosing);
+        if let Some(symbol) = &declared
+            && !matches!(symbol.kind.as_str(), "impl" | "mod")
+        {
+            out.push(Declared {
+                path: path.to_string(),
+                name: symbol.leaf().to_string(),
+                line: node.start_position().row + 1,
+            });
+        }
+        let scope = declared.as_ref().or(enclosing);
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.named_children(&mut cursor).collect();
+        for child in children {
+            walk(child, text, scope, path, out);
+        }
+    }
+
+    let mut paths: Vec<&str> = index.records.iter().map(|r| r.path.as_str()).collect();
+    paths.sort_unstable();
+    paths.dedup();
+    let mut out = Vec::new();
+    for path in paths {
+        let Some(spec) = ripsem::lang::detect(Path::new(path)) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(root.join(path)) else {
+            continue;
+        };
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&spec.language).unwrap();
+        let tree = parser.parse(text.as_bytes(), None).unwrap();
+        walk(tree.root_node(), &text, None, path, &mut out);
+    }
+    out
+}
+
+/// Names declared once, at least four characters long, at most `cap` of them
+/// spread evenly over the corpus.
+#[cfg(feature = "treesitter")]
+fn unambiguous(declared: Vec<Declared>, cap: usize) -> Vec<Declared> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for d in &declared {
+        *seen.entry(d.name.to_lowercase()).or_default() += 1;
+    }
+    let single: Vec<Declared> = declared
+        .into_iter()
+        .filter(|d| d.name.len() >= 4 && seen[&d.name.to_lowercase()] == 1)
+        .collect();
+    let stride = single.len().div_ceil(cap).max(1);
+    single.into_iter().step_by(stride).collect()
+}
+
+/// A search by a declared name has found it only when a hit points at the
+/// declaration's line and is labelled with that name. A hit on the right lines
+/// under another declaration's label reads, to an agent, as somewhere else.
+#[cfg(feature = "treesitter")]
+#[test]
+#[ignore = "clones pinned repositories and downloads the embedding model; run with --ignored --nocapture"]
+fn a_declared_name_leads_to_its_declaration() {
+    let mut named = Score::default();
+    let mut located = Score::default();
+    let mut mislabelled = 0usize;
+    exclusively(|| {
+        for corpus in CORPORA {
+            let materialized = materialize(&corpus.source, corpus.name);
+            let root = materialized.root();
+            let config = Config {
+                backend: Backend::Fastembed,
+                root: root.clone(),
+                ..Default::default()
+            };
+            pipeline::index_repo(&config, true).unwrap();
+            let index = Index::load(&config.index_path()).unwrap();
+            let wanted = unambiguous(declared_in(&root, &index), 150);
+            let searcher = pipeline::open(&config).unwrap();
+            let mut here = Score::default();
+            for d in &wanted {
+                let hits = searcher.query(&d.name, DEPTH).unwrap();
+                let covers = |h: &&pipeline::SearchHit| {
+                    h.path == d.path && h.start_line <= d.line && d.line <= h.end_line
+                };
+                let names = |h: &&pipeline::SearchHit| {
+                    h.symbol.as_ref().is_some_and(|s| s.leaf() == d.name)
+                };
+                let rank = hits
+                    .iter()
+                    .position(|h| covers(&h) && names(&h))
+                    .map(|p| p + 1);
+                let place = hits.iter().position(|h| covers(&h)).map(|p| p + 1);
+                if place == Some(1) && rank != Some(1) {
+                    mislabelled += 1;
+                }
+                if rank != Some(1) {
+                    let first = hits.first().map(|h| {
+                        format!(
+                            "{}:{}-{} {}",
+                            h.path,
+                            h.start_line,
+                            h.end_line,
+                            h.symbol.as_ref().map(|s| s.label()).unwrap_or_default()
+                        )
+                    });
+                    eprintln!(
+                        "  miss [{}] {} at {}:{}, first {:?}",
+                        corpus.name, d.name, d.path, d.line, first
+                    );
+                }
+                here.record(rank);
+                named.record(rank);
+                located.record(place);
+            }
+            eprintln!("{:<9} {}", corpus.name, here.line());
+        }
+    });
+    eprintln!("declaration  {}", named.line());
+    eprintln!("its lines    {}", located.line());
+    eprintln!("first hit on the right lines under another name: {mislabelled}");
+
+    assert_eq!(
+        mislabelled, 0,
+        "a hit on a declaration's lines carried another name"
+    );
+    assert!(
+        named.recall_at_1() >= 0.95,
+        "a declared name led to its declaration first for only {:.2} of names",
+        named.recall_at_1()
+    );
 }
