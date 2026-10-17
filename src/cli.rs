@@ -641,7 +641,7 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
     };
     doc["mcpServers"]["ripsem"] = json!({ "command": "ripsem", "args": args });
 
-    std::fs::write(&path, serde_json::to_string_pretty(&doc)?)?;
+    std::fs::write(&path, serde_json::to_string_pretty(&doc)? + "\n")?;
     println!("added ripsem to {}", show_path(&path));
     println!("restart {name} in this directory to pick it up");
     Ok(())
@@ -913,9 +913,9 @@ mod tests {
         let dir = crate::testutil::TempDir::new();
         std::fs::write(dir.path().join(".mcp.json"), "\n").unwrap();
         cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
-        let doc: Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
-                .unwrap();
+        let text = std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
+        assert!(text.ends_with("}\n"), "{text:?}");
+        let doc: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
     }
 
