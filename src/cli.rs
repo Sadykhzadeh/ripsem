@@ -542,9 +542,10 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
             for m in model::catalog() {
                 let mark = if m.id == current { "*" } else { " " };
                 let lang = if m.multilingual { "multi" } else { "en" };
+                let disk = format!("~{}MB", m.disk_mb);
                 println!(
-                    "{mark} {:<24} {}d  ~{}MB  {:<5}  {}",
-                    m.id, m.dims, m.disk_mb, lang, m.note
+                    "{mark} {:<24} {}d  {disk:<6}  {lang:<5}  {}",
+                    m.id, m.dims, m.note
                 );
             }
             Ok(())
