@@ -12,7 +12,8 @@ First public release.
   TypeScript functions bound to a variable or class field. Doc comments become
   records of their own.
 - `ripsem mcp` serves a single `search` tool over stdio; `ripsem install
-  claude-code` and `ripsem install cursor` register it.
+  claude-code` and `ripsem install cursor` register it. A running server picks
+  up a rebuilt index, also one rebuilt for another model, without a restart.
 - `ripsem status` reports index size, model, backend and drift from the tree,
   also as JSON (`ripsem/status/v1`).
 - `ripsem watch` keeps the index in sync as files change.
