@@ -19,7 +19,14 @@ use crate::pipeline;
 /// answer tells it to fall back to `initialize`.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
+/// A directory with a `.ripsem` data directory has opted in, through `ripsem
+/// init`, `index` or `install`, and its index is kept current while the server
+/// runs. Anywhere else, such as a home directory a client happened to start
+/// in, nothing is indexed behind the user's back.
 pub fn serve(config: Config) -> Result<()> {
+    if config.data_dir().is_dir() {
+        crate::watch::spawn(config.clone());
+    }
     serve_on(config, std::io::stdin().lock(), std::io::stdout().lock())
 }
 
@@ -218,6 +225,9 @@ fn handle_call(
 
     let result = match session {
         Some(s) => s.query_scoped(query, limit, prefix.as_deref()),
+        None if crate::watch::indexing() => Err(anyhow!(
+            "the index is being built in the background; search again shortly"
+        )),
         None => {
             pipeline::open(config).and_then(|s| s.query_scoped(query, limit, prefix.as_deref()))
         }
