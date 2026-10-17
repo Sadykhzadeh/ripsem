@@ -27,15 +27,15 @@ On [requests](https://github.com/psf/requests) v2.34.2 that prints:
 ```
 src/requests/sessions.py:154-184  fn SessionRedirectMixin::should_strip_auth  (0.816)
     def should_strip_auth(self, old_url: str, new_url: str) -> bool:
-            """Decide whether Authorization header should be removed when redirecting"""
+        """Decide whether Authorization header should be removed when redirecting"""
 
 src/requests/sessions.py:309-332  fn SessionRedirectMixin::rebuild_auth  (0.766)
     def rebuild_auth(
-            self, prepared_request: PreparedRequest, response: Response
+        self, prepared_request: PreparedRequest, response: Response
 
 tests/test_requests.py:1924-1960  fn TestRequests::test_should_strip_auth_https_upgrade  (0.745)
     def test_should_strip_auth_https_upgrade(self):
-            s = requests.Session()
+        s = requests.Session()
 ```
 
 (`-k 3 --context 2`; the default is ten hits with three lines each.)
@@ -97,7 +97,7 @@ CI), but real semantic search needs the model.
 
 The `treesitter` feature chunks code on function and type boundaries instead of
 fixed line windows, and names each chunk after the declaration it belongs to.
-Results look like `src/pipeline.rs:501-537 fn Searcher::query_scoped`, so a
+Results look like `src/pipeline.rs:501-544 fn Searcher::query_scoped`, so a
 caller can tell a definition from a call site without opening the file. A
 function too large for one chunk passes its name to every piece. It covers Rust,
 Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Scala, Kotlin,
@@ -199,7 +199,9 @@ Any other MCP client takes the same entry in its own config:
 ```
 
 The server finds the index from the directory it starts in. If the client
-starts it somewhere else, add `"--path", "/path/to/repo"` to `args`.
+starts it somewhere else, add `"--path", "/path/to/repo"` to `args`; `install
+cursor` writes `"--path", "${workspaceFolder}"`, which Cursor expands to the
+project.
 
 ## Configuration
 
@@ -222,13 +224,14 @@ chunk; larger functions are split. After changing any of the three, the next
 `ripsem index` chunks and embeds every file again. Files larger than
 `max_file_kb` are skipped. `exclude` takes gitignore-style globs. `backend =
 "hash"` matches words instead of meaning; builds without the `fastembed`
-feature start with it.
+feature start with it. A key ripsem does not know is an error rather than
+silently ignored.
 
 `skip_generated` leaves out files that are committed but written by a machine:
-lock files, `go.sum`, `*.min.js`, `*.min.css` and source maps. `.gitignore` does not cover
-them because they are committed on purpose, and one can outweigh everything
-written by hand: in this repository `Cargo.lock` alone accounted for 124 of 297
-chunks. Set it to `false` to index them anyway.
+lock files, `go.sum`, `*.min.js`, `*.min.css` and source maps. `.gitignore`
+does not cover them because they are committed on purpose, and one can outweigh
+everything written by hand: in this repository `Cargo.lock` alone accounted for
+124 of 297 chunks. Set it to `false` to index them anyway.
 
 ## Quality
 
@@ -289,11 +292,11 @@ code as the tables above:
 
 | model | dims | disk | vector only | merged |
 | --- | --- | --- | --- | --- |
-| all-MiniLM-L6-v2 | 384 | ~90 MB | 0.616 | 0.758 |
-| bge-small-en-v1.5 | 384 | ~133 MB | 0.629 | **0.782** |
-| bge-base-en-v1.5 | 768 | ~436 MB | **0.642** | 0.751 |
-| multilingual-e5-small | 384 | ~470 MB | 0.605 | 0.761 |
-| nomic-embed-text-v1.5 | 768 | ~550 MB | 0.580 | 0.721 |
+| all-MiniLM-L6-v2 | 384 | ~90 MB | 0.616 | 0.761 |
+| bge-small-en-v1.5 | 384 | ~133 MB | 0.629 | **0.783** |
+| bge-base-en-v1.5 | 768 | ~436 MB | **0.645** | 0.753 |
+| multilingual-e5-small | 384 | ~470 MB | 0.609 | 0.761 |
+| nomic-embed-text-v1.5 | 768 | ~550 MB | 0.580 | 0.725 |
 
 bge-base-en-v1.5 is the better retriever alone and the worse one merged. The
 ordering held before and after doc records were added, and again once
