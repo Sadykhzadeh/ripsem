@@ -542,6 +542,10 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
                 anyhow::bail!("unknown model '{id}'; see `ripsem model list`");
             }
             let mut config = Config::load(root)?;
+            if config.model == id && config.config_path().exists() {
+                println!("model is already {id}; the index needs no rebuild");
+                return Ok(());
+            }
             config.model = id.clone();
             config.save()?;
             println!("model set to {id} (run `ripsem index --force` to rebuild)");
@@ -554,10 +558,12 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
                 other => anyhow::bail!("unknown backend '{other}' (hash | fastembed)"),
             };
             let mut config = Config::load(root)?;
+            if config.backend == backend && config.config_path().exists() {
+                println!("backend is already {name}; the index needs no rebuild");
+                return Ok(());
+            }
             config.backend = backend;
             config.save()?;
-            // The index records its model but not its backend, so a mismatch
-            // here is not caught later.
             println!("backend set to {name} (run `ripsem index --force` to rebuild)");
             Ok(())
         }

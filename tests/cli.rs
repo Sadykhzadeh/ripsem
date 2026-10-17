@@ -219,3 +219,22 @@ fn the_mcp_server_answers_a_session_from_handshake_to_search() {
     let text = result["content"][0]["text"].as_str().unwrap();
     assert!(text.starts_with("src/auth.rs:1-1"), "got: {text}");
 }
+
+/// Setting what is already set must not send the user to a rebuild that can
+/// take minutes.
+#[test]
+fn setting_the_model_or_backend_it_has_asks_for_no_rebuild() {
+    let dir = TempDir::new();
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+
+    let same = stdout(&ripsem(&dir.path, &["model", "backend", "hash"]));
+    assert!(same.contains("already hash"), "{same}");
+    let same = stdout(&ripsem(&dir.path, &["model", "set", "bge-small-en-v1.5"]));
+    assert!(same.contains("needs no rebuild"), "{same}");
+
+    let changed = stdout(&ripsem(&dir.path, &["model", "set", "all-MiniLM-L6-v2"]));
+    assert!(changed.contains("index --force"), "{changed}");
+    let config = std::fs::read_to_string(dir.path.join(".ripsem/config.toml")).unwrap();
+    assert!(config.contains("all-MiniLM-L6-v2"), "{config}");
+}
