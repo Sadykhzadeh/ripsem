@@ -424,6 +424,34 @@ fn snippet_lines(snippet: &str, context: usize) -> Vec<&str> {
     snippet.lines().take(context).collect()
 }
 
+/// Width a snippet line is broken at in the human output. A doc record is one
+/// run of prose, which a terminal would otherwise split in the middle of a word.
+const WRAP: usize = 96;
+
+/// Breaks a line longer than [`WRAP`] at spaces, keeping its indentation on
+/// every piece. Shorter lines are left exactly as they are.
+fn wrap(line: &str) -> Vec<String> {
+    if line.chars().count() <= WRAP {
+        return vec![line.to_string()];
+    }
+    let indent = &line[..line.len() - line.trim_start().len()];
+    let mut pieces = Vec::new();
+    let mut current = String::new();
+    for word in line.split_whitespace() {
+        let width = indent.len() + current.chars().count() + 1 + word.chars().count();
+        if !current.is_empty() && width > WRAP {
+            pieces.push(format!("{indent}{current}"));
+            current.clear();
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    pieces.push(format!("{indent}{current}"));
+    pieces
+}
+
 /// Drops hits scoring below `min`; `None` keeps everything.
 fn apply_min_score(hits: Vec<pipeline::SearchHit>, min: Option<f32>) -> Vec<pipeline::SearchHit> {
     match min {
@@ -537,7 +565,9 @@ fn print_hits(
             ),
         }
         for l in snippet_lines(&h.snippet, context) {
-            println!("    {l}");
+            for piece in wrap(l) {
+                println!("    {piece}");
+            }
         }
         println!();
     }
@@ -740,6 +770,16 @@ mod tests {
         assert_eq!(show_score(-0.0004), "0.000");
         assert_eq!(show_score(-0.25), "-0.250");
         assert_eq!(show_score(0.46884), "0.469");
+    }
+
+    #[test]
+    fn a_long_line_is_broken_at_spaces_and_a_short_one_is_kept() {
+        let prose = "Walk walks the router and all its sub-routers, calling walkFn for each route in the tree. The routes are walked in the order they were added.";
+        let pieces = wrap(prose);
+        assert!(pieces.len() > 1);
+        assert!(pieces.iter().all(|p| p.chars().count() <= WRAP));
+        assert_eq!(pieces.join(" "), prose);
+        assert_eq!(wrap("    let  x = 1;"), vec!["    let  x = 1;"]);
     }
 
     #[test]
