@@ -16,7 +16,7 @@ use crate::symbol::{Declaration, Symbol};
 
 /// Changes whenever the bytes of an index would, including on a bitcode
 /// upgrade: bitcode keeps its encoding only within one 0.x series.
-pub const FORMAT_VERSION: u32 = 10;
+pub const FORMAT_VERSION: u32 = 11;
 
 /// Every index file starts with these bytes and then [`FORMAT_VERSION`] as a
 /// little-endian u32, so a file from another ripsem is recognised before its
@@ -107,6 +107,10 @@ pub struct Index {
     pub chunking: Chunking,
     pub records: Vec<Record>,
     pub ann: Option<Vec<u8>>,
+    /// How similar text about something else entirely scores against this
+    /// index: a cosine is reported as how far it rises above this. `None`
+    /// until measured.
+    pub noise_floor: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -124,6 +128,7 @@ impl Index {
             chunking: Chunking::default(),
             records: Vec::new(),
             ann: None,
+            noise_floor: None,
         }
     }
 
@@ -340,6 +345,25 @@ impl Index {
     /// Keeps the better-ranked of any records that cover the same lines (a
     /// declaration and its doc record, or overlapping windows). Done before the
     /// cut to `k`, so the caller still gets `k` distinct places.
+    /// Text about cooking or sport is as unrelated to any code as a query
+    /// can be. The second best of the closest matches such text finds is the
+    /// floor, so one probe that happens to land near a stray comment does not
+    /// set it.
+    pub fn measure_noise_floor(&mut self, probes: &[Vec<f32>]) {
+        let mut closest: Vec<f32> = probes
+            .iter()
+            .map(|probe| {
+                self.records
+                    .par_iter()
+                    .map(|r| quant::dot(&r.vector, probe))
+                    .reduce(|| f32::MIN, f32::max)
+            })
+            .filter(|c| c.is_finite() && *c > f32::MIN)
+            .collect();
+        closest.sort_by(|a, b| b.total_cmp(a));
+        self.noise_floor = closest.get(1).or(closest.first()).copied();
+    }
+
     fn best_of_each_place(&self, ranked: Vec<Candidate>, k: usize) -> Vec<Hit> {
         let mut taken: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
         // `k` comes from the caller, so cap the reservation at the index size.
@@ -357,8 +381,12 @@ impl Index {
                 continue;
             }
             places.push((record.start_line, record.end_line));
+            let reported = candidate.reported(self.noise_floor.unwrap_or(0.0));
+            let score = out
+                .last()
+                .map_or(reported, |above: &Hit| reported.min(above.score));
             out.push(Hit {
-                score: candidate.confidence(),
+                score,
                 record_idx: candidate.record_idx,
             });
         }
@@ -411,6 +439,16 @@ impl Candidate {
 
     fn confidence(&self) -> f32 {
         self.cosine.max(self.share)
+    }
+
+    /// The score a caller sees: how far the cosine rises from the index's
+    /// noise floor towards an identical text, or the share of the query found
+    /// literally, whichever is higher. A hit never shows more than the one
+    /// above it, so a threshold keeps a prefix of the ranking.
+    fn reported(&self, floor: f32) -> f32 {
+        let floor = floor.clamp(0.0, 0.99);
+        let above = ((self.cosine - floor) / (1.0 - floor)).clamp(0.0, 1.0);
+        above.max(self.share)
     }
 
     /// Below an exact match, a chunk that belongs to a declaration outranks one
@@ -764,6 +802,40 @@ mod tests {
     }
 
     #[test]
+    fn the_noise_floor_is_the_second_closest_unrelated_match() {
+        let mut index = sample_index();
+        index.measure_noise_floor(&[
+            vec![0.9, 0.1, 0.0],
+            vec![0.0, 0.6, 0.0],
+            vec![0.0, 0.0, 0.3],
+        ]);
+        let floor = index.noise_floor.unwrap();
+        assert!((floor - 0.6).abs() < 0.02, "{floor}");
+    }
+
+    /// Ranking and score answer different questions, but a score that rose
+    /// down the list would make a threshold drop a hit and keep the one below.
+    #[test]
+    fn scores_fall_with_rank_and_start_from_the_noise_floor() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        let mut prose = text_record("NOTES.md", "unrelated", vec![1.0, 0.0, 0.0]);
+        prose.symbol = None;
+        let mut code = text_record("a.rs", "unrelated", vec![0.6, 0.8, 0.0]);
+        code.symbol = Some(Symbol {
+            kind: "fn".into(),
+            name: "a".into(),
+        });
+        index.records.push(prose);
+        index.records.push(code);
+        index.noise_floor = Some(0.5);
+
+        let hits = index.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(paths(&index, &hits), ["a.rs", "NOTES.md"]);
+        assert!((hits[0].score - 0.2).abs() < 0.02, "{}", hits[0].score);
+        assert!(hits[1].score <= hits[0].score);
+    }
+
+    #[test]
     fn a_literal_match_outside_code_outranks_declarations_lacking_it() {
         let mut index = Index::new(3, Backend::Hash, "test".into());
         index.records.push(text_record(
@@ -991,7 +1063,7 @@ mod tests {
         let bytes = bitcode::encode(&sample_index());
         assert_eq!(
             (FORMAT_VERSION, crate::fingerprint::content_hash(&bytes)),
-            (10, 0xebaf_6a22_a574_38db)
+            (11, 0x5325_e983_d939_adda)
         );
     }
 

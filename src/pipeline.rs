@@ -92,6 +92,27 @@ pub struct SearchHit {
 
 const SNIPPET_BYTES: usize = 400;
 
+/// Queries about anything but code, to measure how closely unrelated text
+/// matches an index.
+const UNRELATED: [&str; 12] = [
+    "a recipe for banana bread with walnuts",
+    "the history of the roman empire",
+    "how to change a flat bicycle tire",
+    "symptoms of seasonal allergies in spring",
+    "the best hiking trails in the alps",
+    "rules for playing chess openings",
+    "watercolor painting techniques for beginners",
+    "migration patterns of arctic birds",
+    "planning a budget for a family vacation",
+    "the plot of a classic detective novel",
+    "growing tomatoes on a balcony",
+    "tips for a job interview",
+];
+
+/// The noise floor is measured again once more than one chunk in this many
+/// was embedded since it last was. An edit moves it too little to matter.
+const NOISE_DRIFT: usize = 10;
+
 pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     // Loaded on the first chunk that needs a vector: a reindex that finds
     // nothing changed, or only files removed, never needs the model.
@@ -106,6 +127,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     };
     let mut prev_chunks: HashMap<String, Vec<Record>> = HashMap::new();
     let mut prev_ann = None;
+    let mut prev_floor = None;
     let mut reusable = false;
     let mut recut: Vec<Record> = Vec::new();
     let chunking = chunk::Chunking::of(config);
@@ -113,6 +135,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         && prev.dims == dims
         && prev.built_for(config.backend, &config.model)
     {
+        prev_floor = prev.noise_floor;
         // Cut under other settings, a file's records cannot be kept, but a
         // vector depends only on the text and the model, so every chunk the
         // new cut leaves unchanged keeps its vector.
@@ -230,9 +253,24 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     let unchanged = reusable
         && embedded == 0
         && prev_chunks.values().all(Vec::is_empty)
-        && prev_ann.is_some() == wants_ann(index.records.len());
+        && prev_ann.is_some() == wants_ann(index.records.len())
+        && prev_floor.is_some();
     if unchanged {
         return Ok(stats);
+    }
+
+    index.noise_floor = prev_floor;
+    let drifted = queue.embedded * NOISE_DRIFT > index.records.len();
+    if !index.records.is_empty() && (prev_floor.is_none() || drifted) {
+        let model = match &embedder {
+            Some(built) => built,
+            None => embedder.insert(embed::build(config)?),
+        };
+        let probes = UNRELATED
+            .iter()
+            .map(|text| model.embed_query(text))
+            .collect::<Result<Vec<_>>>()?;
+        index.measure_noise_floor(&probes);
     }
 
     #[cfg(feature = "hnsw")]

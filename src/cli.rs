@@ -55,9 +55,10 @@ pub enum Command {
         /// `--json`, which always returns the whole stored snippet.
         #[arg(long, value_name = "LINES", default_value_t = 3)]
         context: usize,
-        /// Drop hits whose confidence is below this threshold, keeping only
-        /// strong matches. Confidence is 0–1: semantic similarity, or the share
-        /// of the query's terms found literally, whichever is higher. Absent
+        /// Drop hits scoring below this, keeping only strong matches. A score
+        /// runs from 0, no closer than unrelated text in this repository, to
+        /// 1, every term of the query found literally or an identical text,
+        /// and falls with rank, so this keeps the top of the ranking. Absent
         /// means no filtering. Applies to both the human and `--json` output.
         #[arg(long, value_name = "SCORE")]
         min_score: Option<f32>,
