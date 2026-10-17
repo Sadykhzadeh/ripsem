@@ -327,14 +327,17 @@ impl Candidate {
         self.cosine.max(self.coverage)
     }
 
-    /// A chunk that belongs to a declaration outranks one that does not.
-    /// Questions about behaviour match changelogs and docs more closely than the
-    /// code that implements it, and free prose is not what a code search is for.
-    /// Doc records carry their declaration's symbol, so they are unaffected.
+    /// Below an exact match, a chunk that belongs to a declaration outranks one
+    /// that does not. Questions about behaviour match changelogs and docs more
+    /// closely than the code that implements it, and free prose is not what a
+    /// code search is for. Doc records carry their declaration's symbol, so they
+    /// are unaffected. An exact match stays first even without a declaration:
+    /// a CI workflow, a config file or a language without a parser declares
+    /// nothing, and the literal string is still what was asked for.
     fn rank(a: &Self, b: &Self) -> Ordering {
-        b.declares_something
-            .cmp(&a.declares_something)
-            .then_with(|| b.holds_every_term().cmp(&a.holds_every_term()))
+        b.holds_every_term()
+            .cmp(&a.holds_every_term())
+            .then_with(|| b.declares_something.cmp(&a.declares_something))
             .then_with(|| {
                 b.agreement
                     .partial_cmp(&a.agreement)
@@ -564,6 +567,31 @@ mod tests {
             index.records[hits[0].record_idx].path, "api.py",
             "the closer match is a changelog, and a code search is not for those"
         );
+    }
+
+    #[test]
+    fn a_literal_match_outside_code_outranks_declarations_lacking_it() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        index.records.push(text_record(
+            ".github/workflows/ci.yml",
+            "- uses: Swatinem/rust-cache@v2",
+            vec![0.0, 0.0, 1.0],
+        ));
+        for i in 0..5 {
+            let mut code = text_record(
+                &format!("src/m{i}.rs"),
+                "fn cache() {}",
+                vec![1.0, 0.0, 0.0],
+            );
+            code.symbol = Some(Symbol {
+                kind: "fn".into(),
+                name: "cache".into(),
+            });
+            index.records.push(code);
+        }
+
+        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms("Swatinem"), 3, None);
+        assert_eq!(paths(&index, &hits)[0], ".github/workflows/ci.yml");
     }
 
     /// Prose ranks below code but is not dropped: without declarations (no
