@@ -1,7 +1,7 @@
 use std::io::{BufRead, Write};
 use std::path::{Component, Path, PathBuf, Prefix};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::config::Config;
@@ -19,18 +19,51 @@ use crate::pipeline;
 /// answer tells it to fall back to `initialize`.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
+/// What an agent is told about the `search` tool, so it reaches for it before
+/// guessing names with grep. Sent as the server instructions, which reach the
+/// model even from a client that loads tool descriptions only on demand, and
+/// written by `ripsem install` to CLAUDE.md or a Cursor rule.
+pub(crate) const INSTRUCTIONS: &str =
+    "This repository is indexed by ripsem. To find where something is
+implemented, call the `search` tool of the `ripsem` MCP server first, with an
+identifier, an error message or a plain description of the behaviour. Each hit
+names a file and a line range; read those lines rather than the whole file. Use
+grep when every occurrence of a string is needed.";
+
 /// A directory with a `.ripsem` data directory has opted in, through `ripsem
 /// init`, `index` or `install`, and its index is kept current while the server
 /// runs. Anywhere else, such as a home directory a client happened to start
 /// in, nothing is indexed behind the user's back.
-pub fn serve(config: Config) -> Result<()> {
-    if config.data_dir().is_dir() {
-        crate::watch::spawn(config.clone());
-    }
-    serve_on(config, std::io::stdin().lock(), std::io::stdout().lock())
+///
+/// A server given no `--path` and started outside an index follows the
+/// client's workspace roots instead. It moves to the project the first root is
+/// in, and again whenever the roots change, until it reaches a project with a
+/// `.ripsem` directory, where it stays and keeps the index current.
+pub fn serve(config: Config, explicit: bool) -> Result<()> {
+    serve_on(
+        config,
+        explicit,
+        crate::watch::spawn,
+        std::io::stdin().lock(),
+        std::io::stdout().lock(),
+    )
 }
 
-fn serve_on(mut config: Config, mut reader: impl BufRead, mut writer: impl Write) -> Result<()> {
+fn serve_on(
+    mut config: Config,
+    explicit: bool,
+    watch: impl Fn(Config),
+    mut reader: impl BufRead,
+    mut writer: impl Write,
+) -> Result<()> {
+    let watching = config.data_dir().is_dir();
+    if watching {
+        watch(config.clone());
+    }
+    let mut roots = Roots {
+        follow: !explicit && !watching,
+        ..Default::default()
+    };
     let mut session = None;
     let mut tried = None;
 
@@ -47,19 +80,129 @@ fn serve_on(mut config: Config, mut reader: impl BufRead, mut writer: impl Write
         if trimmed.is_empty() {
             continue;
         }
+        let mut ask = None;
         let response = match serde_json::from_str::<Value>(trimmed) {
             Ok(request) => {
+                let messages = match &request {
+                    Value::Array(batch) => batch.iter().collect(),
+                    message => vec![message],
+                };
+                for message in messages {
+                    ask = roots.ask(message).or(ask);
+                    let Some(dir) = roots.project(message) else {
+                        continue;
+                    };
+                    if dir != config.root
+                        && let Ok(fresh) = Config::load(&dir)
+                    {
+                        config = fresh;
+                        session = None;
+                        tried = None;
+                    }
+                    if dir == config.root && config.data_dir().is_dir() {
+                        watch(config.clone());
+                        roots.follow = false;
+                    }
+                }
                 hold_the_index(&mut session, &mut tried, &mut config);
                 reply(&config, session.as_ref(), &request)
             }
             Err(_) => Some(error(Value::Null, -32700, "parse error")),
         };
-        if let Some(response) = response {
-            writeln!(writer, "{}", serde_json::to_string(&response)?)?;
+        for message in response.into_iter().chain(ask) {
+            writeln!(writer, "{}", serde_json::to_string(&message)?)?;
             writer.flush()?;
         }
     }
     Ok(())
+}
+
+/// The client's workspace roots, for a server that follows them. A client
+/// that offers them in `initialize` is asked once it is initialized and again
+/// on each change, and only the answer to the latest question counts.
+#[derive(Default)]
+struct Roots {
+    follow: bool,
+    offered: bool,
+    asked: u64,
+}
+
+impl Roots {
+    /// The `roots/list` request this message calls for.
+    fn ask(&mut self, message: &Value) -> Option<Value> {
+        match message.get("method").and_then(Value::as_str)? {
+            "initialize" => {
+                self.offered = message
+                    .get("params")
+                    .and_then(|p| p.get("capabilities"))
+                    .and_then(|c| c.get("roots"))
+                    .is_some_and(|r| !r.is_null());
+                None
+            }
+            "notifications/initialized" | "notifications/roots/list_changed"
+                if self.follow && self.offered =>
+            {
+                self.asked += 1;
+                Some(json!({ "jsonrpc": "2.0", "id": self.asked, "method": "roots/list" }))
+            }
+            _ => None,
+        }
+    }
+
+    /// The project the first local root is in, from the answer to the latest
+    /// `roots/list`: the nearest directory at or above it with a `.ripsem`
+    /// directory, or the root itself.
+    fn project(&self, message: &Value) -> Option<PathBuf> {
+        let ours = self.follow && self.asked > 0 && message.get("method").is_none();
+        if !ours || *message.get("id")? != self.asked {
+            return None;
+        }
+        let dir = message
+            .get("result")?
+            .get("roots")?
+            .as_array()?
+            .iter()
+            .filter_map(|root| file_uri_path(root.get("uri")?.as_str()?))
+            .find_map(|path| {
+                path.canonicalize()
+                    .ok()
+                    .filter(|p| p.is_dir() && !is_network(p))
+            })?;
+        Some(Config::find_root(&dir))
+    }
+}
+
+/// The local path a `file://` URI names, percent-decoded, with the slash in
+/// front of a Windows drive dropped. A URI with a host other than `localhost`
+/// names a network share and is not followed.
+fn file_uri_path(uri: &str) -> Option<PathBuf> {
+    let rest = uri
+        .get(..7)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("file://"))
+        .map(|_| &uri[7..])?;
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    if !rest.starts_with('/') {
+        return None;
+    }
+    let rest = &rest[..rest.find(['?', '#']).unwrap_or(rest.len())];
+    let mut bytes = Vec::with_capacity(rest.len());
+    let mut raw = rest.bytes();
+    while let Some(b) = raw.next() {
+        if b == b'%' {
+            let hex = [raw.next()?, raw.next()?];
+            bytes.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+        } else {
+            bytes.push(b);
+        }
+    }
+    let path = String::from_utf8(bytes).ok()?;
+    let drive = matches!(path.as_bytes(), [b'/', letter, b':', ..] if letter.is_ascii_alphabetic());
+    let path = PathBuf::from(if cfg!(windows) && drive {
+        &path[1..]
+    } else {
+        &path
+    });
+    (!is_network(&path)).then_some(path)
 }
 
 /// Keeps one searcher open across requests, taking it as soon as an index
@@ -134,9 +277,15 @@ fn negotiate(requested: Option<&str>) -> &'static str {
         .unwrap_or(PROTOCOL_VERSIONS[0])
 }
 
+/// A message without a method is a response, which [`Roots`] takes, or
+/// malformed. A malformed one is answered as an invalid request rather than
+/// left for the client to wait on.
 fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value) -> Option<Value> {
-    let method = request.get("method")?.as_str()?;
     let id = request.get("id").cloned();
+    let Some(method) = request.get("method").and_then(Value::as_str) else {
+        let response = request.get("result").is_some() || request.get("error").is_some();
+        return (!response).then(|| error(id.unwrap_or(Value::Null), -32600, "invalid request"));
+    };
 
     match method {
         "initialize" => Some(ok(
@@ -149,7 +298,8 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
                         .and_then(Value::as_str)
                 ),
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "ripsem", "version": env!("CARGO_PKG_VERSION") }
+                "serverInfo": { "name": "ripsem", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": INSTRUCTIONS.replace('\n', " ")
             }),
         )),
         "tools/list" => Some(ok(id?, json!({ "tools": [tool_schema()] }))),
@@ -169,10 +319,11 @@ fn tool_schema() -> Value {
             "properties": {
                 "query": { "type": "string", "description": "What you are looking for: an identifier, an error message, or a description of the behaviour." },
                 "path": { "type": "string", "description": "Optional subdirectory (relative to the repo) to limit results to, e.g. 'src/embed'." },
-                "limit": { "type": "integer", "description": "Maximum number of results (default 5)." },
-                "min_score": { "type": "number", "description": "Drop hits below this confidence (0–1): semantic similarity, or the share of query terms found literally, whichever is higher. Default: no filter." }
+                "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "description": format!("Maximum number of results (default {DEFAULT_LIMIT}, at most {MAX_LIMIT}).") },
+                "min_score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Drop hits scoring below this (0–1). 0 is no closer than unrelated text in this repository, 1 is every query term found literally; scores fall with rank, so this keeps the top results. Default: no filter." }
             },
-            "required": ["query"]
+            "required": ["query"],
+            "additionalProperties": false
         }
     })
 }
@@ -183,44 +334,33 @@ fn handle_call(
     id: Value,
     request: &Value,
 ) -> Value {
-    let args = request
-        .get("params")
-        .and_then(|p| p.get("arguments"))
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-
-    let name = request
+    match request
         .get("params")
         .and_then(|p| p.get("name"))
         .and_then(|n| n.as_str())
-        .unwrap_or("");
-    if name != "search" {
-        return error(id, -32602, "unknown tool");
+    {
+        Some("search") => {}
+        Some(other) => {
+            let message = format!("unknown tool '{other}'; the only tool is 'search'");
+            return error(id, -32602, &message);
+        }
+        None => return error(id, -32602, "missing tool name"),
     }
 
-    // Arguments that do not fit the input schema are a tool error, which the
-    // model sees and can correct, rather than a protocol error.
-    let query = match args.get("query").and_then(|q| q.as_str()) {
-        Some(q) if q.trim().is_empty() => return failed(id, &anyhow!("'query' is empty")),
-        Some(q) => q,
-        None => return failed(id, &anyhow!("missing 'query'")),
-    };
-    let limit = args
-        .get("limit")
-        .and_then(|l| l.as_u64())
-        .map(|l| l as usize)
-        .unwrap_or(5);
-    let min_score = args
-        .get("min_score")
-        .and_then(|v| v.as_f64())
-        .map(|v| v as f32);
-
-    let prefix = match args.get("path").and_then(|p| p.as_str()) {
-        Some(raw) => match scope_prefix(raw, &config.root) {
-            Ok(prefix) => prefix,
-            Err(e) => return failed(id, &e),
-        },
-        None => None,
+    let args = request
+        .get("params")
+        .and_then(|p| p.get("arguments"))
+        .filter(|a| !a.is_null())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let Call {
+        query,
+        limit,
+        min_score,
+        prefix,
+    } = match parse_call(&args, &config.root) {
+        Ok(call) => call,
+        Err(e) => return failed(id, &e),
     };
 
     let result = match session {
@@ -240,6 +380,68 @@ fn handle_call(
         }
         Err(e) => failed(id, &e),
     }
+}
+
+const ARGUMENTS: [&str; 4] = ["query", "path", "limit", "min_score"];
+const DEFAULT_LIMIT: usize = 5;
+const MAX_LIMIT: usize = 50;
+
+struct Call<'a> {
+    query: &'a str,
+    limit: usize,
+    min_score: Option<f32>,
+    prefix: Option<String>,
+}
+
+/// Arguments that do not fit the input schema are a tool error, which the
+/// model sees and can correct, rather than a protocol error. A `null`
+/// argument is one left out.
+fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
+    let args = args
+        .as_object()
+        .ok_or_else(|| anyhow!("the arguments must be an object with a 'query'"))?;
+    if let Some(name) = args.keys().find(|k| !ARGUMENTS.contains(&k.as_str())) {
+        bail!("unknown argument '{name}'; the arguments are query, path, limit and min_score");
+    }
+    let given = |name: &str| args.get(name).filter(|v| !v.is_null());
+
+    let query = match given("query") {
+        None => bail!("missing 'query'"),
+        Some(Value::String(q)) if q.trim().is_empty() => bail!("'query' is empty"),
+        Some(Value::String(q)) => q.as_str(),
+        Some(other) => bail!("'query' must be a string, not {other}"),
+    };
+    let limit = match given("limit") {
+        None => DEFAULT_LIMIT,
+        Some(v) => v
+            .as_u64()
+            .or_else(|| v.as_f64().filter(|f| f.fract() == 0.0).map(|f| f as u64))
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| (1..=MAX_LIMIT).contains(n))
+            .ok_or_else(|| {
+                anyhow!("'limit' must be a whole number from 1 to {MAX_LIMIT}, not {v}")
+            })?,
+    };
+    let min_score = match given("min_score") {
+        None => None,
+        Some(v) => Some(
+            v.as_f64()
+                .filter(|s| (0.0..=1.0).contains(s))
+                .ok_or_else(|| anyhow!("'min_score' must be a number from 0 to 1, not {v}"))?
+                as f32,
+        ),
+    };
+    let prefix = match given("path") {
+        None => None,
+        Some(Value::String(raw)) => scope_prefix(raw, root)?,
+        Some(other) => bail!("'path' must be a string, not {other}"),
+    };
+    Ok(Call {
+        query,
+        limit,
+        min_score,
+        prefix,
+    })
 }
 
 fn failed(id: Value, e: &anyhow::Error) -> Value {
@@ -363,6 +565,17 @@ mod tests {
         assert_eq!(resp["result"]["capabilities"]["tools"], json!({}));
     }
 
+    /// Claude Code defers tool descriptions behind its tool search, so the
+    /// instructions are what tells the model the tool is there.
+    #[test]
+    fn initialize_tells_the_agent_when_to_search() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("initialize", json!({}))).unwrap();
+        let text = resp["result"]["instructions"].as_str().unwrap();
+        assert!(text.contains("call the `search` tool"), "got: {text}");
+        assert!(!text.contains('\n'), "got: {text}");
+    }
+
     fn negotiated(params: Value) -> Value {
         let cfg = Config::default();
         handle(&cfg, None, &req("initialize", params)).unwrap()["result"]["protocolVersion"].clone()
@@ -475,6 +688,100 @@ mod tests {
         assert!(text.contains("'query' is empty"), "got: {text}");
     }
 
+    fn tool_error(arguments: Value) -> String {
+        let cfg = Config::default();
+        let resp = handle(
+            &cfg,
+            None,
+            &req(
+                "tools/call",
+                json!({ "name": "search", "arguments": arguments }),
+            ),
+        )
+        .unwrap();
+        assert_eq!(resp["result"]["isError"], true, "{arguments}: {resp}");
+        resp["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn a_limit_outside_the_schema_is_a_tool_error() {
+        for limit in [
+            json!(-1),
+            json!(0),
+            json!(51),
+            json!(1e12),
+            json!(2.5),
+            json!("10"),
+        ] {
+            let text = tool_error(json!({ "query": "x", "limit": limit }));
+            assert!(
+                text.contains("'limit' must be a whole number from 1 to 50"),
+                "{limit}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_limit_inside_the_schema_is_taken() {
+        let root = Path::new("/repo");
+        let limit = |args: Value| parse_call(&args, root).unwrap().limit;
+        assert_eq!(limit(json!({ "query": "x" })), 5);
+        assert_eq!(limit(json!({ "query": "x", "limit": null })), 5);
+        assert_eq!(limit(json!({ "query": "x", "limit": 1 })), 1);
+        assert_eq!(limit(json!({ "query": "x", "limit": 50 })), 50);
+        assert_eq!(limit(json!({ "query": "x", "limit": 8.0 })), 8);
+    }
+
+    #[test]
+    fn a_min_score_outside_the_schema_is_a_tool_error() {
+        for min_score in [json!("high"), json!(true), json!(-0.1), json!(1.5)] {
+            let text = tool_error(json!({ "query": "x", "min_score": min_score }));
+            assert!(
+                text.contains("'min_score' must be a number from 0 to 1"),
+                "{min_score}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn arguments_of_the_wrong_type_are_a_tool_error() {
+        let text = tool_error(json!({ "query": 7 }));
+        assert!(text.contains("'query' must be a string"), "got: {text}");
+        let text = tool_error(json!({ "query": "x", "path": ["src"] }));
+        assert!(text.contains("'path' must be a string"), "got: {text}");
+        let text = tool_error(json!("find the parser"));
+        assert!(text.contains("must be an object"), "got: {text}");
+    }
+
+    /// An argument the schema does not name would otherwise be dropped, and
+    /// the model would take the default for what it asked.
+    #[test]
+    fn an_unknown_argument_is_a_tool_error() {
+        let text = tool_error(json!({ "query": "x", "top_k": 20 }));
+        assert!(text.contains("unknown argument 'top_k'"), "got: {text}");
+    }
+
+    #[test]
+    fn the_schema_states_the_bounds_it_enforces() {
+        let schema = &tool_schema()["inputSchema"];
+        assert_eq!(schema["properties"]["limit"]["minimum"], 1);
+        assert_eq!(schema["properties"]["limit"]["maximum"], MAX_LIMIT);
+        assert_eq!(schema["properties"]["min_score"]["minimum"], 0);
+        assert_eq!(schema["properties"]["min_score"]["maximum"], 1);
+        assert_eq!(schema["additionalProperties"], false);
+        let named: Vec<&str> = schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(named.len(), ARGUMENTS.len());
+        assert!(ARGUMENTS.iter().all(|a| named.contains(a)));
+    }
+
     #[test]
     fn call_to_unknown_tool_is_rejected() {
         let cfg = Config::default();
@@ -485,6 +792,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resp["error"]["code"], -32602);
+        let message = resp["error"]["message"].as_str().unwrap();
+        assert!(message.contains("unknown tool 'other'"), "got: {message}");
+        assert!(message.contains("'search'"), "got: {message}");
+    }
+
+    #[test]
+    fn a_message_without_a_method_is_an_invalid_request() {
+        let cfg = Config::default();
+        for message in [
+            json!({ "jsonrpc": "2.0", "id": 3 }),
+            json!({ "jsonrpc": "2.0", "id": 3, "method": 7 }),
+            json!(5),
+        ] {
+            let resp = handle(&cfg, None, &message).unwrap();
+            assert_eq!(resp["error"]["code"], -32600, "{message}");
+        }
+        assert_eq!(
+            handle(&cfg, None, &json!({ "jsonrpc": "2.0", "id": 3 })).unwrap()["id"],
+            3
+        );
+        let response = json!({ "jsonrpc": "2.0", "id": 9, "result": {} });
+        assert!(handle(&cfg, None, &response).is_none());
     }
 
     #[test]
@@ -761,7 +1090,7 @@ mod tests {
             ..Default::default()
         };
         let mut out = Vec::new();
-        serve_on(config, &input[..], &mut out).unwrap();
+        serve_on(config, false, |_| {}, &input[..], &mut out).unwrap();
         let replies: Vec<Value> = out
             .split(|&b| b == b'\n')
             .filter(|line| !line.is_empty())
@@ -772,6 +1101,227 @@ mod tests {
         assert_eq!(replies[0]["id"], Value::Null);
         assert_eq!(replies[1]["error"]["code"], -32700);
         assert_eq!(replies[2]["id"], 1);
+    }
+
+    fn file_uri(path: &Path) -> String {
+        let path = path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace(' ', "%20");
+        let path = path.strip_prefix("//?/").unwrap_or(&path);
+        match path.starts_with('/') {
+            true => format!("file://{path}"),
+            false => format!("file:///{path}"),
+        }
+    }
+
+    /// Feeds the lines to a server started in `start`, and returns what it
+    /// wrote and the roots it started keeping current.
+    fn converse(start: &Path, explicit: bool, lines: &[Value]) -> (Vec<Value>, Vec<PathBuf>) {
+        let watched = std::cell::RefCell::new(Vec::new());
+        let input: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        let mut out = Vec::new();
+        serve_on(
+            Config::load(start).unwrap(),
+            explicit,
+            |config: Config| watched.borrow_mut().push(config.root),
+            input.as_bytes(),
+            &mut out,
+        )
+        .unwrap();
+        let written = out
+            .split(|&b| b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        (written, watched.into_inner())
+    }
+
+    fn indexed_project() -> crate::testutil::TempDir {
+        let dir = crate::testutil::TempDir::new();
+        dir.write(
+            "my src/auth.rs",
+            "fn authenticate(user) { verify password }",
+        );
+        let config = Config {
+            backend: crate::config::Backend::Hash,
+            root: dir.path().canonicalize().unwrap(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+        dir
+    }
+
+    fn roots_answer(id: u64, uris: &[String]) -> Value {
+        let roots: Vec<Value> = uris.iter().map(|uri| json!({ "uri": uri })).collect();
+        json!({ "jsonrpc": "2.0", "id": id, "result": { "roots": roots } })
+    }
+
+    fn opening(capabilities: Value) -> [Value; 2] {
+        [
+            req("initialize", json!({ "capabilities": capabilities })),
+            json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+        ]
+    }
+
+    fn search_call() -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": { "name": "search", "arguments": { "query": "verify password" } }
+        })
+    }
+
+    fn roots_requests(written: &[Value]) -> Vec<Value> {
+        written
+            .iter()
+            .filter(|m| m["method"] == "roots/list")
+            .map(|m| m["id"].clone())
+            .collect()
+    }
+
+    /// A shared client starts the server in the home directory and tells it
+    /// the project through its roots.
+    #[test]
+    fn a_server_started_outside_a_project_follows_the_client_roots() {
+        let home = crate::testutil::TempDir::new();
+        let elsewhere = crate::testutil::TempDir::new();
+        let project = indexed_project();
+        let mut lines = opening(json!({ "roots": { "listChanged": true } })).to_vec();
+        lines.extend([
+            roots_answer(1, &[file_uri(elsewhere.path())]),
+            json!({ "jsonrpc": "2.0", "method": "notifications/roots/list_changed" }),
+            roots_answer(
+                2,
+                &[
+                    "https://example.com/repo".into(),
+                    file_uri(&project.path().join("my src")),
+                ],
+            ),
+            search_call(),
+        ]);
+
+        let (written, watched) = converse(home.path(), false, &lines);
+        assert_eq!(roots_requests(&written), [json!(1), json!(2)]);
+        let found = written.last().unwrap();
+        assert_eq!(found["id"], 7);
+        let text = found["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("my src/auth.rs"), "got: {found}");
+        assert_eq!(watched, [project.path().canonicalize().unwrap()]);
+    }
+
+    /// Hands the server one line per read, running each line's step first,
+    /// so the files can change between two messages.
+    struct Steps(std::collections::VecDeque<(Value, Box<dyn FnOnce()>)>);
+
+    impl std::io::Read for Steps {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let Some((line, step)) = self.0.pop_front() else {
+                return Ok(0);
+            };
+            step();
+            let bytes = format!("{line}\n").into_bytes();
+            buf[..bytes.len()].copy_from_slice(&bytes);
+            Ok(bytes.len())
+        }
+    }
+
+    /// The user runs `ripsem init` in the project the server has already moved
+    /// to, and the next change of roots starts keeping it current.
+    #[test]
+    fn a_followed_project_initialised_later_is_kept_current() {
+        let home = crate::testutil::TempDir::new();
+        let project = crate::testutil::TempDir::new();
+        let root = project.path().canonicalize().unwrap();
+        let init = root.clone();
+        let nothing = || -> Box<dyn FnOnce()> { Box::new(|| {}) };
+        let [initialize, initialized] = opening(json!({ "roots": {} }));
+        let steps = Steps(
+            [
+                (initialize, nothing()),
+                (initialized, nothing()),
+                (roots_answer(1, &[file_uri(&root)]), nothing()),
+                (
+                    json!({ "jsonrpc": "2.0", "method": "notifications/roots/list_changed" }),
+                    Box::new(move || {
+                        let config = Config {
+                            root: init,
+                            ..Default::default()
+                        };
+                        config.save().unwrap();
+                    }) as Box<dyn FnOnce()>,
+                ),
+                (roots_answer(2, &[file_uri(&root)]), nothing()),
+            ]
+            .into(),
+        );
+        let watched = std::cell::RefCell::new(Vec::new());
+        let mut out = Vec::new();
+        serve_on(
+            Config::load(home.path()).unwrap(),
+            false,
+            |config: Config| watched.borrow_mut().push(config.root),
+            std::io::BufReader::new(steps),
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(watched.into_inner(), [root]);
+    }
+
+    #[test]
+    fn a_server_given_a_project_does_not_ask_for_roots() {
+        let elsewhere = crate::testutil::TempDir::new();
+        let project = indexed_project();
+        let mut lines = opening(json!({ "roots": {} })).to_vec();
+        lines.push(roots_answer(1, &[file_uri(elsewhere.path())]));
+        lines.push(search_call());
+
+        let (written, watched) = converse(project.path(), true, &lines);
+        assert!(roots_requests(&written).is_empty(), "got: {written:?}");
+        let text = written.last().unwrap()["result"]["content"][0]["text"].clone();
+        assert!(text.as_str().unwrap().contains("auth.rs"), "got: {text}");
+        assert_eq!(watched, [project.path()]);
+
+        let (written, _) = converse(elsewhere.path(), true, &lines);
+        assert!(roots_requests(&written).is_empty(), "got: {written:?}");
+
+        let (written, watched) = converse(project.path(), false, &lines);
+        assert!(roots_requests(&written).is_empty(), "got: {written:?}");
+        assert_eq!(watched, [project.path()]);
+    }
+
+    #[test]
+    fn a_client_without_roots_is_not_asked_for_them() {
+        let home = crate::testutil::TempDir::new();
+        let (written, watched) = converse(home.path(), false, &opening(json!({})));
+        assert_eq!(written.len(), 1, "got: {written:?}");
+        assert!(roots_requests(&written).is_empty());
+        assert!(watched.is_empty());
+    }
+
+    #[test]
+    fn a_file_uri_names_a_local_path() {
+        let path = |uri: &str| file_uri_path(uri);
+        assert_eq!(
+            path("file:///home/me/my%20repo"),
+            Some(PathBuf::from("/home/me/my repo"))
+        );
+        assert_eq!(
+            path("FILE://localhost/srv/x"),
+            Some(PathBuf::from("/srv/x"))
+        );
+        assert_eq!(path("file:///srv/x?y#z"), Some(PathBuf::from("/srv/x")));
+        let drive = if cfg!(windows) {
+            "c:/Users/me"
+        } else {
+            "/c:/Users/me"
+        };
+        assert_eq!(path("file:///c%3A/Users/me"), Some(PathBuf::from(drive)));
+        assert_eq!(path("file://server/share"), None);
+        assert_eq!(path("file:///srv/%2"), None);
+        assert_eq!(path("https://example.com/repo"), None);
     }
 
     /// A file the server cannot use and the configuration does not explain,

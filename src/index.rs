@@ -12,11 +12,11 @@ use crate::cli::show_path;
 use crate::config::Backend;
 use crate::lexical::{TermHash, TermVector, Weights};
 use crate::quant::{self, QuantizedVector};
-use crate::symbol::Symbol;
+use crate::symbol::{Declaration, Symbol};
 
 /// Changes whenever the bytes of an index would, including on a bitcode
 /// upgrade: bitcode keeps its encoding only within one 0.x series.
-pub const FORMAT_VERSION: u32 = 9;
+pub const FORMAT_VERSION: u32 = 11;
 
 /// Every index file starts with these bytes and then [`FORMAT_VERSION`] as a
 /// little-endian u32, so a file from another ripsem is recognised before its
@@ -38,9 +38,81 @@ pub struct Record {
     pub end_line: usize,
     pub snippet: String,
     pub file_hash: u64,
+    /// The chunk's own text, so an edit elsewhere in its file does not embed
+    /// it again.
+    pub text_hash: u64,
     pub vector: QuantizedVector,
     pub terms: TermVector,
     pub symbol: Option<Symbol>,
+    pub declarations: Vec<Declaration>,
+}
+
+impl Record {
+    /// Tests describe behaviour in the words a question uses and call the
+    /// code under test by name, so they match nearly as well as the code
+    /// itself without being what is looked for.
+    pub fn is_test(&self) -> bool {
+        const DIRS: [&str; 7] = [
+            "test",
+            "tests",
+            "__tests__",
+            "spec",
+            "specs",
+            "testing",
+            "testdata",
+        ];
+        const SUFFIXES: [&str; 4] = ["test", "tests", "spec", "specs"];
+        let path = self.path.to_ascii_lowercase();
+        let (dirs, file) = path.rsplit_once('/').unwrap_or(("", &path));
+        let stem = file.split('.').next().unwrap_or(file);
+        let named_like_a_class = [".java", ".kt", ".scala", ".cs", ".php", ".swift"]
+            .iter()
+            .any(|ext| file.ends_with(ext));
+        let suffixed = |name: &str, separator: char| {
+            SUFFIXES.iter().any(|s| {
+                name.strip_suffix(s)
+                    .is_some_and(|rest| rest.ends_with(separator))
+            })
+        };
+        dirs.split('/')
+            .any(|dir| DIRS.contains(&dir) || suffixed(dir, '.'))
+            || stem.starts_with("test_")
+            || suffixed(stem, '_')
+            || file.contains(".test.")
+            || file.contains(".spec.")
+            || (named_like_a_class && SUFFIXES.iter().any(|s| stem.ends_with(s)))
+    }
+
+    /// The declaration this record is one piece of, when it is too large for
+    /// one chunk: the pieces carry its symbol without holding all of it.
+    pub fn piece_of(&self) -> Option<&Symbol> {
+        let symbol = self.symbol.as_ref()?;
+        let whole = self.declarations.iter().any(|d| {
+            d.symbol == *symbol && self.start_line <= d.start_line && d.end_line <= self.end_line
+        });
+        (!whole).then_some(symbol)
+    }
+
+    /// The declaration a query names, by the name typed or spelled out in
+    /// words, among those the record holds. `Road::quote_cost` names both
+    /// `Road` and its method; the one named in full wins, then one that is not
+    /// an `impl` block, then the longer name.
+    pub fn declaration_named(&self, names: &[TermHash]) -> Option<&Declaration> {
+        if names.is_empty() {
+            return None;
+        }
+        let named = |name: &str| crate::lexical::name_key(name).is_some_and(|k| names.contains(&k));
+        self.declarations
+            .iter()
+            .filter(|d| named(d.symbol.leaf()))
+            .max_by_key(|d| {
+                (
+                    named(&d.symbol.name),
+                    !d.is_extension(),
+                    d.symbol.leaf().len(),
+                )
+            })
+    }
 }
 
 #[derive(Debug, Encode, Decode)]
@@ -51,6 +123,12 @@ pub struct Index {
     pub chunking: Chunking,
     pub records: Vec<Record>,
     pub ann: Option<Vec<u8>>,
+    /// How similar text about something else entirely scores against this
+    /// index: a cosine is reported as how far it rises above this. `None`
+    /// until measured.
+    pub noise_floor: Option<f32>,
+    /// Chunks embedded since the noise floor was measured.
+    pub embedded_since_floor: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -68,6 +146,8 @@ impl Index {
             chunking: Chunking::default(),
             records: Vec::new(),
             ann: None,
+            noise_floor: None,
+            embedded_since_floor: 0,
         }
     }
 
@@ -155,20 +235,22 @@ impl Index {
     }
 
     pub fn search_scoped(&self, query: &[f32], k: usize, prefix: Option<&str>) -> Vec<Hit> {
-        self.search_fused(query, &[], k, prefix)
+        self.search_fused(query, &[], &[], k, prefix)
     }
 
+    /// `names` are the query's [`crate::lexical::query_names`].
     pub fn search_fused(
         &self,
         query: &[f32],
         terms: &[TermHash],
+        names: &[TermHash],
         k: usize,
         prefix: Option<&str>,
     ) -> Vec<Hit> {
         let depth = candidate_depth(k);
         let dense = self.dense_ranking(query, depth, prefix);
         let lexical = self.lexical_ranking(terms, depth, prefix);
-        self.fuse(&dense, &lexical, query, k)
+        self.fuse(&dense, &lexical, query, names, k)
     }
 
     /// Fuses a dense ranking from the nearest-neighbour graph with a full
@@ -179,10 +261,11 @@ impl Index {
         dense: &[Hit],
         query: &[f32],
         terms: &[TermHash],
+        names: &[TermHash],
         k: usize,
     ) -> Vec<Hit> {
         let lexical = self.lexical_ranking(terms, candidate_depth(k), None);
-        self.fuse(dense, &lexical, query, k)
+        self.fuse(dense, &lexical, query, names, k)
     }
 
     pub fn dense_ranking(&self, query: &[f32], depth: usize, prefix: Option<&str>) -> Vec<Hit> {
@@ -240,6 +323,7 @@ impl Index {
         dense: &[Hit],
         lexical: &LexicalRanking,
         query: &[f32],
+        names: &[TermHash],
         k: usize,
     ) -> Vec<Hit> {
         let mut agreement: HashMap<usize, f32> = HashMap::new();
@@ -251,6 +335,7 @@ impl Index {
                 }
             }
         }
+        let wants_tests = lexical.terms.iter().any(|t| TEST_WORDS.contains(t));
         let mut candidates: Vec<Candidate> = agreement
             .into_iter()
             .map(|(record_idx, agreement)| {
@@ -260,6 +345,12 @@ impl Index {
                     record_idx,
                     agreement,
                     declares_something: record.symbol.is_some(),
+                    named: match record.declaration_named(names) {
+                        None => Named::No,
+                        Some(d) if d.is_extension() => Named::Extended,
+                        Some(_) => Named::Declared,
+                    },
+                    test: !wants_tests && record.is_test(),
                     cosine: quant::dot(&record.vector, query),
                     coverage: lexical.weights.coverage(presence),
                     share: lexical.weights.share(presence),
@@ -270,11 +361,34 @@ impl Index {
         self.best_of_each_place(candidates, k)
     }
 
+    /// Text about cooking or sport is as unrelated to any code as a query
+    /// can be. The second best of the closest matches such text finds is the
+    /// floor, so one probe that happens to land near a stray comment does not
+    /// set it.
+    pub fn measure_noise_floor(&mut self, probes: &[Vec<f32>]) {
+        let mut closest: Vec<f32> = probes
+            .iter()
+            .map(|probe| {
+                self.records
+                    .par_iter()
+                    .map(|r| quant::dot(&r.vector, probe))
+                    .reduce(|| f32::MIN, f32::max)
+            })
+            .filter(|c| c.is_finite() && *c > f32::MIN)
+            .collect();
+        closest.sort_by(|a, b| b.total_cmp(a));
+        self.noise_floor = Some(closest.get(1).or(closest.first()).copied().unwrap_or(0.0));
+        self.embedded_since_floor = 0;
+    }
+
     /// Keeps the better-ranked of any records that cover the same lines (a
-    /// declaration and its doc record, or overlapping windows). Done before the
-    /// cut to `k`, so the caller still gets `k` distinct places.
+    /// declaration and its doc record, or overlapping windows), and of the
+    /// pieces of one declaration too large for a chunk. Done before the cut to
+    /// `k`, so the caller still gets `k` distinct places.
     fn best_of_each_place(&self, ranked: Vec<Candidate>, k: usize) -> Vec<Hit> {
         let mut taken: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+        let mut split: std::collections::HashSet<(&str, &Symbol)> =
+            std::collections::HashSet::new();
         // `k` comes from the caller, so cap the reservation at the index size.
         let mut out = Vec::with_capacity(k.min(self.records.len()));
         for candidate in ranked {
@@ -289,9 +403,18 @@ impl Index {
             {
                 continue;
             }
+            if let Some(symbol) = record.piece_of()
+                && !split.insert((record.path.as_str(), symbol))
+            {
+                continue;
+            }
             places.push((record.start_line, record.end_line));
+            let reported = candidate.reported(self.noise_floor.unwrap_or(0.0));
+            let score = out
+                .last()
+                .map_or(reported, |above: &Hit| reported.min(above.score));
             out.push(Hit {
-                score: candidate.confidence(),
+                score,
                 record_idx: candidate.record_idx,
             });
         }
@@ -310,6 +433,9 @@ impl Index {
 
 const COMPLETE_COVERAGE: f32 = 0.999;
 
+static TEST_WORDS: std::sync::LazyLock<Vec<TermHash>> =
+    std::sync::LazyLock::new(|| crate::lexical::query_terms("test tests testing spec specs"));
+
 struct Candidate {
     record_idx: usize,
     agreement: f32,
@@ -317,6 +443,18 @@ struct Candidate {
     coverage: f32,
     share: f32,
     declares_something: bool,
+    named: Named,
+    test: bool,
+}
+
+/// How a record answers a query that names something. A type is declared once
+/// and extended by any number of `impl` blocks, and the declaration is what the
+/// name asks for.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Named {
+    No,
+    Extended,
+    Declared,
 }
 
 impl Candidate {
@@ -331,6 +469,16 @@ impl Candidate {
         self.cosine.max(self.share)
     }
 
+    /// The score a caller sees: how far the cosine rises from the index's
+    /// noise floor towards an identical text, or the share of the query found
+    /// literally, whichever is higher. A hit never shows more than the one
+    /// above it, so a threshold keeps a prefix of the ranking.
+    fn reported(&self, floor: f32) -> f32 {
+        let floor = floor.clamp(0.0, 0.99);
+        let above = ((self.cosine - floor) / (1.0 - floor)).clamp(0.0, 1.0);
+        above.max(self.share)
+    }
+
     /// Below an exact match, a chunk that belongs to a declaration outranks one
     /// that does not. Questions about behaviour match changelogs and docs more
     /// closely than the code that implements it, and free prose is not what a
@@ -338,9 +486,14 @@ impl Candidate {
     /// are unaffected. An exact match stays first even without a declaration:
     /// a CI workflow, a config file or a language without a parser declares
     /// nothing, and the literal string is still what was asked for.
+    ///
+    /// A record declaring what the query names comes before records that only
+    /// use the name: the definition is what an agent reads next.
     fn rank(a: &Self, b: &Self) -> Ordering {
         b.holds_every_term()
             .cmp(&a.holds_every_term())
+            .then_with(|| b.named.cmp(&a.named))
+            .then_with(|| a.test.cmp(&b.test))
             .then_with(|| b.declares_something.cmp(&a.declares_something))
             .then_with(|| {
                 b.agreement
@@ -443,9 +596,11 @@ mod tests {
             end_line: 1,
             snippet: text.into(),
             file_hash: 0,
+            text_hash: 0,
             vector: quant::quantize(&vector),
             terms: TermVector::new(text, path, None),
             symbol: None,
+            declarations: Vec::new(),
         }
     }
 
@@ -507,7 +662,7 @@ mod tests {
             vec![1.0, 0.0, 0.0],
         ));
 
-        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms("parse_header"), 2, None);
+        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms("parse_header"), &[], 2, None);
         assert_eq!(index.records[hits[0].record_idx].path, "a.rs");
 
         let plain = index.search_scoped(&[1.0, 0.0, 0.0], 2, None);
@@ -539,7 +694,7 @@ mod tests {
             "the dense arm alone must not reach the literal match"
         );
 
-        let fused = index.search_fused(&query, &terms("evict_least_recently_used"), 10, None);
+        let fused = index.search_fused(&query, &terms("evict_least_recently_used"), &[], 10, None);
         assert_eq!(
             paths(&index, &fused)[0],
             "cache.rs",
@@ -576,6 +731,188 @@ mod tests {
         );
     }
 
+    /// Every call site holds the name as fully as the definition does, and
+    /// may be closer to the query, but the definition is what is asked for.
+    #[test]
+    fn the_record_declaring_a_name_outranks_those_using_it() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        for i in 0..3 {
+            let mut caller = text_record(
+                &format!("src/caller{i}.rs"),
+                "fn caller() { quote_cost() }",
+                vec![1.0, 0.0, 0.0],
+            );
+            caller.symbol = Some(Symbol {
+                kind: "fn".into(),
+                name: "caller".into(),
+            });
+            index.records.push(caller);
+        }
+        let mut defining = text_record(
+            "src/road.rs",
+            "fn preview() {} fn quote_cost() {}",
+            vec![0.0, 1.0, 0.0],
+        );
+        let declare = |name: &str| Declaration {
+            symbol: Symbol {
+                kind: "fn".into(),
+                name: name.into(),
+            },
+            start_line: 1,
+            end_line: 1,
+        };
+        defining.symbol = Some(declare("preview").symbol);
+        defining.declarations = vec![declare("preview"), declare("quote_cost")];
+        index.records.push(defining);
+
+        let query = "quote_cost";
+        let names = crate::lexical::query_names(query);
+        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms(query), &names, 4, None);
+        assert_eq!(paths(&index, &hits)[0], "src/road.rs");
+    }
+
+    #[test]
+    fn test_files_are_told_apart_by_their_path() {
+        let test = |path: &str| text_record(path, "", vec![1.0]).is_test();
+        for path in [
+            "tests/cli.rs",
+            "src/__tests__/load.ts",
+            "pkg/router_test.go",
+            "test_auth.py",
+            "lib/session_spec.rb",
+            "src/api.test.ts",
+            "src/main/java/BoxTest.java",
+            "src/Polly.Specs/Retry.cs",
+            "src/RetryTests.cs",
+            "src/Polly.Core.Tests/Retry.cs",
+        ] {
+            assert!(test(path), "{path}");
+        }
+        for path in [
+            "src/testing_utils.rs",
+            "src/contest.py",
+            "lib/attest.go",
+            "src/auth.rs",
+        ] {
+            assert!(!test(path), "{path}");
+        }
+    }
+
+    /// A test describes the behaviour in the question's words and calls the
+    /// code by name, so it matches as well as the code does.
+    #[test]
+    fn tests_rank_below_code_unless_the_query_asks_for_them() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        let declared = |path: &str, vector: Vec<f32>| {
+            let mut record = text_record(path, "redirect follow location", vector);
+            record.symbol = Some(Symbol {
+                kind: "fn".into(),
+                name: "follow".into(),
+            });
+            record
+        };
+        index
+            .records
+            .push(declared("tests/test_redirects.py", vec![1.0, 0.0, 0.0]));
+        index
+            .records
+            .push(declared("src/sessions.py", vec![0.8, 0.6, 0.0]));
+
+        let first = |query: &str| {
+            let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms(query), &[], 2, None);
+            paths(&index, &hits)[0].clone()
+        };
+        assert_eq!(first("follow redirect location"), "src/sessions.py");
+        assert_eq!(
+            first("test that follows a redirect"),
+            "tests/test_redirects.py"
+        );
+    }
+
+    #[test]
+    fn the_noise_floor_is_the_second_closest_unrelated_match() {
+        let mut index = sample_index();
+        index.measure_noise_floor(&[
+            vec![0.9, 0.1, 0.0],
+            vec![0.0, 0.6, 0.0],
+            vec![0.0, 0.0, 0.3],
+        ]);
+        let floor = index.noise_floor.unwrap();
+        assert!((floor - 0.6).abs() < 0.02, "{floor}");
+    }
+
+    /// Ranking and score answer different questions, but a score that rose
+    /// down the list would make a threshold drop a hit and keep the one below.
+    #[test]
+    fn scores_fall_with_rank_and_start_from_the_noise_floor() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        let mut prose = text_record("NOTES.md", "unrelated", vec![1.0, 0.0, 0.0]);
+        prose.symbol = None;
+        let mut code = text_record("a.rs", "unrelated", vec![0.6, 0.8, 0.0]);
+        code.symbol = Some(Symbol {
+            kind: "fn".into(),
+            name: "a".into(),
+        });
+        index.records.push(prose);
+        index.records.push(code);
+        index.noise_floor = Some(0.5);
+
+        let hits = index.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(paths(&index, &hits), ["a.rs", "NOTES.md"]);
+        assert!((hits[0].score - 0.2).abs() < 0.02, "{}", hits[0].score);
+        assert!(hits[1].score <= hits[0].score);
+    }
+
+    /// A function too large for one chunk is cut into pieces that all carry
+    /// its name. One place in the results is enough for it.
+    #[test]
+    fn the_pieces_of_one_declaration_take_one_place() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        for (start, vector) in [(1, vec![1.0, 0.0, 0.0]), (41, vec![0.9, 0.1, 0.0])] {
+            let mut piece = placed("big.rs", start, start + 39, vector);
+            piece.symbol = Some(Symbol {
+                kind: "fn".into(),
+                name: "resolve".into(),
+            });
+            index.records.push(piece);
+        }
+        let mut other = placed("small.rs", 1, 5, vec![0.5, 0.5, 0.0]);
+        other.symbol = Some(Symbol {
+            kind: "fn".into(),
+            name: "other".into(),
+        });
+        index.records.push(other);
+
+        let hits = index.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(paths(&index, &hits), ["big.rs", "small.rs"]);
+    }
+
+    /// A type and its `impl` blocks share a name but are separate places.
+    #[test]
+    fn a_type_and_its_impl_are_two_places() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        for (start, kind, vector) in [
+            (1, "struct", vec![1.0, 0.0, 0.0]),
+            (50, "impl", vec![0.9, 0.1, 0.0]),
+        ] {
+            let mut record = placed("config.rs", start, start + 10, vector);
+            let symbol = Symbol {
+                kind: kind.into(),
+                name: "Config".into(),
+            };
+            record.declarations = vec![Declaration {
+                symbol: symbol.clone(),
+                start_line: start,
+                end_line: start + 10,
+            }];
+            record.symbol = Some(symbol);
+            index.records.push(record);
+        }
+
+        let hits = index.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(hits.len(), 2);
+    }
+
     #[test]
     fn a_literal_match_outside_code_outranks_declarations_lacking_it() {
         let mut index = Index::new(3, Backend::Hash, "test".into());
@@ -597,7 +934,7 @@ mod tests {
             index.records.push(code);
         }
 
-        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms("Swatinem"), 3, None);
+        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms("Swatinem"), &[], 3, None);
         assert_eq!(paths(&index, &hits)[0], ".github/workflows/ci.yml");
     }
 
@@ -672,7 +1009,7 @@ mod tests {
     #[test]
     fn a_query_with_no_indexable_terms_falls_back_to_pure_similarity() {
         let index = sample_index();
-        let hits = index.search_fused(&[0.9, 0.1, 0.0], &terms("a b c"), 2, None);
+        let hits = index.search_fused(&[0.9, 0.1, 0.0], &terms("a b c"), &[], 2, None);
         assert_eq!(index.records[hits[0].record_idx].path, "x.rs");
     }
 
@@ -804,7 +1141,7 @@ mod tests {
         let bytes = bitcode::encode(&sample_index());
         assert_eq!(
             (FORMAT_VERSION, crate::fingerprint::content_hash(&bytes)),
-            (9, 0x31d7_c0e8_f4c3_1bfa)
+            (11, 0x8aa4_2b7a_98ca_a8a0)
         );
     }
 
@@ -881,11 +1218,11 @@ mod tests {
             })
             .collect();
 
-        let _ = index.search_fused(&queries[0].0, &queries[0].1, 20, None);
+        let _ = index.search_fused(&queries[0].0, &queries[0].1, &[], 20, None);
 
         let start = std::time::Instant::now();
         for (vector, query_terms) in &queries {
-            let _ = index.search_fused(vector, query_terms, 20, None);
+            let _ = index.search_fused(vector, query_terms, &[], 20, None);
         }
         let elapsed = start.elapsed();
         println!(

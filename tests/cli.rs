@@ -261,3 +261,33 @@ fn every_shell_gets_a_completion_script() {
         assert!(stdout(&output).contains("completions"), "{shell}");
     }
 }
+
+/// An agent reads the output through a pipe, and a hit shown as three lines
+/// sends it to open the file for the rest.
+#[cfg(feature = "treesitter")]
+#[test]
+fn piped_output_shows_the_first_hits_in_full() {
+    let dir = TempDir::new();
+    let body: String = (0..12)
+        .map(|i| format!("    let step_{i} = {i};\n"))
+        .collect();
+    dir.write(
+        "src/lib.rs",
+        &format!("fn settle_the_ledger() {{\n{body}    finish();\n}}\n"),
+    );
+    assert!(ripsem(&dir.path, &["init"]).status.success());
+    assert!(
+        ripsem(&dir.path, &["model", "backend", "hash"])
+            .status
+            .success()
+    );
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let out = stdout(&ripsem(&dir.path, &["search", "settle_the_ledger"]));
+    assert!(out.contains("finish();"), "{out}");
+    let short = stdout(&ripsem(
+        &dir.path,
+        &["search", "settle_the_ledger", "--context", "2"],
+    ));
+    assert!(!short.contains("finish();"), "{short}");
+}

@@ -2,7 +2,7 @@ use tree_sitter::{Node, Parser};
 
 use crate::chunk::{Chunk, chunk_file};
 use crate::lang::LangSpec;
-use crate::symbol::{self, Symbol};
+use crate::symbol::{self, Declaration, Symbol};
 
 pub fn chunk(text: &str, spec: &LangSpec, max_lines: usize, overlap: usize) -> Option<Vec<Chunk>> {
     let mut parser = Parser::new();
@@ -82,7 +82,8 @@ struct Emitter<'a> {
 
 impl Emitter<'_> {
     /// `enclosing` is the declaration being walked, so every piece of a function
-    /// too large for one chunk keeps its name.
+    /// too large for one chunk keeps its name. The piece holding its first line
+    /// also declares it, which is where a search for the name should land.
     fn walk(&mut self, node: Node, enclosing: Option<&Symbol>) {
         if node_lines(&node, self.text) <= self.max_lines {
             self.push(&node, &node, enclosing);
@@ -91,7 +92,23 @@ impl Emitter<'_> {
 
         let declared = symbol::declaration(&node, self.text, enclosing);
         let scope = declared.as_ref().or(enclosing);
+        let first = self.out.len();
+        self.walk_children(node, scope);
+        if let Some(symbol) = declared
+            && let Some(head) = self.out.get_mut(first)
+        {
+            head.declarations.insert(
+                0,
+                Declaration {
+                    symbol,
+                    start_line: node.start_position().row + 1,
+                    end_line: last_row(&node, self.text) + 1,
+                },
+            );
+        }
+    }
 
+    fn walk_children(&mut self, node: Node, scope: Option<&Symbol>) {
         let mut cursor = node.walk();
         let children: Vec<Node> = node.named_children(&mut cursor).collect();
         if children.is_empty() {
@@ -136,12 +153,41 @@ impl Emitter<'_> {
             return;
         }
         let own = self.first_declaration(start, end, enclosing);
+        let mut declarations = Vec::new();
+        let mut node = Some(*start);
+        while let Some(current) = node.filter(|n| n.start_byte() <= end.start_byte()) {
+            self.declarations_within(current, enclosing, &mut declarations);
+            node = current.next_named_sibling();
+        }
         self.out.push(Chunk {
             start_line: start.start_position().row + 1,
             end_line: last_row(end, self.text) + 1,
             text: body.to_string(),
             symbol: own.or_else(|| enclosing.cloned()),
+            declarations,
         });
+    }
+
+    fn declarations_within(
+        &self,
+        node: Node,
+        enclosing: Option<&Symbol>,
+        out: &mut Vec<Declaration>,
+    ) {
+        let declared = symbol::declaration(&node, self.text, enclosing);
+        if let Some(symbol) = &declared {
+            out.push(Declaration {
+                symbol: symbol.clone(),
+                start_line: node.start_position().row + 1,
+                end_line: last_row(&node, self.text) + 1,
+            });
+        }
+        let scope = declared.as_ref().or(enclosing);
+        let mut cursor = node.walk();
+        let children: Vec<Node> = node.named_children(&mut cursor).collect();
+        for child in children {
+            self.declarations_within(child, scope, out);
+        }
     }
 
     /// Attributes, decorators, export wrappers and imports can sit before the
@@ -185,11 +231,18 @@ impl Emitter<'_> {
         if let Some(symbol) = &declared
             && let Some(prose) = self.prose_for(&node)
         {
+            let start_line = node.start_position().row + 1;
+            let end_line = last_row(&node, self.text) + 1;
             self.out.push(Chunk {
-                start_line: node.start_position().row + 1,
-                end_line: last_row(&node, self.text) + 1,
+                start_line,
+                end_line,
                 text: prose,
                 symbol: Some(symbol.clone()),
+                declarations: vec![Declaration {
+                    symbol: symbol.clone(),
+                    start_line,
+                    end_line,
+                }],
             });
         }
         let scope = declared.as_ref().or(enclosing);
@@ -215,6 +268,7 @@ impl Emitter<'_> {
                 end_line: base + c.end_line,
                 text: c.text,
                 symbol: enclosing.cloned(),
+                declarations: Vec::new(),
             });
         }
     }
@@ -518,6 +572,26 @@ mod tests {
                 "{file}: got {found:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_chunk_lists_every_declaration_it_holds() {
+        let src = "impl Road {\n    fn preview() {}\n\n    pub fn quote_cost() -> u32 {\n        3\n    }\n}\n";
+        let chunks = chunk_rust(src, 40);
+        assert_eq!(chunks.len(), 1);
+        let held: Vec<(String, usize, usize)> = chunks[0]
+            .declarations
+            .iter()
+            .map(|d| (d.symbol.label(), d.start_line, d.end_line))
+            .collect();
+        assert_eq!(
+            held,
+            [
+                ("impl Road".to_string(), 1, 7),
+                ("fn Road::preview".to_string(), 2, 2),
+                ("fn Road::quote_cost".to_string(), 4, 6),
+            ]
+        );
     }
 
     #[test]

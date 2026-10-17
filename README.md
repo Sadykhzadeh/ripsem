@@ -32,7 +32,8 @@ ranges.
   vector similarity from a local embedding model, merged into one ranking. A
   chunk holding every term of an identifier or an error message comes first.
 - **Answers are declarations.** A hit is a whole function or type, named after
-  it, in 17 languages, so a definition reads apart from a call site.
+  it, in 17 languages, so a definition reads apart from a call site. A search
+  for a name lands on its declaration, with its own lines and label.
 - **Made for coding agents.** `ripsem install claude-code` or `ripsem install
   cursor` adds an MCP server that keeps its index current while the agent edits,
   and tells the agent when to use it.
@@ -43,16 +44,6 @@ ranges.
 
 1. Install ripsem:
 
-    **macOS and Linux:**
-    ```bash
-    curl -fsSL https://raw.githubusercontent.com/Sadykhzadeh/ripsem/master/install.sh | sh
-    ```
-
-    **Windows:**
-    ```powershell
-    irm https://raw.githubusercontent.com/Sadykhzadeh/ripsem/master/install.ps1 | iex
-    ```
-
     **npm (any platform):**
     ```bash
     npm install -g ripsem
@@ -61,6 +52,16 @@ ranges.
     **Cargo:**
     ```bash
     cargo install --locked ripsem
+    ```
+
+    **macOS and Linux, without npm or Rust:**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/Sadykhzadeh/ripsem/master/install.sh | sh
+    ```
+
+    **Windows, without npm or Rust:**
+    ```powershell
+    irm https://raw.githubusercontent.com/Sadykhzadeh/ripsem/master/install.ps1 | iex
     ```
 
 2. In your repository, build the index and ask it something:
@@ -74,7 +75,7 @@ ranges.
    `ripsem install cursor` (see [below](#use-with-coding-agents)).
 
 The first `index` downloads the model (~133 MB) and embeds the repository;
-later runs re-embed only files that changed.
+later runs embed only the code that changed.
 
 ### Why not grep?
 
@@ -88,7 +89,7 @@ opening the file.
 
 ## Install
 
-The install scripts and npm put the prebuilt binary from the latest
+npm and the install scripts put the prebuilt binary from the latest
 [release](https://github.com/Sadykhzadeh/ripsem/releases) on your `PATH`, after
 checking it against the release's `SHA256SUMS`. The scripts install to
 `~/.local/bin` and `%LOCALAPPDATA%\Programs\ripsem`; `RIPSEM_INSTALL_DIR`
@@ -170,18 +171,23 @@ counts exactly what a rebuild would touch. The JSON carries it as `index.drift`
 (`added`/`modified`/`removed`).
 
 Results print as `path:start-end` with the declaration's name and a snippet, in
-merged-ranking order. Records that cover the same lines (a declaration and the
+merged-ranking order. The first three hits carry their code, up to 40 lines,
+so the answer can be read without opening the file. Records that cover the same lines (a declaration and the
 documentation above it, or adjacent windows) are returned once, so `-k 5` means
-five distinct places. The number shown is confidence in 0-1: semantic
-similarity, or the share of the query's terms found literally, whichever is
-higher.
+five distinct places. The number shown runs from 0 to 1: how far the hit's
+meaning rises above unrelated text in this repository, or the share of the
+query's terms found literally, whichever is higher. It never rises down the
+list, so a threshold keeps the top of the ranking. Each index measures its own
+noise floor by matching queries about anything but code against it, so the
+scale follows the repository and the model.
 
 - `-k <N>` sets the number of results (default 10).
 - `--json` prints machine-readable output.
 - `--in <subdir>` limits results to a subdirectory (`./src/auth` and an absolute
   path into the repository mean the same).
-- `--context <N>` sets how many snippet lines print per hit (default 3; `0`
-  prints just the locations).
+- `--context <N>` sets how many snippet lines print per hit (3 in a terminal,
+  the whole snippet when the output goes to another program; `0` prints just
+  the locations).
 - `--min-score <SCORE>` keeps only strong matches, in both human and JSON output.
 - `--count-by-file` prints hit counts per file instead of the hits.
 
@@ -221,12 +227,19 @@ ripsem install cursor             # .cursor/mcp.json and a rule in .cursor/rules
 note that tells the agent to reach for `search` before grepping. Restart the
 agent in the directory and it can call `search` directly.
 
+The server sends the same note as its MCP instructions. Claude Code loads the
+descriptions of MCP tools only when the model looks a tool up, so the model
+learns that `search` exists, and when to use it, from the instructions and the
+note in `CLAUDE.md`.
+
 `ripsem mcp` speaks MCP over stdio and exposes a single `search` tool: a
-`query`, and optionally a `path` to stay inside, a `limit` (default 5) and a
-`min_score`. In a directory with a `.ripsem` directory the server keeps the
-index current by itself: it builds the index on its first start and re-embeds
-every file the agent changes. Running `ripsem index` once beforehand has the
-index ready before the first search.
+`query`, and optionally a `path` to stay inside, a `limit` (default 5, at most
+50) and a `min_score`. An argument outside the schema comes back as a tool
+error that names what is expected, so the agent can correct the call. In a
+directory with a `.ripsem` directory the server keeps the index current by
+itself: it builds the index on its first start and re-embeds the code the
+agent changes. Running `ripsem index` once beforehand has the index ready
+before the first search.
 
 Any other MCP client takes the same entry in its own config:
 
@@ -244,7 +257,9 @@ Without ripsem installed, the client can start it through npm with
 The server finds the index from the directory it starts in. To point it at a
 repository elsewhere, add `"--path", "/path/to/repo"` to `args`; `install
 cursor` writes `"--path", "${workspaceFolder}"`, which Cursor expands to the
-project.
+project. A client that shares its workspace roots, such as one that starts the
+server from the home directory, points it at the project itself, and `--path`
+overrides them.
 
 ## Configuration
 
@@ -305,13 +320,18 @@ flowchart LR
    words the code itself rarely uses.
 3. **Embed and tokenise.** Each chunk gets a vector from the local model,
    stored as int8, and a set of terms in which identifiers are kept whole and
-   also split at `snake_case` and `camelCase` boundaries.
+   also split at `snake_case` and `camelCase` boundaries. Every chunk also
+   lists the declarations it holds, with their lines.
 4. **Search.** The query runs through both arms and their rankings are merged
    by reciprocal rank fusion. A chunk holding every informative term of the
    query comes first, which is what makes identifiers and error messages
-   reliable; below that, code ranks above prose that describes it.
-5. **Keep up.** The index is one file, `.ripsem/index.bin`. A re-run embeds only
-   files whose content changed; a new model or new chunk settings rebuild it.
+   reliable. A query that names a declaration, typed as code or spelled out in
+   words, puts the chunk declaring it above the chunks that only use it, and
+   reports that declaration. Below that, code ranks above tests, unless the
+   query asks for tests, and above prose that describes it.
+5. **Keep up.** The index is one file, `.ripsem/index.bin`. A re-run reads only
+   files whose content changed and embeds only the chunks whose text changed;
+   a new model or new chunk settings rebuild it.
    `ripsem watch` keeps it current as files change, and the MCP server picks up
    a rebuilt index without a restart.
 
@@ -335,7 +355,8 @@ restart the agent in the repository after `install`. In Claude Code, `/mcp`
 lists the servers it has connected to.
 
 **The first index takes a while.** It downloads the model once and embeds every
-file. Every later run embeds only the files that changed. The model is cached in
+file, showing the chunks embedded so far and an estimate of the time left.
+Every later run embeds only the code that changed. The model is cached in
 `~/.cache/ripsem` on Linux, `~/Library/Caches/ripsem` on macOS and
 `%LOCALAPPDATA%\ripsem\cache` on Windows.
 
@@ -352,11 +373,14 @@ The questions come in the four shapes people actually search with: a
 description in their own words, an identifier, a message seen in output, and a
 name remembered wrong. The merged ranking has to beat either retriever alone,
 put the answer in the top five for at least 86% of the questions, and cost less
-to read up to the answer than the file the answer is in.
+to read up to the answer than the file the answer is in. A second test searches
+for every name declared once in those projects: the first hit has to be that
+declaration, under its own name, for at least 95% of them, and no hit on a
+declaration's lines may carry another name.
 
 ```
-cargo test --release \
-  --test retrieval_quality -- --ignored --nocapture fusion_beats_either_retriever_alone
+cargo test --release --test retrieval_quality -- --ignored --nocapture \
+  fusion_beats_either_retriever_alone a_declared_name_leads_to_its_declaration
 ```
 
 The first run clones the four projects into `target/corpora` and downloads the

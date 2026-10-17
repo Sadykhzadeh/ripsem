@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -8,14 +9,19 @@ use rayon::prelude::*;
 
 use crate::config::Config;
 use crate::index::{Index, Record};
+use crate::lexical::TermHash;
 use crate::{chunk, embed, fingerprint, walk};
 
 #[derive(Debug)]
 pub struct IndexStats {
     pub files: usize,
+    /// Files read and cut again: new or changed.
     pub embedded: usize,
     pub reused: usize,
     pub chunks: usize,
+    /// Chunks the model embedded. A changed file keeps the vectors of the
+    /// chunks whose text it still holds.
+    pub vectors: usize,
 }
 
 /// How far the index has fallen behind the files it was built from. Hits carry
@@ -84,6 +90,39 @@ pub struct SearchHit {
     pub symbol: Option<crate::symbol::Symbol>,
 }
 
+const SNIPPET_BYTES: usize = 400;
+
+/// How many of the first hits are shown as their code, and how much of it.
+const SHOWN_IN_FULL: usize = 3;
+const FULL_LINES: usize = 40;
+const FULL_BYTES: usize = 3000;
+
+/// Hits fetched beyond the number asked for, to replace those a wider hit
+/// above them covers.
+const SPARE_HITS: usize = 5;
+
+/// Queries about anything but code, to measure how closely unrelated text
+/// matches an index.
+const UNRELATED: [&str; 12] = [
+    "a recipe for banana bread with walnuts",
+    "the history of the roman empire",
+    "how to change a flat bicycle tire",
+    "symptoms of seasonal allergies in spring",
+    "the best hiking trails in the alps",
+    "rules for playing chess openings",
+    "watercolor painting techniques for beginners",
+    "migration patterns of arctic birds",
+    "planning a budget for a family vacation",
+    "the plot of a classic detective novel",
+    "growing tomatoes on a balcony",
+    "tips for a job interview",
+];
+
+/// The noise floor is measured again once more than one chunk in this many
+/// has been embedded since it last was, counted across runs. One edit moves it
+/// too little to matter.
+const NOISE_DRIFT: usize = 10;
+
 pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     // Loaded on the first chunk that needs a vector: a reindex that finds
     // nothing changed, or only files removed, never needs the model.
@@ -98,20 +137,28 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     };
     let mut prev_chunks: HashMap<String, Vec<Record>> = HashMap::new();
     let mut prev_ann = None;
+    let mut prev_floor = None;
+    let mut embedded_since_floor = 0;
     let mut reusable = false;
+    let mut recut: Vec<Record> = Vec::new();
     let chunking = chunk::Chunking::of(config);
     if let Some(prev) = prev
         && prev.dims == dims
         && prev.built_for(config.backend, &config.model)
-        && prev.chunking == chunking
     {
-        reusable = true;
-        prev_ann = prev.ann;
-        for record in prev.records {
-            prev_chunks
-                .entry(record.path.clone())
-                .or_default()
-                .push(record);
+        prev_floor = prev.noise_floor;
+        embedded_since_floor = prev.embedded_since_floor;
+        if prev.chunking == chunking {
+            reusable = true;
+            prev_ann = prev.ann;
+            for record in prev.records {
+                prev_chunks
+                    .entry(record.path.clone())
+                    .or_default()
+                    .push(record);
+            }
+        } else {
+            recut = prev.records;
         }
     }
     let prev_hash: HashMap<&str, u64> = prev_chunks
@@ -129,6 +176,19 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
             let changed = prev_hash.get(rel.as_str()) != Some(&hash);
             Some((i, hash, changed))
         })
+        .collect();
+
+    let unchanged: std::collections::HashSet<String> = scanned
+        .iter()
+        .filter(|(_, _, changed)| !changed)
+        .map(|&(i, _, _)| relative(&config.root, &files[i]))
+        .collect();
+    let known_vectors: HashMap<u64, crate::quant::QuantizedVector> = prev_chunks
+        .iter()
+        .filter(|(path, _)| !unchanged.contains(path.as_str()))
+        .flat_map(|(_, records)| records)
+        .chain(&recut)
+        .map(|r| (r.text_hash, r.vector.clone()))
         .collect();
 
     let mut index = Index::new(dims, config.backend, config.model.clone());
@@ -160,11 +220,12 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         }
         embedded += 1;
         for c in chunks {
+            let text_hash = fingerprint::content_hash(c.text.as_bytes());
             let pending = Pending {
                 path: rel.clone(),
                 start_line: c.start_line,
                 end_line: c.end_line,
-                snippet: truncate(&dedent(&c.text), 400),
+                snippet: truncate(&dedent(&c.text), SNIPPET_BYTES),
                 file_hash: hash,
                 terms: crate::lexical::TermVector::new(
                     &c.text,
@@ -172,6 +233,9 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
                     c.symbol.as_ref().map(|s| s.name.as_str()),
                 ),
                 symbol: c.symbol,
+                declarations: c.declarations,
+                text_hash,
+                vector: known_vectors.get(&text_hash).cloned(),
             };
             queue.push(pending, c.text);
             if queue.is_full() {
@@ -187,6 +251,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         embedded,
         reused,
         chunks: index.records.len(),
+        vectors: queue.embedded,
     };
     // Before the early return below, so a data directory that lacks its
     // `.gitignore` gets one even when nothing needs reindexing.
@@ -197,9 +262,25 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     let unchanged = reusable
         && embedded == 0
         && prev_chunks.values().all(Vec::is_empty)
-        && prev_ann.is_some() == wants_ann(index.records.len());
+        && prev_ann.is_some() == wants_ann(index.records.len())
+        && (prev_floor.is_some() || index.records.is_empty());
     if unchanged {
         return Ok(stats);
+    }
+
+    index.noise_floor = prev_floor;
+    index.embedded_since_floor = embedded_since_floor + queue.embedded;
+    let drifted = index.embedded_since_floor * NOISE_DRIFT > index.records.len();
+    if !index.records.is_empty() && (prev_floor.is_none() || drifted) {
+        let model = match &embedder {
+            Some(built) => built,
+            None => embedder.insert(embed::build(config)?),
+        };
+        let probes = UNRELATED
+            .iter()
+            .map(|text| model.embed_query(text))
+            .collect::<Result<Vec<_>>>()?;
+        index.measure_noise_floor(&probes);
     }
 
     #[cfg(feature = "hnsw")]
@@ -270,6 +351,9 @@ struct Pending {
     file_hash: u64,
     terms: crate::lexical::TermVector,
     symbol: Option<crate::symbol::Symbol>,
+    declarations: Vec<crate::symbol::Declaration>,
+    text_hash: u64,
+    vector: Option<crate::quant::QuantizedVector>,
 }
 
 /// Chunks waiting for their vectors, kept in the order the walk found them.
@@ -278,12 +362,45 @@ struct Queue {
     pending: Vec<Pending>,
     texts: Vec<String>,
     embedded: usize,
+    /// Chunks queued so far that need the model, the progress total.
+    awaiting: usize,
+    /// Progress is measured in the bytes the model reads: chunks go to it
+    /// shortest first, so counting chunks would promise the end long before
+    /// it comes.
+    awaiting_bytes: usize,
+    embedded_bytes: usize,
+    reported: Option<std::time::Instant>,
 }
 
 impl Queue {
     fn push(&mut self, pending: Pending, text: String) {
+        if pending.vector.is_none() {
+            self.awaiting += 1;
+            self.awaiting_bytes += model_bytes(&text);
+        }
         self.pending.push(pending);
         self.texts.push(text);
+    }
+
+    /// The first index of a large repository embeds for minutes. A terminal
+    /// shows the bar; a log, which the bar does not draw into, gets a line
+    /// every [`REPORT_EVERY`] once embedding has lasted that long.
+    fn report(&mut self, pb: &ProgressBar) {
+        pb.set_length(self.awaiting_bytes as u64);
+        pb.set_position(self.embedded_bytes as u64);
+        pb.set_message(format!(
+            "{}/{} chunks embedded",
+            self.embedded, self.awaiting
+        ));
+        if std::io::stderr().is_terminal() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let last = *self.reported.get_or_insert(now);
+        if now.duration_since(last) >= REPORT_EVERY {
+            self.reported = Some(now);
+            eprintln!("embedded {} of {} chunks", self.embedded, self.awaiting);
+        }
     }
 
     fn is_full(&self) -> bool {
@@ -299,32 +416,64 @@ impl Queue {
         index: &mut Index,
         pb: &ProgressBar,
     ) -> Result<()> {
-        if self.texts.is_empty() {
-            return Ok(());
+        let mut order: Vec<usize> = (0..self.texts.len())
+            .filter(|&i| self.pending[i].vector.is_none())
+            .collect();
+        let mut vectors: Vec<Vec<f32>> = vec![Vec::new(); self.texts.len()];
+        if !order.is_empty() {
+            self.embed(&mut order, &mut vectors, config, embedder, index.dims, pb)?;
         }
+        for (p, vector) in self.pending.drain(..).zip(vectors) {
+            index.records.push(Record {
+                path: p.path,
+                start_line: p.start_line,
+                end_line: p.end_line,
+                snippet: p.snippet,
+                file_hash: p.file_hash,
+                vector: p.vector.unwrap_or_else(|| crate::quant::quantize(&vector)),
+                terms: p.terms,
+                symbol: p.symbol,
+                declarations: p.declarations,
+                text_hash: p.text_hash,
+            });
+        }
+        self.texts.clear();
+        Ok(())
+    }
+
+    fn embed(
+        &mut self,
+        order: &mut [usize],
+        vectors: &mut [Vec<f32>],
+        config: &Config,
+        embedder: &mut Option<Box<dyn embed::Embedder>>,
+        dims: usize,
+        pb: &ProgressBar,
+    ) -> Result<()> {
         let embedder = match embedder {
             Some(built) => built,
             None => {
                 let built = embed::build(config)?;
-                if built.dims() != index.dims {
+                if built.dims() != dims {
                     anyhow::bail!(
                         "model {} embeds {} dimensions, expected {}",
                         config.model,
                         built.dims(),
-                        index.dims
+                        dims
                     );
                 }
                 embedder.insert(built)
             }
         };
-        let mut order: Vec<usize> = (0..self.texts.len()).collect();
+        pb.set_style(embedding_style());
+        self.report(pb);
         order.sort_by_key(|&i| self.texts[i].len());
-        let mut vectors: Vec<Vec<f32>> = vec![Vec::new(); self.texts.len()];
-        for group in embed_groups(&order, &self.texts) {
+        for group in embed_groups(order, &self.texts) {
             let texts: Vec<String> = group
                 .iter()
                 .map(|&i| std::mem::take(&mut self.texts[i]))
                 .collect();
+            self.embedded_bytes += texts.iter().map(|t| model_bytes(t)).sum::<usize>();
             let embedded = embedder.embed_documents(&texts)?;
             if embedded.len() != texts.len() {
                 anyhow::bail!(
@@ -337,21 +486,8 @@ impl Queue {
                 vectors[i] = vector;
             }
             self.embedded += group.len();
-            pb.set_message(format!("{} chunks embedded", self.embedded));
+            self.report(pb);
         }
-        for (p, vector) in self.pending.drain(..).zip(vectors) {
-            index.records.push(Record {
-                path: p.path,
-                start_line: p.start_line,
-                end_line: p.end_line,
-                snippet: p.snippet,
-                file_hash: p.file_hash,
-                vector: crate::quant::quantize(&vector),
-                terms: p.terms,
-                symbol: p.symbol,
-            });
-        }
-        self.texts.clear();
         Ok(())
     }
 }
@@ -398,6 +534,7 @@ impl LazyEmbedder {
 
 pub struct Searcher {
     index: Index,
+    root: std::path::PathBuf,
     // Built on the first query, so opening an index does not pay for the model.
     embedder: Arc<LazyEmbedder>,
     index_path: std::path::PathBuf,
@@ -439,6 +576,7 @@ fn open_with(config: &Config, embedder: Arc<LazyEmbedder>) -> Result<Searcher> {
     let ann_map = index.ann.as_deref().and_then(crate::ann::load);
     Ok(Searcher {
         index,
+        root: config.root.clone(),
         embedder,
         index_path,
         index_mtime,
@@ -517,6 +655,9 @@ impl Searcher {
         }
         let qv = self.embedder.get()?.embed_query(query)?;
         let terms = crate::lexical::query_terms(query);
+        let names = crate::lexical::query_names(query);
+        let wanted = k;
+        let k = k.saturating_add(SPARE_HITS);
 
         #[cfg(feature = "hnsw")]
         if prefix.is_none()
@@ -527,32 +668,107 @@ impl Searcher {
                 .into_iter()
                 .map(|(record_idx, score)| crate::index::Hit { score, record_idx })
                 .collect();
-            return Ok(self
-                .index
-                .search_fused_with(&dense, &qv, &terms, k)
-                .into_iter()
-                .map(|h| self.hit(h.record_idx, h.score))
-                .collect());
+            let hits = self.index.search_fused_with(&dense, &qv, &terms, &names, k);
+            return Ok(self.places(hits, &names, wanted));
         }
 
-        Ok(self
-            .index
-            .search_fused(&qv, &terms, k, prefix)
-            .into_iter()
-            .map(|h| self.hit(h.record_idx, h.score))
-            .collect())
+        let hits = self.index.search_fused(&qv, &terms, &names, k, prefix);
+        Ok(self.places(hits, &names, wanted))
     }
 
-    fn hit(&self, record_idx: usize, score: f32) -> SearchHit {
+    /// A hit reported as a whole declaration covers the records inside it
+    /// that rank below, such as the rest of a long enum's variants.
+    fn places(&self, hits: Vec<crate::index::Hit>, names: &[TermHash], k: usize) -> Vec<SearchHit> {
+        let mut out: Vec<SearchHit> = Vec::with_capacity(k.min(hits.len()));
+        let mut wider: Vec<(String, usize, usize)> = Vec::new();
+        for h in hits {
+            if out.len() == k {
+                break;
+            }
+            let record = &self.index.records[h.record_idx];
+            let covered = wider.iter().any(|(path, start, end)| {
+                *path == record.path && *start <= record.start_line && record.end_line <= *end
+            });
+            if covered {
+                continue;
+            }
+            let mut hit = self.hit(h.record_idx, h.score, names);
+            if hit.end_line > record.end_line {
+                wider.push((hit.path.clone(), hit.start_line, hit.end_line));
+            }
+            if out.len() < SHOWN_IN_FULL
+                && let Some(code) = self.code(record, &hit)
+            {
+                hit.snippet = code;
+            }
+            out.push(hit);
+        }
+        out
+    }
+
+    /// The first hits are shown as their code, up to [`FULL_LINES`]: whoever
+    /// asked reads the answer without opening the file, which for an agent is
+    /// a whole turn saved. A doc record's snippet is its prose, so this is
+    /// also where its code appears.
+    fn code(&self, record: &Record, hit: &SearchHit) -> Option<String> {
+        let end = hit.end_line.min(hit.start_line + FULL_LINES - 1);
+        let mut code = self.lines(record, hit.start_line, end, FULL_BYTES)?;
+        if end < hit.end_line && !code.ends_with('…') {
+            code.push_str("\n…");
+        }
+        Some(code)
+    }
+
+    /// A record holding the declaration the query names is reported as that
+    /// declaration: its label, its lines and a snippet that starts there. The
+    /// first piece of a declaration too large for one chunk reports all of it,
+    /// unless it is a container, whose members answer for themselves.
+    fn hit(&self, record_idx: usize, score: f32, names: &[TermHash]) -> SearchHit {
         let r = &self.index.records[record_idx];
-        SearchHit {
+        let whole = || SearchHit {
             path: r.path.clone(),
             start_line: r.start_line,
             end_line: r.end_line,
             score,
             snippet: r.snippet.clone(),
             symbol: r.symbol.clone(),
+        };
+        let Some(declaration) = r.declaration_named(names) else {
+            return whole();
+        };
+        let start_line = declaration.start_line.max(r.start_line);
+        let end_line = match declaration.is_container() {
+            true => declaration.end_line.min(r.end_line),
+            false => declaration.end_line,
         }
+        .max(start_line);
+        let snippet = match (start_line, end_line) == (r.start_line, r.end_line) {
+            true => Some(r.snippet.clone()),
+            false => self.lines(r, start_line, end_line, SNIPPET_BYTES),
+        };
+        match snippet {
+            Some(snippet) => SearchHit {
+                path: r.path.clone(),
+                start_line,
+                end_line,
+                score,
+                snippet,
+                symbol: Some(declaration.symbol.clone()),
+            },
+            None => whole(),
+        }
+    }
+
+    /// Lines of an indexed file as they were indexed. A file changed since then
+    /// has nothing to offer: its lines may have moved.
+    fn lines(&self, record: &Record, start: usize, end: usize, budget: usize) -> Option<String> {
+        let bytes = std::fs::read(self.root.join(&record.path)).ok()?;
+        if fingerprint::content_hash(&bytes) != record.file_hash {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        let wanted: Vec<&str> = text.lines().skip(start - 1).take(end + 1 - start).collect();
+        Some(truncate(&dedent(&wanted.join("\n")), budget))
     }
 }
 
@@ -616,11 +832,23 @@ fn truncate(s: &str, max: usize) -> String {
 
 fn progress(len: u64) -> ProgressBar {
     let pb = ProgressBar::new(len);
-    if let Ok(style) = ProgressStyle::with_template("{spinner} {pos}/{len} files  {wide_msg}") {
+    if let Ok(style) = ProgressStyle::with_template("{spinner} {pos}/{len} files") {
         pb.set_style(style);
     }
     pb
 }
+
+fn embedding_style() -> ProgressStyle {
+    ProgressStyle::with_template("{spinner} {bar:30} {msg}, {eta} left")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+}
+
+/// The models read at most 512 tokens, a few bytes each, of a longer text.
+fn model_bytes(text: &str) -> usize {
+    text.len().min(2048)
+}
+
+const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[cfg(test)]
 mod tests {

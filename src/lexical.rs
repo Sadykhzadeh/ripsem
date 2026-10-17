@@ -6,6 +6,8 @@ pub const MAX_QUERY_TERMS: usize = 64;
 const K1: f32 = 1.2;
 const B: f32 = 0.75;
 const MIN_TOKEN_BYTES: usize = 2;
+const MIN_NAME_BYTES: usize = 3;
+const NAME_WORDS: usize = 3;
 
 pub type TermHash = u64;
 
@@ -27,6 +29,64 @@ pub fn query_terms(text: &str) -> Vec<TermHash> {
     out.retain(|term| seen.insert(*term));
     out.truncate(MAX_QUERY_TERMS);
     out
+}
+
+/// A name as it is remembered rather than typed. Case and separators are
+/// dropped, so `SPEED_LIMIT`, `speedLimit` and the words "speed limit" agree.
+pub fn name_key(name: &str) -> Option<TermHash> {
+    let folded: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    (folded.len() >= MIN_NAME_BYTES).then(|| xxh3_64(folded.as_bytes()))
+}
+
+/// The names a query may be asking for, as [`name_key`]s. A word written as
+/// code (`parse_header`, `QuantizedVector`, `Searcher::refresh`) names
+/// something on its own, and so does a query of one word. A plain word inside a
+/// sentence does not, or every "request" in a question would call each method
+/// named `request` a definition of it; two or three of them in a row can spell
+/// a name out ("cache error" for `CacheError`).
+pub fn query_names(text: &str) -> Vec<TermHash> {
+    let words: Vec<&str> = text
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .take(MAX_QUERY_TERMS)
+        .collect();
+    let mut out = Vec::new();
+    let mut joined = String::new();
+    for (start, word) in words.iter().enumerate() {
+        if words.len() == 1 || written_as_code(text, word, start) {
+            out.extend(name_key(word));
+        }
+        joined.clear();
+        joined.push_str(word);
+        for next in words[start + 1..].iter().take(NAME_WORDS - 1) {
+            joined.push_str(next);
+            out.extend(name_key(&joined));
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// A capital that opens the query only starts a sentence, and a full stop
+/// or comma after a word only ends a clause.
+fn written_as_code(text: &str, word: &str, position: usize) -> bool {
+    let mut chars = word.chars();
+    let first_upper = chars.next().is_some_and(char::is_uppercase);
+    split_identifier(word).len() > 1
+        || chars.any(char::is_uppercase)
+        || (first_upper && position > 0)
+        || text.split_whitespace().any(|token| {
+            let token = token.trim_end_matches(['.', ',', ';', ':', '!', '?', '"', '\'']);
+            token.contains(word)
+                && (token.contains('`')
+                    || (token.len() > word.len()
+                        && token.contains([':', '.', '(', '#', '<', '$', '@'])))
+        })
 }
 
 fn collect_terms(text: &str, buffer: &mut String, out: &mut Vec<TermHash>) {
@@ -236,6 +296,53 @@ mod tests {
 
     fn contains(text: &str, token: &str) -> bool {
         terms_of(text).contains(&terms_of(token)[0])
+    }
+
+    fn names(query: &str) -> Vec<TermHash> {
+        query_names(query)
+    }
+
+    fn named(query: &str, name: &str) -> bool {
+        names(query).contains(&name_key(name).unwrap())
+    }
+
+    #[test]
+    fn a_name_matches_however_it_is_cased_or_separated() {
+        assert_eq!(name_key("SPEED_LIMIT"), name_key("speedLimit"));
+        assert_eq!(name_key("speed-limit"), name_key("SpeedLimit"));
+        assert_eq!(name_key("ab"), None);
+    }
+
+    #[test]
+    fn a_word_written_as_code_names_a_declaration() {
+        assert!(named("where is parse_header called", "parse_header"));
+        assert!(named("QuantizedVector", "QuantizedVector"));
+        assert!(named("what does Searcher::refresh do", "refresh"));
+        assert!(named("fn quote_cost", "quote_cost"));
+        assert!(named("where is Router defined", "Router"));
+        assert!(named("what calls `refresh` here", "refresh"));
+        assert!(named("who calls refresh() first", "refresh"));
+        assert!(named("request", "request"));
+    }
+
+    #[test]
+    fn plain_words_in_a_sentence_name_nothing_alone() {
+        assert!(!named("abort a request when it takes too long", "request"));
+        assert!(!named("Match an incoming request", "Match"));
+        assert!(!named("keep the index up to date", "index"));
+        assert!(!named("abort a slow url request.", "request"));
+        assert!(!named("where is the timeout set, and how long", "set"));
+    }
+
+    #[test]
+    fn words_in_a_row_spell_a_name_out() {
+        assert!(named(
+            "where is the lane speed limit defined",
+            "LANE_SPEED_LIMIT"
+        ));
+        assert!(named("where is the lane speed limit defined", "SpeedLimit"));
+        assert!(named("cache error type", "CacheError"));
+        assert!(!named("cache error type", "CacheErrorTypeKind"));
     }
 
     #[test]

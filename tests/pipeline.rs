@@ -602,3 +602,232 @@ fn the_index_keeps_itself_current() {
     );
     assert!(within(30, &|| finds("stripe ledger", "billing.rs")));
 }
+
+/// The field case: three small functions share one chunk, and the one asked
+/// for is neither the first nor the only place its name occurs.
+#[cfg(feature = "treesitter")]
+#[test]
+fn a_search_by_name_reports_the_declaration_not_its_chunk() {
+    let dir = TempDir::new();
+    let mut src = String::from(
+        "struct Road;\n\nimpl Road {\n    fn preview(&self) -> u32 {\n        self.quote_cost() + 1\n    }\n\n",
+    );
+    for i in 0..6 {
+        src.push_str(&format!(
+            "    fn filler_{i}(&self) -> u32 {{\n        {i}\n    }}\n\n"
+        ));
+    }
+    src.push_str("    pub fn quote_cost(&self) -> u32 {\n        let base = 3;\n        base * 2\n    }\n}\n");
+    dir.write("road.rs", &src);
+    dir.write(
+        "ui.rs",
+        "fn show(road: &Road) {\n    let total = road.quote_cost();\n    println!(\"{total}\");\n}\n",
+    );
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let declared_at = src
+        .lines()
+        .position(|l| l.contains("pub fn quote_cost"))
+        .unwrap()
+        + 1;
+    for query in [
+        "quote_cost",
+        "fn quote_cost",
+        "Road::quote_cost",
+        "quote cost",
+    ] {
+        let hits = pipeline::search(&config, query, 5).unwrap();
+        let first = &hits[0];
+        assert_eq!(
+            (first.path.as_str(), first.start_line, first.end_line),
+            ("road.rs", declared_at, declared_at + 3),
+            "{query}: {hits:#?}"
+        );
+        assert_eq!(
+            first.symbol.as_ref().map(|s| s.label()),
+            Some("fn Road::quote_cost".to_string()),
+            "{query}"
+        );
+        assert!(
+            first.snippet.starts_with("pub fn quote_cost"),
+            "{query}: {}",
+            first.snippet
+        );
+    }
+}
+
+/// An edit to one function embeds that function again, not its whole file.
+#[cfg(feature = "treesitter")]
+#[test]
+fn an_edit_embeds_only_the_chunks_it_changed() {
+    let dir = TempDir::new();
+    let body = |edited: &str| {
+        let mut src = String::new();
+        for i in 0..8 {
+            src.push_str(&format!("fn step_{i}() -> u32 {{\n"));
+            for line in 0..30 {
+                src.push_str(&format!("    let v{line} = {i} + {line};\n"));
+            }
+            if i == 5 {
+                src.push_str(edited);
+            }
+            src.push_str("    0\n}\n\n");
+        }
+        src
+    };
+    dir.write("big.rs", &body(""));
+    let config = config_for(&dir.path);
+    let first = pipeline::index_repo(&config, false).unwrap();
+    assert!(first.vectors >= 8, "{first:?}");
+
+    dir.write("big.rs", &body("    // changed\n"));
+    let second = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!((second.embedded, second.vectors), (1, 1), "{second:?}");
+    assert_eq!(second.chunks, first.chunks);
+
+    let fresh = TempDir::new();
+    fresh.write("big.rs", &body("    // changed\n"));
+    let rebuilt = pipeline::index_repo(&config_for(&fresh.path), false).unwrap();
+    let a = ripsem::index::Index::load(&config.index_path()).unwrap();
+    let b = ripsem::index::Index::load(&config_for(&fresh.path).index_path()).unwrap();
+    assert_eq!(rebuilt.chunks, second.chunks);
+    for (x, y) in a.records.iter().zip(&b.records) {
+        assert_eq!(
+            (x.start_line, x.end_line, x.text_hash),
+            (y.start_line, y.end_line, y.text_hash)
+        );
+        assert_eq!(
+            (x.vector.scale, &x.vector.data),
+            (y.vector.scale, &y.vector.data),
+            "a reused vector differs from a fresh one"
+        );
+    }
+}
+
+/// A declaration longer than a chunk is cut into pieces; a search for its name
+/// reports the whole of it from its first line.
+#[cfg(feature = "treesitter")]
+#[test]
+fn a_search_for_a_large_declaration_reports_all_of_it() {
+    let dir = TempDir::new();
+    let mut src = String::from("pub enum Command {\n");
+    for i in 0..80 {
+        src.push_str(&format!("    Variant{i},\n"));
+    }
+    src.push_str("}\n\nimpl Command {\n    fn run(&self) {}\n}\n");
+    dir.write("cli.rs", &src);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let hits = pipeline::search(&config, "Command", 5).unwrap();
+    let first = &hits[0];
+    assert_eq!((first.start_line, first.end_line), (1, 82), "{hits:#?}");
+    assert_eq!(
+        first.symbol.as_ref().map(|s| s.label()),
+        Some("enum Command".to_string())
+    );
+    assert!(
+        first.snippet.starts_with("pub enum Command {"),
+        "{}",
+        first.snippet
+    );
+    assert!(
+        hits[1..]
+            .iter()
+            .all(|h| h.path != "cli.rs" || h.end_line > 82 || h.start_line < 1),
+        "a piece of the declaration repeats its lines: {hits:#?}"
+    );
+}
+
+/// Other chunk settings cut files again, but a chunk whose text the new cut
+/// leaves as it was keeps its vector.
+#[test]
+fn new_chunk_settings_keep_the_vectors_of_unchanged_chunks() {
+    let dir = TempDir::new();
+    let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    dir.write("notes.txt", &body);
+    let config = Config {
+        chunk_lines: 40,
+        chunk_overlap: 0,
+        ..config_for(&dir.path)
+    };
+    let first = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(first.vectors, 5);
+
+    let wider = Config {
+        chunk_lines: 80,
+        ..config
+    };
+    let second = pipeline::index_repo(&wider, false).unwrap();
+    assert_eq!(
+        (second.chunks, second.vectors),
+        (3, 2),
+        "lines 161-200 are a window under both cuts"
+    );
+    let back = pipeline::index_repo(
+        &Config {
+            chunk_lines: 40,
+            ..wider
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!((back.chunks, back.vectors), (5, 4));
+}
+
+#[test]
+fn a_repository_with_nothing_to_index_is_written_once() {
+    let dir = TempDir::new();
+    dir.write("empty.txt", "   \n");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let written = std::fs::metadata(config.index_path())
+        .unwrap()
+        .modified()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    pipeline::index_repo(&config, false).unwrap();
+    let again = std::fs::metadata(config.index_path())
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(written, again);
+}
+
+#[test]
+fn a_huge_result_count_is_not_reserved_up_front() {
+    let dir = TempDir::new();
+    dir.write("a.rs", "fn alpha() {}\n");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let hits = pipeline::search(&config, "alpha", usize::MAX).unwrap();
+    assert_eq!(hits.len(), 1);
+}
+
+/// A search for a large block's name reports the whole block, and the
+/// methods inside it, which carry its name too, are still answers of their own.
+#[cfg(feature = "treesitter")]
+#[test]
+fn a_named_block_does_not_hide_the_methods_inside_it() {
+    let dir = TempDir::new();
+    let mut src = String::from("impl Searcher {\n");
+    for i in 0..20 {
+        src.push_str(&format!(
+            "    fn helper{i}(&self) -> u32 {{\n        {i}\n    }}\n\n"
+        ));
+    }
+    src.push_str("    fn refresh(&self, mtime: u64) -> bool {\n        mtime > 0\n    }\n}\n");
+    dir.write("searcher.rs", &src);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let refresh = src.lines().position(|l| l.contains("fn refresh")).unwrap() + 1;
+    let hits = pipeline::search(&config, "Searcher", 5).unwrap();
+    assert!(
+        hits.iter().any(|h| h.start_line <= refresh
+            && refresh <= h.end_line
+            && h.symbol.as_ref().is_some_and(|s| s.kind == "fn")),
+        "{hits:#?}"
+    );
+}
