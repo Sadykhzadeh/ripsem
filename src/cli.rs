@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -50,11 +51,13 @@ pub enum Command {
         /// outside the repository is an error.
         #[arg(long = "in", value_name = "PREFIX")]
         within: Option<String>,
-        /// Number of snippet lines to print per hit in the human output. `0`
-        /// prints just the location header with no snippet body. Ignored by
-        /// `--json`, which always returns the whole stored snippet.
-        #[arg(long, value_name = "LINES", default_value_t = 3)]
-        context: usize,
+        /// Number of snippet lines to print per hit in the human output: 3 in
+        /// a terminal, and the whole snippet when the output goes to another
+        /// program, such as an agent's shell tool. `0` prints just the
+        /// location header with no snippet body. Ignored by `--json`, which
+        /// always returns the whole snippet.
+        #[arg(long, value_name = "LINES")]
+        context: Option<usize>,
         /// Drop hits scoring below this, keeping only strong matches. A score
         /// runs from 0, no closer than unrelated text in this repository, to
         /// 1, every term of the query found literally or an identical text,
@@ -483,10 +486,14 @@ fn cmd_search(
     limit: usize,
     as_json: bool,
     within: Option<&str>,
-    context: usize,
+    context: Option<usize>,
     min_score: Option<f32>,
     count_by_file: bool,
 ) -> Result<()> {
+    let context = context.unwrap_or(match std::io::stdout().is_terminal() {
+        true => 3,
+        false => usize::MAX,
+    });
     let config = Config::load(root)?;
     // Same normalisation as the MCP `search` tool.
     let prefix = match within {

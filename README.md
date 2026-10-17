@@ -171,7 +171,8 @@ counts exactly what a rebuild would touch. The JSON carries it as `index.drift`
 (`added`/`modified`/`removed`).
 
 Results print as `path:start-end` with the declaration's name and a snippet, in
-merged-ranking order. Records that cover the same lines (a declaration and the
+merged-ranking order. The first three hits carry their code, up to 40 lines,
+so the answer can be read without opening the file. Records that cover the same lines (a declaration and the
 documentation above it, or adjacent windows) are returned once, so `-k 5` means
 five distinct places. The number shown runs from 0 to 1: how far the hit's
 meaning rises above unrelated text in this repository, or the share of the
@@ -184,8 +185,9 @@ scale follows the repository and the model.
 - `--json` prints machine-readable output.
 - `--in <subdir>` limits results to a subdirectory (`./src/auth` and an absolute
   path into the repository mean the same).
-- `--context <N>` sets how many snippet lines print per hit (default 3; `0`
-  prints just the locations).
+- `--context <N>` sets how many snippet lines print per hit (3 in a terminal,
+  the whole snippet when the output goes to another program; `0` prints just
+  the locations).
 - `--min-score <SCORE>` keeps only strong matches, in both human and JSON output.
 - `--count-by-file` prints hit counts per file instead of the hits.
 

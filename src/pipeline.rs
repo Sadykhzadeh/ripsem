@@ -92,6 +92,11 @@ pub struct SearchHit {
 
 const SNIPPET_BYTES: usize = 400;
 
+/// How many of the first hits are shown as their code, and how much of it.
+const SHOWN_IN_FULL: usize = 3;
+const FULL_LINES: usize = 40;
+const FULL_BYTES: usize = 3000;
+
 /// Hits fetched beyond the number asked for, to replace those a wider hit
 /// above them covers.
 const SPARE_HITS: usize = 5;
@@ -678,15 +683,34 @@ impl Searcher {
             if out.len() == k {
                 break;
             }
-            let hit = self.hit(h.record_idx, h.score, names);
+            let mut hit = self.hit(h.record_idx, h.score, names);
             let covered = out.iter().any(|o| {
                 o.path == hit.path && o.start_line <= hit.start_line && hit.end_line <= o.end_line
             });
-            if !covered {
-                out.push(hit);
+            if covered {
+                continue;
             }
+            if out.len() < SHOWN_IN_FULL
+                && let Some(code) = self.code(&self.index.records[h.record_idx], &hit)
+            {
+                hit.snippet = code;
+            }
+            out.push(hit);
         }
         out
+    }
+
+    /// The first hits are shown as their code, up to [`FULL_LINES`]: whoever
+    /// asked reads the answer without opening the file, which for an agent is
+    /// a whole turn saved. A doc record's snippet is its prose, so this is
+    /// also where its code appears.
+    fn code(&self, record: &Record, hit: &SearchHit) -> Option<String> {
+        let end = hit.end_line.min(hit.start_line + FULL_LINES - 1);
+        let mut code = self.lines(record, hit.start_line, end, FULL_BYTES)?;
+        if end < hit.end_line && !code.ends_with('…') {
+            code.push_str("\n…");
+        }
+        Some(code)
     }
 
     /// A record holding the declaration the query names is reported as that
@@ -709,7 +733,7 @@ impl Searcher {
         let end_line = declaration.end_line.max(start_line);
         let snippet = match (start_line, end_line) == (r.start_line, r.end_line) {
             true => Some(r.snippet.clone()),
-            false => self.lines(r, start_line, end_line),
+            false => self.lines(r, start_line, end_line, SNIPPET_BYTES),
         };
         match snippet {
             Some(snippet) => SearchHit {
@@ -726,14 +750,14 @@ impl Searcher {
 
     /// Lines of an indexed file as they were indexed. A file changed since then
     /// has nothing to offer: its lines may have moved.
-    fn lines(&self, record: &Record, start: usize, end: usize) -> Option<String> {
+    fn lines(&self, record: &Record, start: usize, end: usize, budget: usize) -> Option<String> {
         let bytes = std::fs::read(self.root.join(&record.path)).ok()?;
         if fingerprint::content_hash(&bytes) != record.file_hash {
             return None;
         }
         let text = String::from_utf8_lossy(&bytes);
         let wanted: Vec<&str> = text.lines().skip(start - 1).take(end + 1 - start).collect();
-        Some(truncate(&dedent(&wanted.join("\n")), SNIPPET_BYTES))
+        Some(truncate(&dedent(&wanted.join("\n")), budget))
     }
 }
 
