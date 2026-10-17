@@ -27,6 +27,13 @@ pub struct Declaration {
     pub end_line: usize,
 }
 
+impl Declaration {
+    /// An `impl` block adds to a type declared elsewhere.
+    pub fn is_extension(&self) -> bool {
+        self.symbol.kind == "impl"
+    }
+}
+
 /// Grammars name their nodes differently per language, but they agree on two
 /// conventions: a declaration's node kind spells out what is being declared, and
 /// the identifier sits in a `name`, `type` or `declarator` field. Reading both

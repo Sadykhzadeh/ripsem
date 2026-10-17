@@ -50,7 +50,8 @@ pub struct Record {
 impl Record {
     /// The declaration a query names, by the name typed or spelled out in
     /// words, among those the record holds. `Road::quote_cost` names both
-    /// `Road` and its method; the one named in full wins, then the longer name.
+    /// `Road` and its method; the one named in full wins, then one that is not
+    /// an `impl` block, then the longer name.
     pub fn declaration_named(&self, names: &[TermHash]) -> Option<&Declaration> {
         if names.is_empty() {
             return None;
@@ -59,7 +60,13 @@ impl Record {
         self.declarations
             .iter()
             .filter(|d| named(d.symbol.leaf()))
-            .max_by_key(|d| (named(&d.symbol.name), d.symbol.leaf().len()))
+            .max_by_key(|d| {
+                (
+                    named(&d.symbol.name),
+                    !d.is_extension(),
+                    d.symbol.leaf().len(),
+                )
+            })
     }
 }
 
@@ -284,7 +291,11 @@ impl Index {
                     record_idx,
                     agreement,
                     declares_something: record.symbol.is_some(),
-                    named: record.declaration_named(names).is_some(),
+                    named: match record.declaration_named(names) {
+                        None => Named::No,
+                        Some(d) if d.is_extension() => Named::Extended,
+                        Some(_) => Named::Declared,
+                    },
                     cosine: quant::dot(&record.vector, query),
                     coverage: lexical.weights.coverage(presence),
                     share: lexical.weights.share(presence),
@@ -342,7 +353,17 @@ struct Candidate {
     coverage: f32,
     share: f32,
     declares_something: bool,
-    named: bool,
+    named: Named,
+}
+
+/// How a record answers a query that names something. A type is declared once
+/// and extended by any number of `impl` blocks, and the declaration is what the
+/// name asks for.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Named {
+    No,
+    Extended,
+    Declared,
 }
 
 impl Candidate {

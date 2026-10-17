@@ -82,7 +82,8 @@ struct Emitter<'a> {
 
 impl Emitter<'_> {
     /// `enclosing` is the declaration being walked, so every piece of a function
-    /// too large for one chunk keeps its name.
+    /// too large for one chunk keeps its name. The piece holding its first line
+    /// also declares it, which is where a search for the name should land.
     fn walk(&mut self, node: Node, enclosing: Option<&Symbol>) {
         if node_lines(&node, self.text) <= self.max_lines {
             self.push(&node, &node, enclosing);
@@ -91,7 +92,23 @@ impl Emitter<'_> {
 
         let declared = symbol::declaration(&node, self.text, enclosing);
         let scope = declared.as_ref().or(enclosing);
+        let first = self.out.len();
+        self.walk_children(node, scope);
+        if let Some(symbol) = declared
+            && let Some(head) = self.out.get_mut(first)
+        {
+            head.declarations.insert(
+                0,
+                Declaration {
+                    symbol,
+                    start_line: node.start_position().row + 1,
+                    end_line: last_row(&node, self.text) + 1,
+                },
+            );
+        }
+    }
 
+    fn walk_children(&mut self, node: Node, scope: Option<&Symbol>) {
         let mut cursor = node.walk();
         let children: Vec<Node> = node.named_children(&mut cursor).collect();
         if children.is_empty() {

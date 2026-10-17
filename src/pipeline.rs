@@ -627,7 +627,8 @@ impl Searcher {
     }
 
     /// A record holding the declaration the query names is reported as that
-    /// declaration: its label, its lines and a snippet that starts there.
+    /// declaration: its label, its lines and a snippet that starts there. The
+    /// first piece of a declaration too large for one chunk reports all of it.
     fn hit(&self, record_idx: usize, score: f32, names: &[TermHash]) -> SearchHit {
         let r = &self.index.records[record_idx];
         let whole = || SearchHit {
@@ -642,7 +643,7 @@ impl Searcher {
             return whole();
         };
         let start_line = declaration.start_line.max(r.start_line);
-        let end_line = declaration.end_line.min(r.end_line).max(start_line);
+        let end_line = declaration.end_line.max(start_line);
         let snippet = match (start_line, end_line) == (r.start_line, r.end_line) {
             true => Some(r.snippet.clone()),
             false => self.lines(r, start_line, end_line),

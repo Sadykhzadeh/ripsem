@@ -704,3 +704,32 @@ fn an_edit_embeds_only_the_chunks_it_changed() {
         );
     }
 }
+
+/// A declaration longer than a chunk is cut into pieces; a search for its name
+/// reports the whole of it from its first line.
+#[cfg(feature = "treesitter")]
+#[test]
+fn a_search_for_a_large_declaration_reports_all_of_it() {
+    let dir = TempDir::new();
+    let mut src = String::from("pub enum Command {\n");
+    for i in 0..80 {
+        src.push_str(&format!("    Variant{i},\n"));
+    }
+    src.push_str("}\n\nimpl Command {\n    fn run(&self) {}\n}\n");
+    dir.write("cli.rs", &src);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let hits = pipeline::search(&config, "Command", 5).unwrap();
+    let first = &hits[0];
+    assert_eq!((first.start_line, first.end_line), (1, 82), "{hits:#?}");
+    assert_eq!(
+        first.symbol.as_ref().map(|s| s.label()),
+        Some("enum Command".to_string())
+    );
+    assert!(
+        first.snippet.starts_with("pub enum Command {"),
+        "{}",
+        first.snippet
+    );
+}

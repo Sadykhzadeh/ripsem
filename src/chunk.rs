@@ -17,7 +17,7 @@ pub struct Chunk {
 
 /// Changes whenever the same file and settings would give other chunks, so an
 /// index cut by an older ripsem is cut again. A test pins it to the output.
-const REVISION: u32 = 2;
+const REVISION: u32 = 3;
 
 /// Everything that decides how a file is cut into chunks. An index records the
 /// one it was built with, and reuses a file's records only under the same one.
@@ -141,15 +141,23 @@ mod tests {
                     "{file}:{}-{} {label}\n{}\n",
                     c.start_line, c.end_line, c.text
                 ));
+                for d in &c.declarations {
+                    seen.push_str(&format!(
+                        "  declares {} {}-{}\n",
+                        d.symbol.label(),
+                        d.start_line,
+                        d.end_line
+                    ));
+                }
             }
         }
         let expected = match cfg!(feature = "treesitter") {
-            true => 0xd329_d7ee_1bd4_a9b7,
+            true => 0xa4a9_1e7c_13de_e71c,
             false => 0x23ab_773d_1824_385f,
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (2, expected),
+            (3, expected),
             "{seen}"
         );
     }
