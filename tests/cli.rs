@@ -238,3 +238,16 @@ fn setting_the_model_or_backend_it_has_asks_for_no_rebuild() {
     let config = std::fs::read_to_string(dir.path.join(".ripsem/config.toml")).unwrap();
     assert!(config.contains("all-MiniLM-L6-v2"), "{config}");
 }
+
+#[test]
+fn a_path_that_does_not_exist_is_an_error() {
+    let dir = TempDir::new();
+    for args in [["index"], ["status"], ["init"]] {
+        let missing = dir.path.join("tpyo");
+        let mut full = vec!["--path", missing.to_str().unwrap()];
+        full.extend(args);
+        let output = ripsem(&dir.path, &full);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(!missing.exists(), "{args:?} created the directory");
+    }
+}
