@@ -251,3 +251,13 @@ fn a_path_that_does_not_exist_is_an_error() {
         assert!(!missing.exists(), "{args:?} created the directory");
     }
 }
+
+#[test]
+fn every_shell_gets_a_completion_script() {
+    let dir = TempDir::new();
+    for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+        let output = ripsem(&dir.path, &["completions", shell]);
+        assert!(output.status.success(), "{shell}");
+        assert!(stdout(&output).contains("completions"), "{shell}");
+    }
+}
