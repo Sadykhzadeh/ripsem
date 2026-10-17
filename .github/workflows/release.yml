@@ -178,6 +178,8 @@ jobs:
     needs: release
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    # The environment crates.io's trusted publishing config names.
+    environment: ripsem-github
     permissions:
       contents: read
       id-token: write
