@@ -16,7 +16,7 @@ pub fn catalog() -> &'static [ModelInfo] {
             dims: 384,
             disk_mb: 133,
             multilingual: false,
-            note: "Default. Strong retrieval quality at a small size.",
+            note: "Default, and the best of the catalogue merged with BM25.",
         },
         ModelInfo {
             id: "all-MiniLM-L6-v2",
@@ -30,7 +30,7 @@ pub fn catalog() -> &'static [ModelInfo] {
             dims: 768,
             disk_mb: 436,
             multilingual: false,
-            note: "Higher quality, larger and slower.",
+            note: "Best vector recall, worse merged, larger and slower.",
         },
         ModelInfo {
             id: "multilingual-e5-small",
@@ -44,7 +44,7 @@ pub fn catalog() -> &'static [ModelInfo] {
             dims: 768,
             disk_mb: 550,
             multilingual: false,
-            note: "Long context, high quality.",
+            note: "Lowest measured here, and the most memory to index.",
         },
     ]
 }

@@ -165,11 +165,11 @@ ripsem index --force              # rebuild after switching
 
 | Model | Dims | Disk | Notes |
 | --- | --- | --- | --- |
-| bge-small-en-v1.5 | 384 | ~133 MB | default, and the best of the three measured |
+| bge-small-en-v1.5 | 384 | ~133 MB | default, and the best of the five measured |
 | all-MiniLM-L6-v2 | 384 | ~90 MB | fastest, measurably lower recall |
 | bge-base-en-v1.5 | 768 | ~436 MB | better alone, worse merged (see Quality) |
-| multilingual-e5-small | 384 | ~470 MB | multilingual |
-| nomic-embed-text-v1.5 | 768 | ~550 MB | long context |
+| multilingual-e5-small | 384 | ~470 MB | multilingual queries and comments |
+| nomic-embed-text-v1.5 | 768 | ~550 MB | lowest measured, and the most memory to index |
 
 The model downloads once on first use, then everything is offline.
 
@@ -274,18 +274,25 @@ construction, and the number overstates how general it is.
 
 ### Choice of model
 
-Three models over the same 73 questions, measured on the same code as the
-tables above:
+Every model in the catalogue over the same 73 questions, measured on the same
+code as the tables above:
 
 | model | dims | disk | vector only | merged |
 | --- | --- | --- | --- | --- |
 | all-MiniLM-L6-v2 | 384 | ~90 MB | 0.616 | 0.758 |
 | bge-small-en-v1.5 | 384 | ~133 MB | 0.629 | **0.782** |
-| bge-base-en-v1.5 | 768 | ~436 MB | **0.641** | 0.753 |
+| bge-base-en-v1.5 | 768 | ~436 MB | **0.642** | 0.751 |
+| multilingual-e5-small | 384 | ~470 MB | 0.605 | 0.761 |
+| nomic-embed-text-v1.5 | 768 | ~550 MB | 0.580 | 0.721 |
 
 The larger model is the better retriever alone and the worse one merged. The
-ordering held before and after doc records were added. Why is not explained
-here, only measured; three times the disk for less accuracy settles the default.
+ordering held before and after doc records were added, and again once
+declarations ranked above prose. Why is not explained here, only measured;
+three times the disk for less accuracy settles the default. Both 768-dimension
+models need more memory to index: building an index of ripsem's own `src/`
+peaked at 0.6 GB with bge-small-en-v1.5, 0.9 GB with bge-base-en-v1.5 and
+1.8 GB with nomic-embed-text-v1.5. Every chunk is cut to 512 tokens before it is
+embedded, so nomic-embed-text-v1.5's longer context goes unused.
 
 ### Documentation records
 
@@ -336,6 +343,11 @@ the bundled certificate authority file", which the merge drops below 200.
 
 ### Tried and not kept
 
+- multilingual-e5-small and nomic-embed-text-v1.5 were trained with a marker in
+  front of every document (`passage:`, `search_document:`) as well as every
+  query. Adding the document marker to multilingual-e5-small lifted its vector
+  arm from 0.605 to 0.614 and lowered the merge from 0.761 to 0.737, so neither
+  model gets one.
 - Prepending each chunk's path and declaration to the text sent for embedding
   measured 0.644 raw and 0.661 with identifiers spelled out as words
   (`url-to-options` as `url to options`), against 0.679 for the bare body. Both
