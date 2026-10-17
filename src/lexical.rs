@@ -21,8 +21,10 @@ pub fn query_terms(text: &str) -> Vec<TermHash> {
     let mut out = Vec::new();
     let mut buffer = String::new();
     collect_terms(text, &mut buffer, &mut out);
-    out.sort_unstable();
-    out.dedup();
+    // A query past the cap, such as a pasted stack trace, keeps the terms it
+    // opens with rather than whichever happen to hash lowest.
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|term| seen.insert(*term));
     out.truncate(MAX_QUERY_TERMS);
     out
 }
@@ -220,6 +222,16 @@ mod tests {
 
     fn contains(text: &str, token: &str) -> bool {
         terms_of(text).contains(&terms_of(token)[0])
+    }
+
+    #[test]
+    fn a_long_query_keeps_the_terms_it_opens_with() {
+        let words: Vec<String> = (0..100).map(|i| format!("word{i}")).collect();
+        let kept: Vec<TermHash> = words[..MAX_QUERY_TERMS]
+            .iter()
+            .map(|w| terms_of(w)[0])
+            .collect();
+        assert_eq!(terms_of(&words.join(" ")), kept);
     }
 
     #[test]
