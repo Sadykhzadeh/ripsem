@@ -567,3 +567,38 @@ fn an_empty_query_is_an_error_not_a_ranking() {
     }
     assert!(!pipeline::search(&config, "???", 5).unwrap().is_empty());
 }
+
+/// What `ripsem mcp` runs beside the server: the first index is built without
+/// anyone running `ripsem index`, and a file written afterwards is searchable
+/// without anyone running it again.
+#[test]
+fn the_index_keeps_itself_current() {
+    let dir = TempDir::new();
+    dir.write("auth.rs", "fn authenticate(user) { verify password }");
+    let config = config_for(&dir.path);
+    config.save().unwrap();
+    ripsem::watch::spawn(config.clone());
+
+    let finds = |query: &str, path: &str| {
+        pipeline::search(&config, query, 5)
+            .map(|hits| hits.iter().any(|h| h.path == path))
+            .unwrap_or(false)
+    };
+    let within = |seconds: u64, done: &dyn Fn() -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+        while std::time::Instant::now() < deadline {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        false
+    };
+
+    assert!(within(30, &|| finds("verify password", "auth.rs")));
+    dir.write(
+        "billing.rs",
+        "fn charge_invoice(customer) { stripe ledger }",
+    );
+    assert!(within(30, &|| finds("stripe ledger", "billing.rs")));
+}

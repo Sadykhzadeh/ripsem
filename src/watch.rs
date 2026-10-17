@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
@@ -7,9 +8,32 @@ use notify::{EventKind, RecursiveMode, Watcher};
 
 use crate::cli::plural;
 use crate::config::Config;
-use crate::{pipeline, walk};
+use crate::pipeline::{self, IndexStats};
+use crate::walk;
 
-pub fn run(mut config: Config) -> Result<()> {
+static INDEXING: AtomicBool = AtomicBool::new(false);
+
+/// Whether this process is building or updating the index right now.
+pub fn indexing() -> bool {
+    INDEXING.load(Ordering::Relaxed)
+}
+
+pub fn run(config: Config) -> Result<()> {
+    keep_current(config, |line| eprintln!("{line}"))
+}
+
+/// Keeps the index current from a thread of its own, for `ripsem mcp`: an
+/// agent edits files all day, and a server that only reads the index would
+/// answer from code that no longer exists.
+pub fn spawn(config: Config) {
+    std::thread::spawn(move || {
+        if let Err(e) = keep_current(config, |line| tracing::info!("{line}")) {
+            tracing::warn!("stopped keeping the index current: {e:#}");
+        }
+    });
+}
+
+fn keep_current(mut config: Config, report: impl Fn(String)) -> Result<()> {
     // Watching starts first, so an edit made while the first index is built
     // still reaches it.
     let (tx, rx) = channel();
@@ -18,12 +42,12 @@ pub fn run(mut config: Config) -> Result<()> {
     })?;
     watcher.watch(&config.root, RecursiveMode::Recursive)?;
 
-    let stats = pipeline::index_repo(&config, false)?;
-    eprintln!(
+    let stats = index(&config)?;
+    report(format!(
         "indexed {} ({}); watching for changes",
         plural(stats.files, "file"),
         plural(stats.chunks, "chunk")
-    );
+    ));
 
     while let Ok(first) = rx.recv() {
         let mut burst = Burst::default();
@@ -36,22 +60,31 @@ pub fn run(mut config: Config) -> Result<()> {
         // burst. Indexing under the old settings would overwrite that index.
         match Config::load(&config.root) {
             Ok(fresh) => config = fresh,
-            Err(e) => eprintln!("config unreadable, keeping the previous one: {e:#}"),
+            Err(e) => report(format!(
+                "config unreadable, keeping the previous one: {e:#}"
+            )),
         }
         // Writes under an ignored `target/` or inside `.git` cannot change the
         // index, so they should not cost a walk of the whole tree.
         if !burst.rescan && !walk::reaches_any(&config, &burst.paths) {
             continue;
         }
-        match pipeline::index_repo(&config, false) {
-            Ok(stats) => eprintln!("reindexed: {}", plural(stats.chunks, "chunk")),
+        match index(&config) {
+            Ok(stats) => report(format!("reindexed: {}", plural(stats.chunks, "chunk"))),
             // Failures are often transient (a file removed mid-scan, a scanner
             // holding the index open). Quitting would leave the index frozen
             // while a running session keeps querying it.
-            Err(e) => eprintln!("reindex failed, still watching: {e:#}"),
+            Err(e) => report(format!("reindex failed, still watching: {e:#}")),
         }
     }
     Ok(())
+}
+
+fn index(config: &Config) -> Result<IndexStats> {
+    INDEXING.store(true, Ordering::Relaxed);
+    let result = pipeline::index_repo(config, false);
+    INDEXING.store(false, Ordering::Relaxed);
+    result
 }
 
 /// Everything that arrived within one debounce window.
