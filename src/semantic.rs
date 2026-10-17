@@ -48,6 +48,16 @@ fn deeper_than(root: Node, limit: usize) -> bool {
     }
 }
 
+/// A node starts after its indentation, so a chunk cut at the node would lose
+/// the first line's indent and keep every other line's.
+fn line_start(text: &str, byte: usize) -> usize {
+    let start = text[..byte].rfind('\n').map_or(0, |i| i + 1);
+    match text[start..byte].trim().is_empty() {
+        true => start,
+        false => byte,
+    }
+}
+
 fn node_lines(node: &Node, text: &str) -> usize {
     last_row(node, text) - node.start_position().row + 1
 }
@@ -121,7 +131,7 @@ impl Emitter<'_> {
     /// A chunk grouping several small declarations is named after the first of
     /// them, not the enclosing block (which would label every test `mod tests`).
     fn push(&mut self, start: &Node, end: &Node, enclosing: Option<&Symbol>) {
-        let body = &self.text[start.start_byte()..end.end_byte()];
+        let body = &self.text[line_start(self.text, start.start_byte())..end.end_byte()];
         if body.trim().is_empty() {
             return;
         }
@@ -198,7 +208,7 @@ impl Emitter<'_> {
 
     fn push_windows(&mut self, node: &Node, enclosing: Option<&Symbol>) {
         let base = node.start_position().row;
-        let slice = &self.text[node.start_byte()..node.end_byte()];
+        let slice = &self.text[line_start(self.text, node.start_byte())..node.end_byte()];
         for c in chunk_file(slice, self.max_lines, self.overlap) {
             self.out.push(Chunk {
                 start_line: base + c.start_line,
@@ -508,6 +518,20 @@ mod tests {
                 "{file}: got {found:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_chunk_keeps_the_indentation_of_its_first_line() {
+        let mut src = String::from("class Store:\n");
+        for name in ["load", "save"] {
+            src.push_str(&format!("    def {name}(self):\n"));
+            for _ in 0..12 {
+                src.push_str("        pass\n");
+            }
+        }
+        let chunks = chunk_source("s.py", &src, 20);
+        let save = chunks.iter().find(|c| c.text.contains("def save")).unwrap();
+        assert!(save.text.starts_with("    def save"), "{:?}", save.text);
     }
 
     #[test]
