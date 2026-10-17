@@ -546,3 +546,17 @@ fn changing_the_chunk_settings_chunks_every_file_again() {
     let third = pipeline::index_repo(&config, false).unwrap();
     assert_eq!((third.embedded, third.reused), (0, 2));
 }
+
+#[test]
+fn an_empty_query_is_an_error_not_a_ranking() {
+    let dir = TempDir::new();
+    dir.write("auth.rs", "fn authenticate(user) { verify password }");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    for query in ["", "   \n"] {
+        let err = pipeline::search(&config, query, 5).unwrap_err();
+        assert!(err.to_string().contains("query is empty"), "got: {err}");
+    }
+    assert!(!pipeline::search(&config, "???", 5).unwrap().is_empty());
+}

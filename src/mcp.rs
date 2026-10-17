@@ -188,6 +188,7 @@ fn handle_call(
     // Arguments that do not fit the input schema are a tool error, which the
     // model sees and can correct, rather than a protocol error.
     let query = match args.get("query").and_then(|q| q.as_str()) {
+        Some(q) if q.trim().is_empty() => return failed(id, &anyhow!("'query' is empty")),
         Some(q) => q,
         None => return failed(id, &anyhow!("missing 'query'")),
     };
@@ -426,6 +427,23 @@ mod tests {
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("missing 'query'"), "got: {text}");
+    }
+
+    #[test]
+    fn call_with_an_empty_query_is_a_tool_error() {
+        let cfg = Config::default();
+        let resp = handle(
+            &cfg,
+            None,
+            &req(
+                "tools/call",
+                json!({ "name": "search", "arguments": { "query": " " } }),
+            ),
+        )
+        .unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("'query' is empty"), "got: {text}");
     }
 
     #[test]
