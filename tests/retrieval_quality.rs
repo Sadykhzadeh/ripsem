@@ -742,8 +742,8 @@ fn fusion_beats_either_retriever_alone() {
     assert!(fused >= 0.74, "MRR too low: {fused:.3}");
 }
 
-/// Checks the catalogue's notes on each model against the benchmark. Cheapest
-/// first, so a larger model has to earn its download.
+/// Measures every model in the catalogue, cheapest first, so a larger model has
+/// to earn its download.
 #[test]
 #[ignore = "downloads several embedding models; run with --ignored --nocapture"]
 fn a_larger_model_has_to_earn_its_cost() {
