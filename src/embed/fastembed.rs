@@ -50,7 +50,7 @@ fn map_model(id: &str) -> Result<(EmbeddingModel, usize, Option<String>)> {
             Some("query:".to_string()),
         ),
         "nomic-embed-text-v1.5" => (EmbeddingModel::NomicEmbedTextV15, 768, None),
-        other => return Err(anyhow!("unknown model id: {other}")),
+        other => return Err(anyhow!("unknown model {other:?}; see `ripsem model list`")),
     })
 }
 
