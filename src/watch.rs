@@ -9,7 +9,15 @@ use crate::cli::plural;
 use crate::config::Config;
 use crate::{pipeline, walk};
 
-pub fn run(config: Config) -> Result<()> {
+pub fn run(mut config: Config) -> Result<()> {
+    // Watching starts first, so an edit made while the first index is built
+    // still reaches it.
+    let (tx, rx) = channel();
+    let mut watcher = notify::recommended_watcher(move |res| {
+        let _ = tx.send(res);
+    })?;
+    watcher.watch(&config.root, RecursiveMode::Recursive)?;
+
     let stats = pipeline::index_repo(&config, false)?;
     eprintln!(
         "indexed {} ({}); watching for changes",
@@ -17,18 +25,18 @@ pub fn run(config: Config) -> Result<()> {
         plural(stats.chunks, "chunk")
     );
 
-    let (tx, rx) = channel();
-    let mut watcher = notify::recommended_watcher(move |res| {
-        let _ = tx.send(res);
-    })?;
-    watcher.watch(&config.root, RecursiveMode::Recursive)?;
-
     while let Ok(first) = rx.recv() {
         let mut burst = Burst::default();
         burst.add(first);
         std::thread::sleep(Duration::from_millis(300));
         while let Ok(more) = rx.try_recv() {
             burst.add(more);
+        }
+        // `ripsem model set` and a rebuild may have happened since the last
+        // burst. Indexing under the old settings would overwrite that index.
+        match Config::load(&config.root) {
+            Ok(fresh) => config = fresh,
+            Err(e) => eprintln!("config unreadable, keeping the previous one: {e:#}"),
         }
         // Writes under an ignored `target/` or inside `.git` cannot change the
         // index, so they should not cost a walk of the whole tree.
