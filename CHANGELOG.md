@@ -4,6 +4,23 @@
 
 - `install.sh` and `install.ps1` install the latest release with one command,
   after checking it against the release's checksums.
+- A search for a name lands on its declaration: typed as code or spelled out in
+  words, the name puts the chunk that declares it above the chunks that only
+  use it, and the hit reports that declaration with its own lines, label and
+  snippet, even when it shares a chunk with its neighbours.
+- Tests rank below the code they test, unless the query asks for tests.
+- An edit embeds only the chunks whose text changed, not its whole file, in
+  `ripsem index`, `ripsem watch` and the MCP server.
+- `ripsem index` shows the chunks embedded so far and the time left. Output
+  that is not a terminal gets a progress line every ten seconds.
+- The MCP server sends instructions that tell the agent when to search, which
+  reach the model in clients that load tool descriptions on demand, such as
+  Claude Code.
+- The MCP `search` tool answers arguments outside its schema with a tool error
+  that names what is expected: `limit` runs from 1 to 50 and `min_score` from
+  0 to 1.
+- The index format changed. The first `ripsem index` after upgrading, or the
+  MCP server on its first start, rebuilds it.
 
 ## 0.1.2 (2026-10-17)
 
