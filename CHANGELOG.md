@@ -16,6 +16,8 @@
 - The MCP server sends instructions that tell the agent when to search, which
   reach the model in clients that load tool descriptions on demand, such as
   Claude Code.
+- A server started outside a project, as a shared backend or a desktop client
+  starts it, follows the client's workspace roots to the project.
 - The MCP `search` tool answers arguments outside its schema with a tool error
   that names what is expected: `limit` runs from 1 to 50 and `min_score` from
   0 to 1.
