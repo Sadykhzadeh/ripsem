@@ -121,7 +121,7 @@ pub enum InstallCmd {
 }
 
 pub fn run(cli: Cli) -> Result<()> {
-    let root = match cli.path {
+    let root = match &cli.path {
         Some(path) => path
             .canonicalize()
             .map_err(|_| anyhow::anyhow!("no such directory: {}", path.display()))?,
@@ -156,7 +156,7 @@ pub fn run(cli: Cli) -> Result<()> {
         ),
         Command::Watch => watch::run(Config::load(&root)?),
         Command::Status { json } => cmd_status(&root, json),
-        Command::Mcp => mcp::serve(Config::load(&root)?),
+        Command::Mcp => mcp::serve(Config::load(&root)?, cli.path.is_some()),
         Command::Model { action } => cmd_model(&root, action),
         Command::Install { target } => cmd_install(&root, target),
         Command::Completions { shell } => {
