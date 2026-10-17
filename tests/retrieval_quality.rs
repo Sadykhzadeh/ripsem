@@ -747,10 +747,11 @@ fn fusion_beats_either_retriever_alone() {
 #[test]
 #[ignore = "downloads several embedding models; run with --ignored --nocapture"]
 fn a_larger_model_has_to_earn_its_cost() {
-    let candidates = ["all-MiniLM-L6-v2", "bge-small-en-v1.5", "bge-base-en-v1.5"];
+    let mut candidates: Vec<&ripsem::model::ModelInfo> = ripsem::model::catalog().iter().collect();
+    candidates.sort_by_key(|info| info.disk_mb);
     let mut results = Vec::new();
-    for model in candidates {
-        let info = ripsem::model::find(model).unwrap();
+    for info in candidates {
+        let model = info.id;
         let run = exclusively(|| evaluate(model, false));
         eprintln!(
             "{model:<20} {}d ~{}MB  fused MRR={:.3}  vector-only MRR={:.3}",
