@@ -10,6 +10,21 @@ impl Symbol {
     pub fn label(&self) -> String {
         format!("{} {}", self.kind, self.name)
     }
+
+    /// The name without the declarations it sits in: `refresh` for
+    /// `Searcher::refresh`.
+    pub fn leaf(&self) -> &str {
+        self.name.rsplit("::").next().unwrap_or(&self.name)
+    }
+}
+
+/// One of the declarations a chunk holds, with the lines it spans. A chunk
+/// groups small neighbours, so the one a search asks for is often not the first.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct Declaration {
+    pub symbol: Symbol,
+    pub start_line: usize,
+    pub end_line: usize,
 }
 
 /// Grammars name their nodes differently per language, but they agree on two

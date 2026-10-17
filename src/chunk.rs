@@ -4,7 +4,7 @@ use bitcode::{Decode, Encode};
 
 use crate::config::Config;
 
-use crate::symbol::Symbol;
+use crate::symbol::{Declaration, Symbol};
 
 #[derive(Debug, Clone)]
 pub struct Chunk {
@@ -12,6 +12,7 @@ pub struct Chunk {
     pub end_line: usize,
     pub text: String,
     pub symbol: Option<Symbol>,
+    pub declarations: Vec<Declaration>,
 }
 
 /// Changes whenever the same file and settings would give other chunks, so an
@@ -81,6 +82,7 @@ pub fn chunk_file(text: &str, chunk_lines: usize, overlap: usize) -> Vec<Chunk> 
                 end_line: end,
                 text: body,
                 symbol: None,
+                declarations: Vec::new(),
             });
         }
         if end == lines.len() {

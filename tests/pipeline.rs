@@ -602,3 +602,57 @@ fn the_index_keeps_itself_current() {
     );
     assert!(within(30, &|| finds("stripe ledger", "billing.rs")));
 }
+
+/// The field case: three small functions share one chunk, and the one asked
+/// for is neither the first nor the only place its name occurs.
+#[cfg(feature = "treesitter")]
+#[test]
+fn a_search_by_name_reports_the_declaration_not_its_chunk() {
+    let dir = TempDir::new();
+    let mut src = String::from(
+        "struct Road;\n\nimpl Road {\n    fn preview(&self) -> u32 {\n        self.quote_cost() + 1\n    }\n\n",
+    );
+    for i in 0..6 {
+        src.push_str(&format!(
+            "    fn filler_{i}(&self) -> u32 {{\n        {i}\n    }}\n\n"
+        ));
+    }
+    src.push_str("    pub fn quote_cost(&self) -> u32 {\n        let base = 3;\n        base * 2\n    }\n}\n");
+    dir.write("road.rs", &src);
+    dir.write(
+        "ui.rs",
+        "fn show(road: &Road) {\n    let total = road.quote_cost();\n    println!(\"{total}\");\n}\n",
+    );
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let declared_at = src
+        .lines()
+        .position(|l| l.contains("pub fn quote_cost"))
+        .unwrap()
+        + 1;
+    for query in [
+        "quote_cost",
+        "fn quote_cost",
+        "Road::quote_cost",
+        "quote cost",
+    ] {
+        let hits = pipeline::search(&config, query, 5).unwrap();
+        let first = &hits[0];
+        assert_eq!(
+            (first.path.as_str(), first.start_line, first.end_line),
+            ("road.rs", declared_at, declared_at + 3),
+            "{query}: {hits:#?}"
+        );
+        assert_eq!(
+            first.symbol.as_ref().map(|s| s.label()),
+            Some("fn Road::quote_cost".to_string()),
+            "{query}"
+        );
+        assert!(
+            first.snippet.starts_with("pub fn quote_cost"),
+            "{query}: {}",
+            first.snippet
+        );
+    }
+}

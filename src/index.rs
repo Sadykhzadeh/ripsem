@@ -12,11 +12,11 @@ use crate::cli::show_path;
 use crate::config::Backend;
 use crate::lexical::{TermHash, TermVector, Weights};
 use crate::quant::{self, QuantizedVector};
-use crate::symbol::Symbol;
+use crate::symbol::{Declaration, Symbol};
 
 /// Changes whenever the bytes of an index would, including on a bitcode
 /// upgrade: bitcode keeps its encoding only within one 0.x series.
-pub const FORMAT_VERSION: u32 = 9;
+pub const FORMAT_VERSION: u32 = 10;
 
 /// Every index file starts with these bytes and then [`FORMAT_VERSION`] as a
 /// little-endian u32, so a file from another ripsem is recognised before its
@@ -38,9 +38,29 @@ pub struct Record {
     pub end_line: usize,
     pub snippet: String,
     pub file_hash: u64,
+    /// The chunk's own text, so an edit elsewhere in its file does not embed
+    /// it again.
+    pub text_hash: u64,
     pub vector: QuantizedVector,
     pub terms: TermVector,
     pub symbol: Option<Symbol>,
+    pub declarations: Vec<Declaration>,
+}
+
+impl Record {
+    /// The declaration a query names, by the name typed or spelled out in
+    /// words, among those the record holds. `Road::quote_cost` names both
+    /// `Road` and its method; the one named in full wins, then the longer name.
+    pub fn declaration_named(&self, names: &[TermHash]) -> Option<&Declaration> {
+        if names.is_empty() {
+            return None;
+        }
+        let named = |name: &str| crate::lexical::name_key(name).is_some_and(|k| names.contains(&k));
+        self.declarations
+            .iter()
+            .filter(|d| named(d.symbol.leaf()))
+            .max_by_key(|d| (named(&d.symbol.name), d.symbol.leaf().len()))
+    }
 }
 
 #[derive(Debug, Encode, Decode)]
@@ -155,20 +175,22 @@ impl Index {
     }
 
     pub fn search_scoped(&self, query: &[f32], k: usize, prefix: Option<&str>) -> Vec<Hit> {
-        self.search_fused(query, &[], k, prefix)
+        self.search_fused(query, &[], &[], k, prefix)
     }
 
+    /// `names` are the query's [`crate::lexical::query_names`].
     pub fn search_fused(
         &self,
         query: &[f32],
         terms: &[TermHash],
+        names: &[TermHash],
         k: usize,
         prefix: Option<&str>,
     ) -> Vec<Hit> {
         let depth = candidate_depth(k);
         let dense = self.dense_ranking(query, depth, prefix);
         let lexical = self.lexical_ranking(terms, depth, prefix);
-        self.fuse(&dense, &lexical, query, k)
+        self.fuse(&dense, &lexical, query, names, k)
     }
 
     /// Fuses a dense ranking from the nearest-neighbour graph with a full
@@ -179,10 +201,11 @@ impl Index {
         dense: &[Hit],
         query: &[f32],
         terms: &[TermHash],
+        names: &[TermHash],
         k: usize,
     ) -> Vec<Hit> {
         let lexical = self.lexical_ranking(terms, candidate_depth(k), None);
-        self.fuse(dense, &lexical, query, k)
+        self.fuse(dense, &lexical, query, names, k)
     }
 
     pub fn dense_ranking(&self, query: &[f32], depth: usize, prefix: Option<&str>) -> Vec<Hit> {
@@ -240,6 +263,7 @@ impl Index {
         dense: &[Hit],
         lexical: &LexicalRanking,
         query: &[f32],
+        names: &[TermHash],
         k: usize,
     ) -> Vec<Hit> {
         let mut agreement: HashMap<usize, f32> = HashMap::new();
@@ -260,6 +284,7 @@ impl Index {
                     record_idx,
                     agreement,
                     declares_something: record.symbol.is_some(),
+                    named: record.declaration_named(names).is_some(),
                     cosine: quant::dot(&record.vector, query),
                     coverage: lexical.weights.coverage(presence),
                     share: lexical.weights.share(presence),
@@ -317,6 +342,7 @@ struct Candidate {
     coverage: f32,
     share: f32,
     declares_something: bool,
+    named: bool,
 }
 
 impl Candidate {
@@ -338,9 +364,13 @@ impl Candidate {
     /// are unaffected. An exact match stays first even without a declaration:
     /// a CI workflow, a config file or a language without a parser declares
     /// nothing, and the literal string is still what was asked for.
+    ///
+    /// A record declaring what the query names comes before records that only
+    /// use the name: the definition is what an agent reads next.
     fn rank(a: &Self, b: &Self) -> Ordering {
         b.holds_every_term()
             .cmp(&a.holds_every_term())
+            .then_with(|| b.named.cmp(&a.named))
             .then_with(|| b.declares_something.cmp(&a.declares_something))
             .then_with(|| {
                 b.agreement
@@ -443,9 +473,11 @@ mod tests {
             end_line: 1,
             snippet: text.into(),
             file_hash: 0,
+            text_hash: 0,
             vector: quant::quantize(&vector),
             terms: TermVector::new(text, path, None),
             symbol: None,
+            declarations: Vec::new(),
         }
     }
 
@@ -507,7 +539,7 @@ mod tests {
             vec![1.0, 0.0, 0.0],
         ));
 
-        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms("parse_header"), 2, None);
+        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms("parse_header"), &[], 2, None);
         assert_eq!(index.records[hits[0].record_idx].path, "a.rs");
 
         let plain = index.search_scoped(&[1.0, 0.0, 0.0], 2, None);
@@ -539,7 +571,7 @@ mod tests {
             "the dense arm alone must not reach the literal match"
         );
 
-        let fused = index.search_fused(&query, &terms("evict_least_recently_used"), 10, None);
+        let fused = index.search_fused(&query, &terms("evict_least_recently_used"), &[], 10, None);
         assert_eq!(
             paths(&index, &fused)[0],
             "cache.rs",
@@ -576,6 +608,46 @@ mod tests {
         );
     }
 
+    /// Every call site holds the name as fully as the definition does, and
+    /// may be closer to the query, but the definition is what is asked for.
+    #[test]
+    fn the_record_declaring_a_name_outranks_those_using_it() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        for i in 0..3 {
+            let mut caller = text_record(
+                &format!("src/caller{i}.rs"),
+                "fn caller() { quote_cost() }",
+                vec![1.0, 0.0, 0.0],
+            );
+            caller.symbol = Some(Symbol {
+                kind: "fn".into(),
+                name: "caller".into(),
+            });
+            index.records.push(caller);
+        }
+        let mut defining = text_record(
+            "src/road.rs",
+            "fn preview() {} fn quote_cost() {}",
+            vec![0.0, 1.0, 0.0],
+        );
+        let declare = |name: &str| Declaration {
+            symbol: Symbol {
+                kind: "fn".into(),
+                name: name.into(),
+            },
+            start_line: 1,
+            end_line: 1,
+        };
+        defining.symbol = Some(declare("preview").symbol);
+        defining.declarations = vec![declare("preview"), declare("quote_cost")];
+        index.records.push(defining);
+
+        let query = "quote_cost";
+        let names = crate::lexical::query_names(query);
+        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms(query), &names, 4, None);
+        assert_eq!(paths(&index, &hits)[0], "src/road.rs");
+    }
+
     #[test]
     fn a_literal_match_outside_code_outranks_declarations_lacking_it() {
         let mut index = Index::new(3, Backend::Hash, "test".into());
@@ -597,7 +669,7 @@ mod tests {
             index.records.push(code);
         }
 
-        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms("Swatinem"), 3, None);
+        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms("Swatinem"), &[], 3, None);
         assert_eq!(paths(&index, &hits)[0], ".github/workflows/ci.yml");
     }
 
@@ -672,7 +744,7 @@ mod tests {
     #[test]
     fn a_query_with_no_indexable_terms_falls_back_to_pure_similarity() {
         let index = sample_index();
-        let hits = index.search_fused(&[0.9, 0.1, 0.0], &terms("a b c"), 2, None);
+        let hits = index.search_fused(&[0.9, 0.1, 0.0], &terms("a b c"), &[], 2, None);
         assert_eq!(index.records[hits[0].record_idx].path, "x.rs");
     }
 
@@ -804,7 +876,7 @@ mod tests {
         let bytes = bitcode::encode(&sample_index());
         assert_eq!(
             (FORMAT_VERSION, crate::fingerprint::content_hash(&bytes)),
-            (9, 0x31d7_c0e8_f4c3_1bfa)
+            (10, 0xebaf_6a22_a574_38db)
         );
     }
 
@@ -881,11 +953,11 @@ mod tests {
             })
             .collect();
 
-        let _ = index.search_fused(&queries[0].0, &queries[0].1, 20, None);
+        let _ = index.search_fused(&queries[0].0, &queries[0].1, &[], 20, None);
 
         let start = std::time::Instant::now();
         for (vector, query_terms) in &queries {
-            let _ = index.search_fused(vector, query_terms, 20, None);
+            let _ = index.search_fused(vector, query_terms, &[], 20, None);
         }
         let elapsed = start.elapsed();
         println!(
