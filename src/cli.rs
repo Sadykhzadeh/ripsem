@@ -608,12 +608,18 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
         );
     }
 
-    if !doc
-        .get("mcpServers")
-        .map(|v| v.is_object())
-        .unwrap_or(false)
-    {
-        doc["mcpServers"] = json!({});
+    match doc.get("mcpServers") {
+        None => doc["mcpServers"] = json!({}),
+        Some(servers) if !servers.is_object() => anyhow::bail!(
+            "mcpServers in {} is not a JSON object; fix it and run this again",
+            show_path(&path)
+        ),
+        // An entry already there may carry a --path or env the user added.
+        Some(servers) if servers.get("ripsem").is_some() => {
+            println!("ripsem is already in {}; left as it is", show_path(&path));
+            return Ok(());
+        }
+        Some(_) => {}
     }
     doc["mcpServers"]["ripsem"] = json!({
         "command": "ripsem",
@@ -850,10 +856,23 @@ mod tests {
         assert!(err.to_string().contains("not valid JSON"), "got: {err}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
 
-        std::fs::write(&path, "[1, 2]").unwrap();
-        let err = cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap_err();
-        assert!(err.to_string().contains("JSON object"), "got: {err}");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[1, 2]");
+        for unreadable in ["[1, 2]", r#"{"mcpServers": null}"#] {
+            std::fs::write(&path, unreadable).unwrap();
+            let err = cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap_err();
+            assert!(err.to_string().contains("JSON object"), "got: {err}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), unreadable);
+        }
+    }
+
+    #[test]
+    fn install_keeps_a_ripsem_entry_already_there() {
+        let dir = crate::testutil::TempDir::new();
+        let path = dir.path().join(".mcp.json");
+        let mine =
+            r#"{"mcpServers":{"ripsem":{"command":"ripsem","args":["mcp","--path","/repo"]}}}"#;
+        std::fs::write(&path, mine).unwrap();
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), mine);
     }
 
     #[test]
