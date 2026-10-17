@@ -107,19 +107,26 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     let mut prev_chunks: HashMap<String, Vec<Record>> = HashMap::new();
     let mut prev_ann = None;
     let mut reusable = false;
+    let mut recut: Vec<Record> = Vec::new();
     let chunking = chunk::Chunking::of(config);
     if let Some(prev) = prev
         && prev.dims == dims
         && prev.built_for(config.backend, &config.model)
-        && prev.chunking == chunking
     {
-        reusable = true;
-        prev_ann = prev.ann;
-        for record in prev.records {
-            prev_chunks
-                .entry(record.path.clone())
-                .or_default()
-                .push(record);
+        // Cut under other settings, a file's records cannot be kept, but a
+        // vector depends only on the text and the model, so every chunk the
+        // new cut leaves unchanged keeps its vector.
+        if prev.chunking == chunking {
+            reusable = true;
+            prev_ann = prev.ann;
+            for record in prev.records {
+                prev_chunks
+                    .entry(record.path.clone())
+                    .or_default()
+                    .push(record);
+            }
+        } else {
+            recut = prev.records;
         }
     }
     let prev_hash: HashMap<&str, u64> = prev_chunks
@@ -148,6 +155,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         .iter()
         .filter(|(path, _)| !unchanged.contains(path.as_str()))
         .flat_map(|(_, records)| records)
+        .chain(&recut)
         .map(|r| (r.text_hash, r.vector.clone()))
         .collect();
 

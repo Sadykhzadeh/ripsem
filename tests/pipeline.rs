@@ -733,3 +733,39 @@ fn a_search_for_a_large_declaration_reports_all_of_it() {
         first.snippet
     );
 }
+
+/// Other chunk settings cut files again, but a chunk whose text the new cut
+/// leaves as it was keeps its vector.
+#[test]
+fn new_chunk_settings_keep_the_vectors_of_unchanged_chunks() {
+    let dir = TempDir::new();
+    let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    dir.write("notes.txt", &body);
+    let config = Config {
+        chunk_lines: 40,
+        chunk_overlap: 0,
+        ..config_for(&dir.path)
+    };
+    let first = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(first.vectors, 5);
+
+    let wider = Config {
+        chunk_lines: 80,
+        ..config
+    };
+    let second = pipeline::index_repo(&wider, false).unwrap();
+    assert_eq!(
+        (second.chunks, second.vectors),
+        (3, 2),
+        "lines 161-200 are a window under both cuts"
+    );
+    let back = pipeline::index_repo(
+        &Config {
+            chunk_lines: 40,
+            ..wider
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!((back.chunks, back.vectors), (5, 4));
+}
