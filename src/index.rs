@@ -409,14 +409,17 @@ fn path_in_scope(path: &str, prefix: &str) -> bool {
     }
 }
 
+/// Named per process: `ripsem watch` and `ripsem index` can save at once, and
+/// with one shared name each would truncate the file the other is writing.
 fn temp_sibling(path: &Path) -> std::path::PathBuf {
+    let suffix = format!(".{}.tmp", std::process::id());
     match path.file_name() {
         Some(name) => {
             let mut tmp = name.to_os_string();
-            tmp.push(".tmp");
+            tmp.push(suffix);
             path.with_file_name(tmp)
         }
-        None => path.with_extension("tmp"),
+        None => path.with_extension(&suffix[1..]),
     }
 }
 
@@ -734,7 +737,11 @@ mod tests {
         sample_index().save(&path).unwrap();
         sample_index().save(&path).unwrap();
         assert!(Index::load(&path).is_ok());
-        assert!(!path.with_file_name("index.bin.tmp").exists());
+        let left: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["index.bin"]);
     }
 
     fn with_header(version: u32, body: &[u8]) -> Vec<u8> {
