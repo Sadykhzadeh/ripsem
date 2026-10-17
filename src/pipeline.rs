@@ -502,6 +502,10 @@ impl Searcher {
         k: usize,
         prefix: Option<&str>,
     ) -> Result<Vec<SearchHit>> {
+        // Every record ties on an empty query, so any answer would be noise.
+        if query.trim().is_empty() {
+            anyhow::bail!("the query is empty; say what to look for");
+        }
         let qv = self.embedder.get()?.embed_query(query)?;
         let terms = crate::lexical::query_terms(query);
 
