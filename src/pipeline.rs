@@ -508,6 +508,13 @@ impl Searcher {
         if query.trim().is_empty() {
             anyhow::bail!("the query is empty; say what to look for");
         }
+        // A mistyped scope would otherwise answer "no matches", which reads as
+        // the code not existing.
+        if let Some(prefix) = prefix
+            && !self.index.covers(prefix)
+        {
+            anyhow::bail!("nothing is indexed under '{prefix}'");
+        }
         let qv = self.embedder.get()?.embed_query(query)?;
         let terms = crate::lexical::query_terms(query);
 
