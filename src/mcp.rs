@@ -145,9 +145,15 @@ fn negotiate(requested: Option<&str>) -> &'static str {
         .unwrap_or(PROTOCOL_VERSIONS[0])
 }
 
+/// A message without a method is a response, which this server sends no
+/// requests to receive, or malformed. A malformed one is answered as an
+/// invalid request rather than left for the client to wait on.
 fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value) -> Option<Value> {
-    let method = request.get("method")?.as_str()?;
     let id = request.get("id").cloned();
+    let Some(method) = request.get("method").and_then(Value::as_str) else {
+        let response = request.get("result").is_some() || request.get("error").is_some();
+        return (!response).then(|| error(id.unwrap_or(Value::Null), -32600, "invalid request"));
+    };
 
     match method {
         "initialize" => Some(ok(
@@ -196,13 +202,17 @@ fn handle_call(
     id: Value,
     request: &Value,
 ) -> Value {
-    let name = request
+    match request
         .get("params")
         .and_then(|p| p.get("name"))
         .and_then(|n| n.as_str())
-        .unwrap_or("");
-    if name != "search" {
-        return error(id, -32602, "unknown tool");
+    {
+        Some("search") => {}
+        Some(other) => {
+            let message = format!("unknown tool '{other}'; the only tool is 'search'");
+            return error(id, -32602, &message);
+        }
+        None => return error(id, -32602, "missing tool name"),
     }
 
     let args = request
@@ -650,6 +660,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resp["error"]["code"], -32602);
+        let message = resp["error"]["message"].as_str().unwrap();
+        assert!(message.contains("unknown tool 'other'"), "got: {message}");
+        assert!(message.contains("'search'"), "got: {message}");
+    }
+
+    #[test]
+    fn a_message_without_a_method_is_an_invalid_request() {
+        let cfg = Config::default();
+        for message in [
+            json!({ "jsonrpc": "2.0", "id": 3 }),
+            json!({ "jsonrpc": "2.0", "id": 3, "method": 7 }),
+            json!(5),
+        ] {
+            let resp = handle(&cfg, None, &message).unwrap();
+            assert_eq!(resp["error"]["code"], -32600, "{message}");
+        }
+        assert_eq!(
+            handle(&cfg, None, &json!({ "jsonrpc": "2.0", "id": 3 })).unwrap()["id"],
+            3
+        );
+        let response = json!({ "jsonrpc": "2.0", "id": 9, "result": {} });
+        assert!(handle(&cfg, None, &response).is_none());
     }
 
     #[test]
