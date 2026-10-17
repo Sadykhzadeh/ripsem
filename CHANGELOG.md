@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 (2026-10-17)
+
+- ripsem is on npm: `npm install -g ripsem` or `npx ripsem` runs the prebuilt
+  binary for Linux x64, macOS on Apple silicon and Windows x64.
+
 ## 0.1.1 (2026-10-17)
 
 - `cargo install ripsem` builds with the embedding runtime and tree-sitter,
