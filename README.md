@@ -73,7 +73,7 @@ Windows, keep `DirectML.dll` next to `ripsem.exe`.
 | --- | --- |
 | `x86_64-unknown-linux-gnu` | glibc 2.35, libstdc++ 12 and OpenSSL 3 or newer: Ubuntu 22.04, Debian 12 and later |
 | `aarch64-apple-darwin` | macOS 13.4 or newer on Apple silicon |
-| `x86_64-pc-windows-msvc` | Windows 10 or newer |
+| `x86_64-pc-windows-msvc` | Windows 10 or newer with the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) |
 
 The embedding runtime in the x86-64 builds needs a CPU with AVX2 (Intel
 Haswell, AMD Excavator or newer).
@@ -314,8 +314,10 @@ file. Every later run embeds only the files that changed. The model is cached in
 `~/.cache/ripsem` on Linux, `~/Library/Caches/ripsem` on macOS and
 `%LOCALAPPDATA%\ripsem\cache` on Windows.
 
-**`ripsem.exe` fails to start on Windows.** Keep `DirectML.dll` from the release
-archive in the same directory as `ripsem.exe`.
+**`ripsem.exe` fails to start on Windows.** A missing `VCRUNTIME140.dll` or
+`MSVCP140.dll` means the Microsoft Visual C++ Redistributable is not installed:
+`winget install Microsoft.VCRedist.2015+.x64` adds it. A missing `DirectML.dll`
+means it was not kept next to `ripsem.exe` when the archive was unpacked.
 
 ## Quality
 
