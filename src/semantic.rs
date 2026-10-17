@@ -482,6 +482,32 @@ mod tests {
     }
 
     #[test]
+    fn a_name_that_is_only_used_is_not_a_declaration() {
+        let cases = [
+            (
+                "a.rs",
+                "fn run() {\n    let Some(x) = y else { return };\n    let v: Vec<u8> = Vec::new();\n    let c = Config { x };\n    let r: &Path = p as &Path;\n}\n",
+            ),
+            (
+                "b.py",
+                "def run(\n    timeout=0.5,\n    stream: bool = False,\n    rows: Any,\n):\n    pass\n",
+            ),
+            (
+                "c.go",
+                "package main\nfunc run() {\n    b := []byte(\"a\")\n    r := sr.(*Router)\n    var t testing.B\n}\n",
+            ),
+            (
+                "d.ts",
+                "function run(\n  m: Map<string, T>,\n  e: NodeJS.ErrnoException,\n): m is Request {\n  return true\n}\n",
+            ),
+        ];
+        for (file, src) in cases {
+            let found = labels(&chunk_source(file, src, 1));
+            assert!(found.iter().all(|l| l == "fn run"), "{file}: got {found:?}");
+        }
+    }
+
+    #[test]
     fn chunks_a_range_of_languages() {
         let cases = [
             (

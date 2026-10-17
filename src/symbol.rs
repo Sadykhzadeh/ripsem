@@ -62,10 +62,33 @@ fn declared_kind(node_kind: &str) -> Option<&'static str> {
         ("mod", "mod"),
         ("def", "fn"),
     ];
+    if is_use(node_kind) {
+        return None;
+    }
     KINDS
         .iter()
         .find(|(needle, _)| node_kind.contains(needle))
         .map(|&(_, kind)| kind)
+}
+
+/// Types, expressions, patterns and parameters name something without declaring
+/// it, yet their kinds carry the same needles: Rust's `Some(x)` is a
+/// `tuple_struct_pattern`, Go's `testing.B` a `qualified_type` and Python's
+/// `timeout=0.5` a `default_parameter`.
+#[cfg(feature = "treesitter")]
+fn is_use(node_kind: &str) -> bool {
+    const USES: &[&str] = &[
+        "_type",
+        "_expression",
+        "_pattern",
+        "_parameter",
+        "_identifier",
+        "_clause",
+        "_predicate",
+        "_binding",
+        "_invocation",
+    ];
+    USES.iter().any(|suffix| node_kind.ends_with(suffix))
 }
 
 /// JavaScript and TypeScript mostly declare a function by binding one to a
