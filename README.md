@@ -173,9 +173,12 @@ counts exactly what a rebuild would touch. The JSON carries it as `index.drift`
 Results print as `path:start-end` with the declaration's name and a snippet, in
 merged-ranking order. Records that cover the same lines (a declaration and the
 documentation above it, or adjacent windows) are returned once, so `-k 5` means
-five distinct places. The number shown is confidence in 0-1: semantic
-similarity, or the share of the query's terms found literally, whichever is
-higher.
+five distinct places. The number shown runs from 0 to 1: how far the hit's
+meaning rises above unrelated text in this repository, or the share of the
+query's terms found literally, whichever is higher. It never rises down the
+list, so a threshold keeps the top of the ranking. Each index measures its own
+noise floor by matching queries about anything but code against it, so the
+scale follows the repository and the model.
 
 - `-k <N>` sets the number of results (default 10).
 - `--json` prints machine-readable output.

@@ -9,6 +9,10 @@
   use it, and the hit reports that declaration with its own lines, label and
   snippet, even when it shares a chunk with its neighbours.
 - Tests rank below the code they test, unless the query asks for tests.
+- A score is measured from the index's noise floor, how closely text about
+  anything but code matches it, so text unrelated to the repository scores
+  near 0. Scores fall with rank, and `--min-score` and
+  `min_score` keep the top of the ranking.
 - An edit embeds only the chunks whose text changed, not its whole file, in
   `ripsem index`, `ripsem watch` and the MCP server.
 - `ripsem index` shows the chunks embedded so far and the time left. Output
@@ -22,7 +26,8 @@
   that names what is expected: `limit` runs from 1 to 50 and `min_score` from
   0 to 1.
 - The index format changed. The first `ripsem index` after upgrading, or the
-  MCP server on its first start, rebuilds it.
+  MCP server on its first start, rebuilds it. A later change to how files are
+  cut keeps the vector of every chunk whose text stays the same.
 
 ## 0.1.2 (2026-10-17)
 
