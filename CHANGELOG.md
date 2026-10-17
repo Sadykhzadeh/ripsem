@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `install.sh` and `install.ps1` install the latest release with one command,
+  after checking it against the release's checksums.
+
 ## 0.1.2 (2026-10-17)
 
 - ripsem is on npm: `npm install -g ripsem` or `npx ripsem` runs the prebuilt
