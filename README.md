@@ -373,11 +373,14 @@ The questions come in the four shapes people actually search with: a
 description in their own words, an identifier, a message seen in output, and a
 name remembered wrong. The merged ranking has to beat either retriever alone,
 put the answer in the top five for at least 86% of the questions, and cost less
-to read up to the answer than the file the answer is in.
+to read up to the answer than the file the answer is in. A second test searches
+for every name declared once in those projects: the first hit has to be that
+declaration, under its own name, for at least 95% of them, and no hit on a
+declaration's lines may carry another name.
 
 ```
-cargo test --release \
-  --test retrieval_quality -- --ignored --nocapture fusion_beats_either_retriever_alone
+cargo test --release --test retrieval_quality -- --ignored --nocapture \
+  fusion_beats_either_retriever_alone a_declared_name_leads_to_its_declaration
 ```
 
 The first run clones the four projects into `target/corpora` and downloads the

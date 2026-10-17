@@ -1005,7 +1005,7 @@ fn declared_in(root: &Path, index: &Index) -> Vec<Declared> {
         {
             out.push(Declared {
                 path: path.to_string(),
-                name: symbol.name.rsplit("::").next().unwrap().to_string(),
+                name: symbol.leaf().to_string(),
                 line: node.start_position().row + 1,
             });
         }
@@ -1059,7 +1059,6 @@ fn unambiguous(declared: Vec<Declared>, cap: usize) -> Vec<Declared> {
 #[test]
 #[ignore = "clones pinned repositories and downloads the embedding model; run with --ignored --nocapture"]
 fn a_declared_name_leads_to_its_declaration() {
-    const SHOWN: usize = 10;
     let mut named = Score::default();
     let mut located = Score::default();
     let mut mislabelled = 0usize;
@@ -1078,14 +1077,12 @@ fn a_declared_name_leads_to_its_declaration() {
             let searcher = pipeline::open(&config).unwrap();
             let mut here = Score::default();
             for d in &wanted {
-                let hits = searcher.query(&d.name, SHOWN).unwrap();
+                let hits = searcher.query(&d.name, DEPTH).unwrap();
                 let covers = |h: &&pipeline::SearchHit| {
                     h.path == d.path && h.start_line <= d.line && d.line <= h.end_line
                 };
                 let names = |h: &&pipeline::SearchHit| {
-                    h.symbol
-                        .as_ref()
-                        .is_some_and(|s| s.name.rsplit("::").next() == Some(d.name.as_str()))
+                    h.symbol.as_ref().is_some_and(|s| s.leaf() == d.name)
                 };
                 let rank = hits
                     .iter()
@@ -1120,4 +1117,14 @@ fn a_declared_name_leads_to_its_declaration() {
     eprintln!("declaration  {}", named.line());
     eprintln!("its lines    {}", located.line());
     eprintln!("first hit on the right lines under another name: {mislabelled}");
+
+    assert_eq!(
+        mislabelled, 0,
+        "a hit on a declaration's lines carried another name"
+    );
+    assert!(
+        named.recall_at_1() >= 0.95,
+        "a declared name led to its declaration first for only {:.2} of names",
+        named.recall_at_1()
+    );
 }
