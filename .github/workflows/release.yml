@@ -1,9 +1,10 @@
 name: release
 
-# A `v*` tag builds ripsem with the embedding model and tree-sitter for each
-# platform below and publishes the archives, with their SHA-256 sums, as a
-# GitHub release of that tag. Run by hand on a branch, it builds, tests and
-# uploads the archives as artifacts of the run without publishing anything.
+# A `v*` tag builds ripsem with the embedding runtime and tree-sitter for each
+# platform below and publishes the archives, their SHA-256 sums and build
+# provenance as a GitHub release of that tag, with the tag's CHANGELOG section
+# as its notes. Run by hand on a branch, it builds, tests and uploads the
+# archives as artifacts of the run without publishing anything.
 on:
   push:
     tags: ['v*']
@@ -23,6 +24,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      # Checked before anything is built, so a tag that does not match what
+      # it releases fails in seconds.
+      - name: Check the tag against Cargo.toml and the changelog
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          crate=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          [ "$version" = "$crate" ] || { echo "tag $GITHUB_REF_NAME, Cargo.toml $crate"; exit 1; }
+          heading=$(grep -m1 "^## $version " CHANGELOG.md) || { echo "CHANGELOG.md has no $version section"; exit 1; }
+          case $heading in *unreleased*) echo "CHANGELOG.md still calls $version unreleased"; exit 1 ;; esac
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about@0.9.2
@@ -136,17 +147,27 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           pattern: ripsem-*
           path: dist
           merge-multiple: true
-      - name: Publish
+      - name: Checksums
         working-directory: dist
+        run: sha256sum ripsem-* > SHA256SUMS
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/ripsem-*
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          sha256sum ripsem-* > SHA256SUMS
+          version=${GITHUB_REF_NAME#v}
+          awk -v v="$version" 'index($0, "## " v " ") == 1 {on = 1; next} /^## / {on = 0} on' \
+            CHANGELOG.md > notes.md
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" --generate-notes ripsem-* SHA256SUMS
+            --title "ripsem $version" --notes-file notes.md dist/ripsem-* dist/SHA256SUMS

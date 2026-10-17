@@ -56,3 +56,10 @@ query can become a benchmark question.
 - Comments are rare. Write a doc comment when it says something the code
   cannot; otherwise make the code clearer instead.
 - Keep a pull request to one change.
+
+## Releasing
+
+Give the version's heading in `CHANGELOG.md` its date, make the version in
+`Cargo.toml` match, and push a `vX.Y.Z` tag. The release workflow refuses a tag
+that disagrees with either, builds and tests every archive, and publishes them
+with their checksums, build provenance and that changelog section as the notes.
