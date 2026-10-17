@@ -81,7 +81,8 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: '13.4'
       - name: Package
         run: |
-          name=ripsem-$GITHUB_REF_NAME-${{ matrix.target }}
+          # A manual run on a branch such as fix/x has a slash in its name.
+          name=ripsem-${GITHUB_REF_NAME//\//-}-${{ matrix.target }}
           mkdir "$name"
           cp README.md LICENSE "$name/"
           cp -R third-party-notices "$name/third-party"
