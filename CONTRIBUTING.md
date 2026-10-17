@@ -32,10 +32,9 @@ cargo test --release --features fastembed,treesitter \
 
 Put the numbers before and after in the pull request, per corpus and per query
 shape. A change that lifts one shape and costs another is worth reporting
-too, but say so plainly. Name one benchmark per run as above: the
-benchmarks rebuild the same cached indexes, and the harness serialises them so
-they do not overwrite each other. Corpora are pinned, so numbers are comparable
-only between runs on the same corpora.
+too, but say so plainly. Name one benchmark per run as above: running them all
+takes a long time and downloads every model in the catalogue. Corpora are
+pinned, so numbers are comparable only between runs on the same corpora.
 
 `misses` prints every question the merge answers below the top five and
 whether the answer was anywhere in either arm. It is the place to start when a

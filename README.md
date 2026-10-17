@@ -5,9 +5,9 @@
 
 Local, offline code search that answers one question: where is the code that
 does this? Ask with an identifier, an error string, or a plain description of
-the behaviour. One query, one ranked answer. No account, no API key, no
-network. Embeddings run on a model stored on your disk, and the index is a
-single file inside your repo.
+the behaviour. One query, one ranked answer. No account, no API key, and
+nothing leaves the machine. Embeddings run on a model stored on your disk, and
+the index is a single file inside your repo.
 
 Every query runs through two independent retrievers and their rankings are
 merged: BM25 over code-aware tokens, and vector similarity from the embedding
@@ -49,16 +49,18 @@ the same search to a coding agent (see [below](#use-with-coding-agents)).
 grep answers "where does this string occur". That is the right question when you
 know the string. ripsem is for when you know what the code does but not what it
 is called: a description finds the function, and an identifier or an error
-message still finds its exact match, because the lexical arm sees it literally. Each hit is a whole function or type with its name, not a matching
+message still finds its exact match, because the lexical arm sees it
+literally. Each hit is a whole function or type with its name, not a matching
 line, so a reader or an agent can tell a definition from a call site without
-opening the file. Everything runs locally: no server, no account, nothing leaves
-the machine.
+opening the file. Everything runs locally: no hosted service, no account,
+nothing leaves the machine.
 
 ## Install
 
 Every [release](https://github.com/Sadykhzadeh/ripsem/releases) has a prebuilt
-binary for each platform below, built with the embedding model and tree-sitter,
-and a `SHA256SUMS` file to check the archives against. Unpack one and put
+binary for each platform below, built with the embedding runtime and
+tree-sitter (the model itself downloads on first use), and a `SHA256SUMS` file
+to check the archives against. Unpack one and put
 `ripsem` on your `PATH`; on Windows, keep `DirectML.dll` next to `ripsem.exe`.
 
 | archive | runs on |
@@ -73,7 +75,7 @@ Haswell, AMD Excavator or newer).
 To build from source instead, with Rust 1.90 or newer:
 
 ```
-cargo install --git https://github.com/Sadykhzadeh/ripsem --features fastembed,treesitter
+cargo install --locked --git https://github.com/Sadykhzadeh/ripsem --features fastembed,treesitter
 ```
 
 The build downloads a prebuilt ONNX Runtime and takes several minutes. It works
@@ -86,7 +88,7 @@ To build from a checkout:
 ```
 git clone https://github.com/Sadykhzadeh/ripsem
 cd ripsem
-cargo install --path . --features fastembed,treesitter
+cargo install --locked --path . --features fastembed,treesitter
 ```
 
 The `fastembed` feature pulls in the local embedding runtime. Without it the
@@ -95,7 +97,7 @@ CI), but real semantic search needs the model.
 
 The `treesitter` feature chunks code on function and type boundaries instead of
 fixed line windows, and names each chunk after the declaration it belongs to.
-Results look like `src/pipeline.rs:258-293 fn Searcher::query_scoped`, so a
+Results look like `src/pipeline.rs:501-537 fn Searcher::query_scoped`, so a
 caller can tell a definition from a call site without opening the file. A
 function too large for one chunk passes its name to every piece. It covers Rust,
 Python, JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Scala, Kotlin,
@@ -147,6 +149,7 @@ similarity, or the share of the query's terms found literally, whichever is
 higher. Order comes from how strongly both retrievers back a chunk, so
 confidence does not have to fall down the list.
 
+- `-k <N>` sets the number of results (default 10).
 - `--json` prints machine-readable output.
 - `--in <subdir>` limits results to a subdirectory (`./src/auth` and an absolute
   path into the repository mean the same; a path outside it is an error).
@@ -160,7 +163,7 @@ confidence does not have to fall down the list.
 ```
 ripsem model list                 # show available models
 ripsem model set bge-base-en-v1.5
-ripsem index --force              # rebuild after switching
+ripsem index                      # rebuilds the index for the new model
 ```
 
 | Model | Dims | Disk | Notes |
@@ -181,9 +184,11 @@ ripsem install claude-code        # writes ripsem into .mcp.json
 ripsem install cursor             # writes ripsem into .cursor/mcp.json
 ```
 
-`ripsem mcp` speaks MCP over stdio and exposes a single `search` tool. After
-`install`, restart the agent in the directory and it can call `search`
-directly. Any other MCP client takes the same entry in its own config:
+`ripsem mcp` speaks MCP over stdio and exposes a single `search` tool: a
+`query`, and optionally a `path` to stay inside, a `limit` (default 5) and a
+`min_score`. After `install`, restart the agent in the directory and it can
+call `search` directly. A running server picks up a rebuilt index by itself.
+Any other MCP client takes the same entry in its own config:
 
 ```json
 {
@@ -214,13 +219,15 @@ exclude = []
 `chunk_lines` and `chunk_overlap` size the line windows used for plain-text
 files and languages without a parser. `max_chunk_lines` caps a single semantic
 chunk; larger functions are split. After changing any of the three, the next
-`ripsem index` chunks and embeds every file again. `exclude` takes
-gitignore-style globs.
+`ripsem index` chunks and embeds every file again. Files larger than
+`max_file_kb` are skipped. `exclude` takes gitignore-style globs. `backend =
+"hash"` matches words instead of meaning; builds without the `fastembed`
+feature start with it.
 
 `skip_generated` leaves out files that are committed but written by a machine:
-lock files, `*.min.js`, `*.min.css` and source maps. `.gitignore` does not cover
+lock files, `go.sum`, `*.min.js`, `*.min.css` and source maps. `.gitignore` does not cover
 them because they are committed on purpose, and one can outweigh everything
-written by hand: in this repository `Cargo.lock` alone accounted for 124 of 291
+written by hand: in this repository `Cargo.lock` alone accounted for 124 of 297
 chunks. Set it to `false` to index them anyway.
 
 ## Quality
@@ -232,7 +239,7 @@ wrong. Each retriever is scored against ground-truth files (MRR, top five).
 
 ```
 cargo test --release --features fastembed,treesitter \
-  --test retrieval_quality -- --ignored --nocapture
+  --test retrieval_quality -- --ignored --nocapture fusion_beats_either_retriever_alone
 ```
 
 Every corpus is pinned: ripsem's own source at the `corpus/v1` tag, and three
@@ -242,18 +249,18 @@ model, so the test is `#[ignore]`d.
 
 | corpus | language | chunks | vector only | lexical only | merged |
 | --- | --- | --- | --- | --- | --- |
-| ripsem | Rust | 147 | 0.611 | 0.668 | **0.778** |
-| requests v2.34.2 | Python | 907 | 0.700 | 0.602 | **0.796** |
-| mux v1.8.1 | Go | 400 | 0.576 | 0.736 | **0.875** |
-| got v14.4.5 | TypeScript | 853 | 0.608 | 0.542 | **0.718** |
-| all | | 2307 | 0.629 | 0.626 | **0.782** |
+| ripsem | Rust | 144 | 0.611 | 0.666 | **0.778** |
+| requests v2.34.2 | Python | 909 | 0.700 | 0.610 | **0.796** |
+| mux v1.8.1 | Go | 389 | 0.576 | 0.736 | **0.875** |
+| got v14.4.5 | TypeScript | 842 | 0.608 | 0.542 | **0.721** |
+| all | | 2284 | 0.629 | 0.628 | **0.783** |
 
 | query shape | vector only | lexical only | merged |
 | --- | --- | --- | --- |
-| description (28) | 0.438 | 0.368 | **0.593** |
+| description (28) | 0.438 | 0.367 | **0.595** |
 | identifier (22) | 0.833 | 0.856 | **0.924** |
 | message (9) | 0.537 | 1.000 | **1.000** |
-| recalled name (14) | 0.750 | 0.542 | **0.798** |
+| recalled name (14) | 0.750 | 0.554 | **0.798** |
 
 Which arm is stronger reverses between corpora: BM25 wins on Go and Rust, the
 embedding model on Python and TypeScript. Merging is ahead on every corpus and
@@ -262,8 +269,11 @@ to know in advance which arm a question needs.
 
 ### Ranking code above prose
 
-Results that belong to a declaration rank above results that do not. That one
-rule is worth 0.05 of the aggregate. On the questions the merge got wrong, more
+Results that belong to a declaration rank above results that do not, with one
+exception: a chunk holding every informative term of the query comes first
+wherever it is, so a literal string found only in a CI workflow, a config file
+or a language without a parser is never lost. The rule is worth 0.05 of the
+aggregate. On the questions the merge got wrong, more
 than half the returned results were changelogs, documentation, manifests and
 tests: both retrievers prefer prose for a prose question, and free prose is not
 what a code search is for. Documentation attached to a declaration carries that
@@ -285,7 +295,7 @@ code as the tables above:
 | multilingual-e5-small | 384 | ~470 MB | 0.605 | 0.761 |
 | nomic-embed-text-v1.5 | 768 | ~550 MB | 0.580 | 0.721 |
 
-The larger model is the better retriever alone and the worse one merged. The
+bge-base-en-v1.5 is the better retriever alone and the worse one merged. The
 ordering held before and after doc records were added, and again once
 declarations ranked above prose. Why is not explained here, only measured;
 three times the disk for less accuracy settles the default. Both 768-dimension
@@ -298,11 +308,11 @@ embedded, so nomic-embed-text-v1.5's longer context goes unused.
 
 A doc comment or docstring becomes a second record for the same declaration (same
 file, same line range, so a hit still points at code) holding the author's prose
-instead of the code. It is the only change measured here that improved every
-corpus: merged MRR 0.679 to **0.733**, and 0.681 to 0.799 on Go.
+instead of the code. Measured before declarations ranked above prose, it
+improved every corpus: merged MRR 0.679 to **0.733**, and 0.681 to 0.799 on Go.
 
 It did not improve what it was aimed at. Descriptions did not move (0.551 to
-0.545); identifiers (0.811 to 0.913), messages (0.870 to 0.944) and remembered
+0.545); identifiers (0.811 to 0.913), messages (0.870 to 0.944) and recalled
 names (0.607 to 0.690) did. The cause is an interaction with BM25 length
 normalisation:
 
@@ -312,29 +322,31 @@ normalisation:
 | with doc records | **0.733** | 0.679 |
 
 Doc records add 0.009 without length normalisation, and length normalisation adds
-0.009 without doc records; together they add 0.054. A doc record is a short
+0.009 without doc records; together they add 0.063. A doc record is a short
 document that names the declaration, and BM25's length term says a term in a
 short document is stronger evidence than the same term in a long one.
 
 ### Reading cost
 
 Counting the snippets up to and including the first correct hit, a caller takes
-in **452 bytes to reach the answer, against 14 164 bytes for the whole file it
-lives in, 31x less**. This covers the 65 of 73 questions answered inside the top
+in **446 bytes to reach the answer, against 14 410 bytes for the whole file it
+lives in, 32x less**. This covers the 65 of 73 questions answered inside the top
 five, and compares against reading one file end to end, which is what happens
 when a search can only name a filename. It is not a model of what an agent does,
-and says nothing about the 8 questions no arm answered.
+and says nothing about the 8 questions the merge does not answer inside the
+top five.
 
 A second benchmark compares the two `skip_generated` settings. Indexing the lock
-file put a machine-written chunk in 6 of 105 result slots, and cost 380 chunks
-against 256, 484 KB against 335 KB, and 21.5 s against 14.6 s to build. Ranking
-is deliberately not part of that claim: `crates.io-index` occurs 409 times in
+file cost 297 chunks against 173. Before declarations ranked above prose it also
+put a machine-written chunk in 6 of 105 result slots; now none gets through
+either way, and skipping is about the size of the index. Ranking is
+deliberately not part of that claim: `crates.io-index` occurs 409 times in
 `Cargo.lock`, so indexing it gives the word `index` the document frequency of a
 stopword, and one corpus cannot separate that from the change being measured.
 
 ### Known gaps
 
-A description in the reader's own words is the weakest shape at 0.593, and eight
+A description in the reader's own words is the weakest shape at 0.595, and eight
 questions are still unanswered inside the top five. Every one of them is a
 ranking failure: at least one arm has the answer within its first 200, and the
 merge places it lower. The worst is the vector arm's fourth result for "path to
@@ -342,6 +354,9 @@ the bundled certificate authority file", which the merge drops below 200.
 `models` does not find `ModelInfo` because nothing folds plurals.
 
 ### Tried and not kept
+
+Each was measured against the code of its day, so the numbers compare within an
+entry, not across entries.
 
 - multilingual-e5-small and nomic-embed-text-v1.5 were trained with a marker in
   front of every document (`passage:`, `search_document:`) as well as every
@@ -353,11 +368,11 @@ the bundled certificate authority file", which the merge drops below 200.
   (`url-to-options` as `url to options`), against 0.679 for the bare body. Both
   lift identifiers (0.835 at best) and push descriptions down (0.487 at best,
   from 0.551). Descriptions are 28 of the 73 questions.
-- Ordering the complete-coverage group by BM25 lifts messages and drops
-  identifiers from 0.811 to 0.714, because a one-word query reaches full coverage
-  in dozens of chunks.
+- Ordering the chunks that hold every query term by BM25 lifts messages and
+  drops identifiers from 0.811 to 0.714, because a one-word query reaches full
+  coverage in dozens of chunks.
 - Weighting the lexical arm by how much of the query it could anchor moved
-  remembered names from 0.702 to 0.726 and lost the same amount on descriptions,
+  recalled names from 0.702 to 0.726 and lost the same amount on descriptions,
   0.545 to 0.524.
 - A trailing-`s` plural rule measured worse.
 - Weighting the declared name above the rest of a chunk moved a single query in
