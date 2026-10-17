@@ -258,7 +258,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         && embedded == 0
         && prev_chunks.values().all(Vec::is_empty)
         && prev_ann.is_some() == wants_ann(index.records.len())
-        && prev_floor.is_some();
+        && (prev_floor.is_some() || index.records.is_empty());
     if unchanged {
         return Ok(stats);
     }
@@ -673,7 +673,7 @@ impl Searcher {
     /// A hit reported as a whole declaration covers the pieces of it that rank
     /// below, which would only repeat its lines.
     fn places(&self, hits: Vec<crate::index::Hit>, names: &[TermHash], k: usize) -> Vec<SearchHit> {
-        let mut out: Vec<SearchHit> = Vec::with_capacity(k);
+        let mut out: Vec<SearchHit> = Vec::with_capacity(k.min(hits.len()));
         for h in hits {
             if out.len() == k {
                 break;
