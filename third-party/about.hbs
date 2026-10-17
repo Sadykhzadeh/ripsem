@@ -11,6 +11,14 @@ Used by:
 {{#each used_by}}
   {{{crate.name}}} {{{crate.version}}}
 {{/each}}
+{{#if (eq id "MPL-2.0")}}
+
+The source code of these crates, which ripsem uses unmodified, is available
+from crates.io:
+{{#each used_by}}
+  https://crates.io/crates/{{{crate.name}}}/{{{crate.version}}}
+{{/each}}
+{{/if}}
 
 {{{text}}}
 {{/each}}
