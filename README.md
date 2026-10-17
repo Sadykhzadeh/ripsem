@@ -81,7 +81,7 @@ Haswell, AMD Excavator or newer).
 To build from source instead, with Rust 1.90 or newer:
 
 ```
-cargo install --locked --git https://github.com/Sadykhzadeh/ripsem --features fastembed,treesitter
+cargo install --locked ripsem
 ```
 
 The build downloads a prebuilt ONNX Runtime. It needs a C and C++ compiler, plus
@@ -93,20 +93,21 @@ To build from a checkout:
 ```
 git clone https://github.com/Sadykhzadeh/ripsem
 cd ripsem
-cargo install --locked --path . --features fastembed,treesitter
+cargo install --locked --path .
 ```
 
-The `fastembed` feature pulls in the local embedding runtime. Without it the
-binary builds and runs on a lightweight hashing backend that matches words
-instead of meaning, which is what the test suite uses.
+The `fastembed` feature, on by default, pulls in the local embedding runtime.
+Built with `--no-default-features`, ripsem runs on a lightweight hashing backend
+that matches words instead of meaning, which is what the test suite uses.
 
-The `treesitter` feature chunks code on function and type boundaries instead of
-fixed line windows, and names each chunk after the declaration it belongs to.
-Results look like `src/auth/session.rs:40-72 fn Session::refresh`, so a caller
-can tell a definition from a call site without opening the file. A function too
-large for one chunk passes its name to every piece. It covers Rust, Python,
-JavaScript, TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Scala, Kotlin, Bash,
-HTML, CSS and JSON; other files are cut into line windows.
+The `treesitter` feature, also on by default, chunks code on function and type
+boundaries instead of fixed line windows, and names each chunk after the
+declaration it belongs to. Results look like `src/auth/session.rs:40-72 fn
+Session::refresh`, so a caller can tell a definition from a call site without
+opening the file. A function too large for one chunk passes its name to every
+piece. It covers Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#,
+Ruby, PHP, Scala, Kotlin, Bash, HTML, CSS and JSON; other files are cut into
+line windows.
 
 The `hnsw` feature adds an approximate-nearest-neighbour graph for indexes above
 500 000 chunks. It changes only how the vector arm gathers candidates; the
@@ -327,7 +328,7 @@ put the answer in the top five for at least 86% of the questions, and cost less
 to read up to the answer than the file the answer is in.
 
 ```
-cargo test --release --features fastembed,treesitter \
+cargo test --release \
   --test retrieval_quality -- --ignored --nocapture fusion_beats_either_retriever_alone
 ```
 

@@ -5,17 +5,18 @@ Bug reports, missed searches and pull requests are all welcome.
 ## Building and testing
 
 ```
-cargo test --features treesitter,hnsw --all-targets
+cargo test --no-default-features --features treesitter,hnsw --all-targets
 cargo clippy --all-features --all-targets -- -D warnings
 cargo fmt --all
 ```
 
-The default build uses the hashing backend, so the tests above run without
-downloading a model. Anything that touches the model runtime also needs:
+Without default features ripsem builds on the hashing backend, so the tests
+above run without the embedding runtime or a model. Anything that touches the
+runtime also needs:
 
 ```
-cargo test --features fastembed,treesitter --all-targets
-cargo test --features fastembed,treesitter --test semantic_search -- --ignored
+cargo test --all-targets
+cargo test --test semantic_search -- --ignored
 ```
 
 CI runs all of these on Linux, the pure-Rust ones on Windows, and a check on
@@ -27,7 +28,7 @@ A change to chunking, tokenising or scoring has to show its effect on the
 retrieval benchmark (see Quality in the README):
 
 ```
-cargo test --release --features fastembed,treesitter \
+cargo test --release \
   --test retrieval_quality -- --ignored --nocapture fusion_beats_either_retriever_alone
 ```
 

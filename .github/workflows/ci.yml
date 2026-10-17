@@ -29,9 +29,9 @@ jobs:
       - name: Lint
         run: cargo clippy --all-features --all-targets -- -D warnings
       - name: Test
-        run: cargo test --all-targets
+        run: cargo test --no-default-features --all-targets
       - name: Test pure-Rust features
-        run: cargo test --features treesitter,hnsw --all-targets
+        run: cargo test --no-default-features --features treesitter,hnsw --all-targets
       - name: Build all features
         run: cargo build --all-features
 
@@ -96,4 +96,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Test pure-Rust features
-        run: cargo test --features treesitter,hnsw --all-targets
+        run: cargo test --no-default-features --features treesitter,hnsw --all-targets

@@ -53,7 +53,7 @@ walkdir = "2.5.0"
 xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
 
 [features]
-default = []
+default = ["fastembed", "treesitter"]
 fastembed = ["dep:fastembed"]
 hnsw = ["dep:instant-distance"]
 treesitter = [
