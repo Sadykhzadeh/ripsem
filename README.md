@@ -18,7 +18,7 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: light)" srcset="docs/demo/search-light.gif">
+    <source media="(prefers-color-scheme: light)" srcset="https://github.com/Sadykhzadeh/ripsem/raw/HEAD/docs/demo/search-light.gif">
     <img alt="ripsem answering a description, an error message and a misremembered name" src="docs/demo/search.gif" width="880">
   </picture>
 </p>
@@ -220,7 +220,7 @@ The model downloads once on first use, then everything is offline.
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: light)" srcset="docs/demo/setup-light.gif">
+    <source media="(prefers-color-scheme: light)" srcset="https://github.com/Sadykhzadeh/ripsem/raw/HEAD/docs/demo/setup-light.gif">
     <img alt="adding ripsem to Claude Code, indexing a repository and searching it" src="docs/demo/setup.gif" width="880">
   </picture>
 </p>
@@ -300,23 +300,12 @@ anyway.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    subgraph index ["ripsem index"]
-        files["files"] --> chunks["chunks: functions, types,<br/>doc comments"]
-        chunks --> vectors["embedding vectors"]
-        chunks --> terms["code-aware terms"]
-    end
-    subgraph search ["ripsem search, MCP search"]
-        query["query"] --> dense["vector similarity"]
-        query --> bm25["BM25"]
-        dense --> fusion["rank fusion"]
-        bm25 --> fusion
-        fusion --> places["ranked places:<br/>path, lines, declaration"]
-    end
-    vectors -.-> dense
-    terms -.-> bm25
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="https://github.com/Sadykhzadeh/ripsem/raw/HEAD/docs/how-it-works-light.svg">
+    <img alt="ripsem index cuts files into chunks and stores embedding vectors and code-aware terms; a search runs vector similarity and BM25 over them and merges both rankings into ranked places" src="docs/how-it-works.svg" width="880">
+  </picture>
+</p>
 
 1. **Walk.** The tree is read the way git sees it: `.gitignore`, the global
    gitignore and `.ripsemignore` apply, and binary files, files above
