@@ -2,6 +2,7 @@
   "name": "ripsem",
   "version": "0.0.0",
   "description": "Local, offline semantic code search with an MCP server for coding agents",
+  "mcpName": "io.github.Sadykhzadeh/ripsem",
   "keywords": ["code-search", "semantic-search", "mcp", "embeddings", "cli"],
   "homepage": "https://github.com/Sadykhzadeh/ripsem",
   "bugs": "https://github.com/Sadykhzadeh/ripsem/issues",

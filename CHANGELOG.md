@@ -25,6 +25,8 @@
 - The MCP `search` tool answers arguments outside its schema with a tool error
   that names what is expected: `limit` runs from 1 to 50 and `min_score` from
   0 to 1.
+- Releases list the server in the MCP Registry as
+  `io.github.Sadykhzadeh/ripsem`.
 - The index format changed. The first `ripsem index` after upgrading, or the
   MCP server on its first start, rebuilds it. A later change to how files are
   cut keeps the vector of every chunk whose text stays the same.

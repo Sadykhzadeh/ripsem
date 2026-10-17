@@ -1,0 +1,27 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Sadykhzadeh/ripsem",
+  "title": "ripsem",
+  "description": "Offline code search for agents: find code by identifier, error message or plain description",
+  "repository": {
+    "url": "https://github.com/Sadykhzadeh/ripsem",
+    "source": "github"
+  },
+  "version": "0.0.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "ripsem",
+      "version": "0.0.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}
