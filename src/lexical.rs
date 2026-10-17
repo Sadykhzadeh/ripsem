@@ -143,6 +143,7 @@ impl TermVector {
 pub struct Weights {
     idf: Vec<f32>,
     reachable_idf: f32,
+    total_idf: f32,
     average_length: f32,
 }
 
@@ -168,6 +169,7 @@ impl Weights {
             .map(|(weight, _)| weight)
             .sum();
         Self {
+            total_idf: idf.iter().sum(),
             idf,
             reachable_idf,
             average_length: average_length.max(1.0),
@@ -192,6 +194,18 @@ impl Weights {
         }
         let matched: f32 = set_bits(presence).map(|i| self.idf[i]).sum();
         (matched / self.reachable_idf).min(1.0)
+    }
+
+    /// The share of the whole query found literally, which is what a score
+    /// reports. [`Self::coverage`] leaves out terms no record holds, so that a
+    /// misremembered name still ranks the code it meant, but reporting that
+    /// would call a chunk sharing one word with a deleted identifier certain.
+    pub fn share(&self, presence: u64) -> f32 {
+        if self.total_idf <= 0.0 || presence == 0 {
+            return 0.0;
+        }
+        let matched: f32 = set_bits(presence).map(|i| self.idf[i]).sum();
+        (matched / self.total_idf).min(1.0)
     }
 }
 
@@ -351,6 +365,21 @@ mod tests {
     fn coverage_ignores_terms_absent_from_the_corpus() {
         let rows = scored("evict_least_recently_used zzzznotpresent");
         assert_eq!(rows[0].2, 1.0);
+    }
+
+    #[test]
+    fn the_reported_share_counts_terms_absent_from_the_corpus() {
+        let terms = terms_of("evict_least_recently_used zzzznotpresent");
+        let vectors = corpus();
+        let presence: Vec<u64> = vectors.iter().map(|v| v.presence(&terms)).collect();
+        let weights = Weights::new(&presence, terms.len(), 1.0);
+        let share = weights.share(presence[0]);
+        assert!(share > 0.5 && share < 1.0, "{share}");
+
+        let terms = terms_of("evict_least_recently_used");
+        let presence: Vec<u64> = vectors.iter().map(|v| v.presence(&terms)).collect();
+        let weights = Weights::new(&presence, terms.len(), 1.0);
+        assert_eq!(weights.share(presence[0]), 1.0);
     }
 
     #[test]

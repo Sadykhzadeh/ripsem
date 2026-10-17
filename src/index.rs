@@ -255,17 +255,14 @@ impl Index {
             .into_iter()
             .map(|(record_idx, agreement)| {
                 let record = &self.records[record_idx];
+                let presence = record.terms.presence(&lexical.terms);
                 Candidate {
                     record_idx,
                     agreement,
                     declares_something: record.symbol.is_some(),
                     cosine: quant::dot(&record.vector, query),
-                    coverage: match lexical.terms.is_empty() {
-                        true => 0.0,
-                        false => lexical
-                            .weights
-                            .coverage(record.terms.presence(&lexical.terms)),
-                    },
+                    coverage: lexical.weights.coverage(presence),
+                    share: lexical.weights.share(presence),
                 }
             })
             .collect();
@@ -318,6 +315,7 @@ struct Candidate {
     agreement: f32,
     cosine: f32,
     coverage: f32,
+    share: f32,
     declares_something: bool,
 }
 
@@ -330,7 +328,7 @@ impl Candidate {
     }
 
     fn confidence(&self) -> f32 {
-        self.cosine.max(self.coverage)
+        self.cosine.max(self.share)
     }
 
     /// Below an exact match, a chunk that belongs to a declaration outranks one
