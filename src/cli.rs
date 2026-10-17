@@ -399,11 +399,12 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
     }
     let stats = pipeline::index_repo(&config, force)?;
     println!(
-        "{}: {} embedded, {} unchanged -> {}",
+        "{}: {} changed, {} unchanged -> {}, {} embedded",
         plural(stats.files, "file"),
         stats.embedded,
         stats.reused,
-        plural(stats.chunks, "chunk")
+        plural(stats.chunks, "chunk"),
+        stats.vectors
     );
     warn_about_backend(&config);
     Ok(())

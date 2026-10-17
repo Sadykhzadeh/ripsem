@@ -656,3 +656,51 @@ fn a_search_by_name_reports_the_declaration_not_its_chunk() {
         );
     }
 }
+
+/// An edit to one function embeds that function again, not its whole file.
+#[cfg(feature = "treesitter")]
+#[test]
+fn an_edit_embeds_only_the_chunks_it_changed() {
+    let dir = TempDir::new();
+    let body = |edited: &str| {
+        let mut src = String::new();
+        for i in 0..8 {
+            src.push_str(&format!("fn step_{i}() -> u32 {{\n"));
+            for line in 0..30 {
+                src.push_str(&format!("    let v{line} = {i} + {line};\n"));
+            }
+            if i == 5 {
+                src.push_str(edited);
+            }
+            src.push_str("    0\n}\n\n");
+        }
+        src
+    };
+    dir.write("big.rs", &body(""));
+    let config = config_for(&dir.path);
+    let first = pipeline::index_repo(&config, false).unwrap();
+    assert!(first.vectors >= 8, "{first:?}");
+
+    dir.write("big.rs", &body("    // changed\n"));
+    let second = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!((second.embedded, second.vectors), (1, 1), "{second:?}");
+    assert_eq!(second.chunks, first.chunks);
+
+    let fresh = TempDir::new();
+    fresh.write("big.rs", &body("    // changed\n"));
+    let rebuilt = pipeline::index_repo(&config_for(&fresh.path), false).unwrap();
+    let a = ripsem::index::Index::load(&config.index_path()).unwrap();
+    let b = ripsem::index::Index::load(&config_for(&fresh.path).index_path()).unwrap();
+    assert_eq!(rebuilt.chunks, second.chunks);
+    for (x, y) in a.records.iter().zip(&b.records) {
+        assert_eq!(
+            (x.start_line, x.end_line, x.text_hash),
+            (y.start_line, y.end_line, y.text_hash)
+        );
+        assert_eq!(
+            (x.vector.scale, &x.vector.data),
+            (y.vector.scale, &y.vector.data),
+            "a reused vector differs from a fresh one"
+        );
+    }
+}
