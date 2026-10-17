@@ -2,10 +2,12 @@ name: release
 
 # A `v*` tag builds ripsem with the embedding model and tree-sitter for each
 # platform below and publishes the archives, with their SHA-256 sums, as a
-# GitHub release of that tag.
+# GitHub release of that tag. Run by hand on a branch, it builds, tests and
+# uploads the archives as artifacts of the run without publishing anything.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -129,6 +131,7 @@ jobs:
 
   release:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
