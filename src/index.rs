@@ -48,6 +48,35 @@ pub struct Record {
 }
 
 impl Record {
+    /// Tests describe behaviour in the words a question uses and call the
+    /// code under test by name, so they match nearly as well as the code
+    /// itself without being what is looked for.
+    pub fn is_test(&self) -> bool {
+        const DIRS: [&str; 7] = [
+            "test",
+            "tests",
+            "__tests__",
+            "spec",
+            "specs",
+            "testing",
+            "testdata",
+        ];
+        const SUFFIXES: [&str; 4] = ["test", "tests", "spec", "specs"];
+        let path = self.path.to_ascii_lowercase();
+        let (dirs, file) = path.rsplit_once('/').unwrap_or(("", &path));
+        let stem = file.split('.').next().unwrap_or(file);
+        let named_like_a_class = [".java", ".kt", ".scala", ".cs", ".php", ".swift"]
+            .iter()
+            .any(|ext| file.ends_with(ext));
+        dirs.split('/').any(|dir| {
+            DIRS.contains(&dir) || SUFFIXES.iter().any(|s| dir.ends_with(&format!(".{s}")))
+        }) || stem.starts_with("test_")
+            || SUFFIXES.iter().any(|s| stem.ends_with(&format!("_{s}")))
+            || file.contains(".test.")
+            || file.contains(".spec.")
+            || (named_like_a_class && SUFFIXES.iter().any(|s| stem.ends_with(s)))
+    }
+
     /// The declaration a query names, by the name typed or spelled out in
     /// words, among those the record holds. `Road::quote_cost` names both
     /// `Road` and its method; the one named in full wins, then one that is not
@@ -282,6 +311,7 @@ impl Index {
                 }
             }
         }
+        let wants_tests = lexical.terms.iter().any(|t| TEST_WORDS.contains(t));
         let mut candidates: Vec<Candidate> = agreement
             .into_iter()
             .map(|(record_idx, agreement)| {
@@ -296,6 +326,7 @@ impl Index {
                         Some(d) if d.is_extension() => Named::Extended,
                         Some(_) => Named::Declared,
                     },
+                    test: !wants_tests && record.is_test(),
                     cosine: quant::dot(&record.vector, query),
                     coverage: lexical.weights.coverage(presence),
                     share: lexical.weights.share(presence),
@@ -346,6 +377,9 @@ impl Index {
 
 const COMPLETE_COVERAGE: f32 = 0.999;
 
+static TEST_WORDS: std::sync::LazyLock<Vec<TermHash>> =
+    std::sync::LazyLock::new(|| crate::lexical::query_terms("test tests testing spec specs"));
+
 struct Candidate {
     record_idx: usize,
     agreement: f32,
@@ -354,6 +388,7 @@ struct Candidate {
     share: f32,
     declares_something: bool,
     named: Named,
+    test: bool,
 }
 
 /// How a record answers a query that names something. A type is declared once
@@ -392,6 +427,7 @@ impl Candidate {
         b.holds_every_term()
             .cmp(&a.holds_every_term())
             .then_with(|| b.named.cmp(&a.named))
+            .then_with(|| a.test.cmp(&b.test))
             .then_with(|| b.declares_something.cmp(&a.declares_something))
             .then_with(|| {
                 b.agreement
@@ -667,6 +703,64 @@ mod tests {
         let names = crate::lexical::query_names(query);
         let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms(query), &names, 4, None);
         assert_eq!(paths(&index, &hits)[0], "src/road.rs");
+    }
+
+    #[test]
+    fn test_files_are_told_apart_by_their_path() {
+        let test = |path: &str| text_record(path, "", vec![1.0]).is_test();
+        for path in [
+            "tests/cli.rs",
+            "src/__tests__/load.ts",
+            "pkg/router_test.go",
+            "test_auth.py",
+            "lib/session_spec.rb",
+            "src/api.test.ts",
+            "src/main/java/BoxTest.java",
+            "src/Polly.Specs/Retry.cs",
+            "src/RetryTests.cs",
+            "src/Polly.Core.Tests/Retry.cs",
+        ] {
+            assert!(test(path), "{path}");
+        }
+        for path in [
+            "src/testing_utils.rs",
+            "src/contest.py",
+            "lib/attest.go",
+            "src/auth.rs",
+        ] {
+            assert!(!test(path), "{path}");
+        }
+    }
+
+    /// A test describes the behaviour in the question's words and calls the
+    /// code by name, so it matches as well as the code does.
+    #[test]
+    fn tests_rank_below_code_unless_the_query_asks_for_them() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        let declared = |path: &str, vector: Vec<f32>| {
+            let mut record = text_record(path, "redirect follow location", vector);
+            record.symbol = Some(Symbol {
+                kind: "fn".into(),
+                name: "follow".into(),
+            });
+            record
+        };
+        index
+            .records
+            .push(declared("tests/test_redirects.py", vec![1.0, 0.0, 0.0]));
+        index
+            .records
+            .push(declared("src/sessions.py", vec![0.8, 0.6, 0.0]));
+
+        let first = |query: &str| {
+            let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms(query), &[], 2, None);
+            paths(&index, &hits)[0].clone()
+        };
+        assert_eq!(first("follow redirect location"), "src/sessions.py");
+        assert_eq!(
+            first("test that follows a redirect"),
+            "tests/test_redirects.py"
+        );
     }
 
     #[test]
