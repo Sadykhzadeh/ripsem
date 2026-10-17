@@ -2,7 +2,7 @@
 # misremembered name, each answered by the right function.
 #
 # Needs ripsem on PATH and $RIPSEM_DEMO/requests holding psf/requests v2.34.2,
-# already indexed. From the repository root: vhs docs/demo/search.tape
+# already indexed. From the repository root: sh docs/demo/record.sh
 
 Output docs/demo/search.gif
 

@@ -1,16 +1,16 @@
-# The setup demo in the README: index a repository, check it, and hand the
-# search to a coding agent.
+# The setup demo in the README: hand ripsem to a coding agent, build the
+# index, and ask it something.
 #
 # Needs ripsem on PATH, the embedding model already downloaded, and
 # $RIPSEM_DEMO/mux holding gorilla/mux v1.8.1. From the repository root:
-# vhs docs/demo/setup.tape
+# sh docs/demo/record.sh
 
 Output docs/demo/setup.gif
 
 Set Shell bash
 Set FontSize 15
 Set Width 1180
-Set Height 490
+Set Height 470
 Set Padding 24
 Set Theme "GitHub Dark"
 Set TypingSpeed 35ms
@@ -18,32 +18,26 @@ Set WaitPattern /^\$$/
 Set WaitTimeout 120s
 
 Hide
-Type `export PS1='$ ' && cd "$RIPSEM_DEMO/mux" && rm -rf .ripsem .mcp.json && clear`
+Type `export PS1='$ ' && cd "$RIPSEM_DEMO/mux" && rm -rf .ripsem .mcp.json CLAUDE.md && clear`
 Enter
 Wait
 Show
 
 Sleep 600ms
+Type "ripsem install claude-code"
+Sleep 400ms
+Enter
+Wait
+Sleep 2.5s
+
 Type "ripsem index"
 Sleep 400ms
 Enter
 Wait
 Sleep 1.5s
 
-Type "ripsem status"
+Type `ripsem search "walk every registered route" -k 2 --context 1`
 Sleep 400ms
 Enter
 Wait
-Sleep 2.5s
-
-Type "ripsem install claude-code"
-Sleep 400ms
-Enter
-Wait
-Sleep 1.5s
-
-Type "cat .mcp.json"
-Sleep 400ms
-Enter
-Wait
-Sleep 4s
+Sleep 5s
