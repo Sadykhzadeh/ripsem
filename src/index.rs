@@ -124,6 +124,11 @@ impl Index {
         Ok(())
     }
 
+    /// Whether any indexed file lies under the repo-relative `prefix`.
+    pub fn covers(&self, prefix: &str) -> bool {
+        self.records.iter().any(|r| path_in_scope(&r.path, prefix))
+    }
+
     /// Keys are borrowed, so a file's path is not copied once per chunk.
     pub fn file_hashes(&self) -> HashMap<&str, u64> {
         self.records

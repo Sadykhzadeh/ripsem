@@ -289,6 +289,13 @@ fn search_scoped_convenience_limits_results_to_a_prefix() {
     // No scope (None) searches the whole index — docs/ is reachable too.
     let all = pipeline::search_scoped(&config, "verify password session token", 10, None).unwrap();
     assert!(all.iter().any(|h| h.path.starts_with("docs/")));
+
+    // A scope that matches no file is a mistake to report, not an empty answer.
+    let err = pipeline::search_scoped(&config, "verify password", 10, Some("srcc")).unwrap_err();
+    assert!(
+        err.to_string().contains("nothing is indexed under 'srcc'"),
+        "{err}"
+    );
 }
 
 #[test]
