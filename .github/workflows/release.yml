@@ -3,7 +3,7 @@ name: release
 # A `v*` tag builds ripsem with the embedding runtime and tree-sitter for each
 # platform below and publishes the archives, their SHA-256 sums and build
 # provenance as a GitHub release of that tag, with the tag's CHANGELOG section
-# as its notes. Run by hand on a branch, it builds, tests and uploads the
+# as its notes, then the crate to crates.io and the packages to npm. Run by hand on a branch, it builds, tests and uploads the
 # archives as artifacts of the run without publishing anything.
 on:
   push:
@@ -171,3 +171,53 @@ jobs:
             CHANGELOG.md > notes.md
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --title "ripsem $version" --notes-file notes.md dist/ripsem-* dist/SHA256SUMS
+
+  # crates.io trusts this workflow by name too, so `cargo install ripsem` gets
+  # the tag without a crates.io token stored here.
+  crates:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  # The same archives as npm packages, so `npx ripsem` works. Published through
+  # npm's trusted publishing: npm trusts this workflow by name and hands it a
+  # short-lived token, so no npm secret is stored here. Packed on Linux, which
+  # keeps the binaries executable.
+  npm:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ripsem-*
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        run: |
+          mkdir unpacked
+          for archive in dist/*.tar.gz; do tar -xzf "$archive" -C unpacked; done
+          for archive in dist/*.zip; do unzip -q "$archive" -d unpacked; done
+          node npm/stage.mjs "${GITHUB_REF_NAME#v}" unpacked staged
+          for package in staged/ripsem-*/ staged/ripsem/; do
+            npm publish --access public "$package"
+          done

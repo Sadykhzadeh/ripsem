@@ -1,0 +1,25 @@
+{
+  "name": "ripsem",
+  "version": "0.0.0",
+  "description": "Local, offline semantic code search with an MCP server for coding agents",
+  "keywords": ["code-search", "semantic-search", "mcp", "embeddings", "cli"],
+  "homepage": "https://github.com/Sadykhzadeh/ripsem",
+  "bugs": "https://github.com/Sadykhzadeh/ripsem/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sadykhzadeh/ripsem.git"
+  },
+  "license": "Apache-2.0",
+  "bin": {
+    "ripsem": "bin/ripsem.js"
+  },
+  "files": ["bin"],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "ripsem-darwin-arm64": "0.0.0",
+    "ripsem-linux-x64": "0.0.0",
+    "ripsem-win32-x64": "0.0.0"
+  }
+}

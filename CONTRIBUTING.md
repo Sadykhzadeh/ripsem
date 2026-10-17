@@ -64,3 +64,5 @@ Give the version's heading in `CHANGELOG.md` its date, make the version in
 `Cargo.toml` match, and push a `vX.Y.Z` tag. The release workflow refuses a tag
 that disagrees with either, builds and tests every archive, and publishes them
 with their checksums, build provenance and that changelog section as the notes.
+It then publishes the crate to crates.io and the packages under `npm/` to npm,
+both through trusted publishing, so neither needs a token.
