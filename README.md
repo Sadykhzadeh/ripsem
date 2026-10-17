@@ -111,13 +111,20 @@ downloads a prebuilt ONNX Runtime, and needs a C and C++ compiler, plus
 pkg-config and the OpenSSL headers on Linux (`build-essential pkg-config
 libssl-dev` on Debian and Ubuntu).
 
-To build from a checkout:
+Tagged releases are the stable versions, and npm, Cargo and the install scripts
+all install the latest one. `master` carries the changes for the next release,
+listed under Unreleased in [CHANGELOG.md](CHANGELOG.md).
+
+To build the latest release from a checkout:
 
 ```
 git clone https://github.com/Sadykhzadeh/ripsem
 cd ripsem
+git checkout "$(git describe --tags --abbrev=0)"
 cargo install --locked --path .
 ```
+
+Leaving out the `git checkout` builds `master`.
 
 The `fastembed` feature, on by default, pulls in the local embedding runtime.
 Built with `--no-default-features`, ripsem runs on a lightweight hashing backend
