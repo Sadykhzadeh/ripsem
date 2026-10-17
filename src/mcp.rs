@@ -89,16 +89,19 @@ fn serve_on(
                 };
                 for message in messages {
                     ask = roots.ask(message).or(ask);
-                    if let Some(dir) = roots.project(message).filter(|dir| *dir != config.root)
+                    let Some(dir) = roots.project(message) else {
+                        continue;
+                    };
+                    if dir != config.root
                         && let Ok(fresh) = Config::load(&dir)
                     {
                         config = fresh;
                         session = None;
                         tried = None;
-                        if config.data_dir().is_dir() {
-                            watch(config.clone());
-                            roots.follow = false;
-                        }
+                    }
+                    if dir == config.root && config.data_dir().is_dir() {
+                        watch(config.clone());
+                        roots.follow = false;
                     }
                 }
                 hold_the_index(&mut session, &mut tried, &mut config);
@@ -160,7 +163,11 @@ impl Roots {
             .as_array()?
             .iter()
             .filter_map(|root| file_uri_path(root.get("uri")?.as_str()?))
-            .find_map(|path| path.canonicalize().ok().filter(|p| p.is_dir()))?;
+            .find_map(|path| {
+                path.canonicalize()
+                    .ok()
+                    .filter(|p| p.is_dir() && !is_network(p))
+            })?;
         Some(Config::find_root(&dir))
     }
 }
@@ -1203,6 +1210,64 @@ mod tests {
         let text = found["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("my src/auth.rs"), "got: {found}");
         assert_eq!(watched, [project.path().canonicalize().unwrap()]);
+    }
+
+    /// Hands the server one line per read, running each line's step first,
+    /// so the files can change between two messages.
+    struct Steps(std::collections::VecDeque<(Value, Box<dyn FnOnce()>)>);
+
+    impl std::io::Read for Steps {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let Some((line, step)) = self.0.pop_front() else {
+                return Ok(0);
+            };
+            step();
+            let bytes = format!("{line}\n").into_bytes();
+            buf[..bytes.len()].copy_from_slice(&bytes);
+            Ok(bytes.len())
+        }
+    }
+
+    /// The user runs `ripsem init` in the project the server has already moved
+    /// to, and the next change of roots starts keeping it current.
+    #[test]
+    fn a_followed_project_initialised_later_is_kept_current() {
+        let home = crate::testutil::TempDir::new();
+        let project = crate::testutil::TempDir::new();
+        let root = project.path().canonicalize().unwrap();
+        let init = root.clone();
+        let nothing = || -> Box<dyn FnOnce()> { Box::new(|| {}) };
+        let [initialize, initialized] = opening(json!({ "roots": {} }));
+        let steps = Steps(
+            [
+                (initialize, nothing()),
+                (initialized, nothing()),
+                (roots_answer(1, &[file_uri(&root)]), nothing()),
+                (
+                    json!({ "jsonrpc": "2.0", "method": "notifications/roots/list_changed" }),
+                    Box::new(move || {
+                        let config = Config {
+                            root: init,
+                            ..Default::default()
+                        };
+                        config.save().unwrap();
+                    }) as Box<dyn FnOnce()>,
+                ),
+                (roots_answer(2, &[file_uri(&root)]), nothing()),
+            ]
+            .into(),
+        );
+        let watched = std::cell::RefCell::new(Vec::new());
+        let mut out = Vec::new();
+        serve_on(
+            Config::load(home.path()).unwrap(),
+            false,
+            |config: Config| watched.borrow_mut().push(config.root),
+            std::io::BufReader::new(steps),
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(watched.into_inner(), [root]);
     }
 
     #[test]
