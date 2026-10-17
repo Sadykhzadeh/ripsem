@@ -632,10 +632,14 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
         }
         Some(_) => {}
     }
-    doc["mcpServers"]["ripsem"] = json!({
-        "command": "ripsem",
-        "args": ["mcp"]
-    });
+    // Claude Code starts a project's server in the project. Cursor does not
+    // say where it starts one, but expands `${workspaceFolder}`, which keeps
+    // the file free of this machine's paths.
+    let args = match target {
+        InstallCmd::ClaudeCode => json!(["mcp"]),
+        InstallCmd::Cursor => json!(["mcp", "--path", "${workspaceFolder}"]),
+    };
+    doc["mcpServers"]["ripsem"] = json!({ "command": "ripsem", "args": args });
 
     std::fs::write(&path, serde_json::to_string_pretty(&doc)?)?;
     println!("added ripsem to {}", show_path(&path));
@@ -768,7 +772,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
-        assert_eq!(doc["mcpServers"]["ripsem"]["args"][0], "mcp");
+        assert_eq!(
+            doc["mcpServers"]["ripsem"]["args"],
+            json!(["mcp", "--path", "${workspaceFolder}"])
+        );
     }
 
     #[test]
