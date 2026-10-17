@@ -804,3 +804,30 @@ fn a_huge_result_count_is_not_reserved_up_front() {
     let hits = pipeline::search(&config, "alpha", usize::MAX).unwrap();
     assert_eq!(hits.len(), 1);
 }
+
+/// A search for a large block's name reports the whole block, and the
+/// methods inside it, which carry its name too, are still answers of their own.
+#[cfg(feature = "treesitter")]
+#[test]
+fn a_named_block_does_not_hide_the_methods_inside_it() {
+    let dir = TempDir::new();
+    let mut src = String::from("impl Searcher {\n");
+    for i in 0..20 {
+        src.push_str(&format!(
+            "    fn helper{i}(&self) -> u32 {{\n        {i}\n    }}\n\n"
+        ));
+    }
+    src.push_str("    fn refresh(&self, mtime: u64) -> bool {\n        mtime > 0\n    }\n}\n");
+    dir.write("searcher.rs", &src);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let refresh = src.lines().position(|l| l.contains("fn refresh")).unwrap() + 1;
+    let hits = pipeline::search(&config, "Searcher", 5).unwrap();
+    assert!(
+        hits.iter().any(|h| h.start_line <= refresh
+            && refresh <= h.end_line
+            && h.symbol.as_ref().is_some_and(|s| s.kind == "fn")),
+        "{hits:#?}"
+    );
+}

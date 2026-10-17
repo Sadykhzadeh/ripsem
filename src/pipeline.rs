@@ -676,23 +676,28 @@ impl Searcher {
         Ok(self.places(hits, &names, wanted))
     }
 
-    /// A hit reported as a whole declaration covers the pieces of it that rank
-    /// below, which would only repeat its lines.
+    /// A hit reported as a whole declaration covers the records inside it
+    /// that rank below, such as the rest of a long enum's variants.
     fn places(&self, hits: Vec<crate::index::Hit>, names: &[TermHash], k: usize) -> Vec<SearchHit> {
         let mut out: Vec<SearchHit> = Vec::with_capacity(k.min(hits.len()));
+        let mut wider: Vec<(String, usize, usize)> = Vec::new();
         for h in hits {
             if out.len() == k {
                 break;
             }
-            let mut hit = self.hit(h.record_idx, h.score, names);
-            let covered = out.iter().any(|o| {
-                o.path == hit.path && o.start_line <= hit.start_line && hit.end_line <= o.end_line
+            let record = &self.index.records[h.record_idx];
+            let covered = wider.iter().any(|(path, start, end)| {
+                *path == record.path && *start <= record.start_line && record.end_line <= *end
             });
             if covered {
                 continue;
             }
+            let mut hit = self.hit(h.record_idx, h.score, names);
+            if hit.end_line > record.end_line {
+                wider.push((hit.path.clone(), hit.start_line, hit.end_line));
+            }
             if out.len() < SHOWN_IN_FULL
-                && let Some(code) = self.code(&self.index.records[h.record_idx], &hit)
+                && let Some(code) = self.code(record, &hit)
             {
                 hit.snippet = code;
             }
@@ -716,7 +721,8 @@ impl Searcher {
 
     /// A record holding the declaration the query names is reported as that
     /// declaration: its label, its lines and a snippet that starts there. The
-    /// first piece of a declaration too large for one chunk reports all of it.
+    /// first piece of a declaration too large for one chunk reports all of it,
+    /// unless it is a container, whose members answer for themselves.
     fn hit(&self, record_idx: usize, score: f32, names: &[TermHash]) -> SearchHit {
         let r = &self.index.records[record_idx];
         let whole = || SearchHit {
@@ -731,7 +737,11 @@ impl Searcher {
             return whole();
         };
         let start_line = declaration.start_line.max(r.start_line);
-        let end_line = declaration.end_line.max(start_line);
+        let end_line = match declaration.is_container() {
+            true => declaration.end_line.min(r.end_line),
+            false => declaration.end_line,
+        }
+        .max(start_line);
         let snippet = match (start_line, end_line) == (r.start_line, r.end_line) {
             true => Some(r.snippet.clone()),
             false => self.lines(r, start_line, end_line, SNIPPET_BYTES),
