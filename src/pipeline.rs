@@ -8,6 +8,7 @@ use rayon::prelude::*;
 
 use crate::config::Config;
 use crate::index::{Index, Record};
+use crate::lexical::TermHash;
 use crate::{chunk, embed, fingerprint, walk};
 
 #[derive(Debug)]
@@ -83,6 +84,8 @@ pub struct SearchHit {
     pub snippet: String,
     pub symbol: Option<crate::symbol::Symbol>,
 }
+
+const SNIPPET_BYTES: usize = 400;
 
 pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     // Loaded on the first chunk that needs a vector: a reindex that finds
@@ -164,7 +167,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
                 path: rel.clone(),
                 start_line: c.start_line,
                 end_line: c.end_line,
-                snippet: truncate(&dedent(&c.text), 400),
+                snippet: truncate(&dedent(&c.text), SNIPPET_BYTES),
                 file_hash: hash,
                 terms: crate::lexical::TermVector::new(
                     &c.text,
@@ -172,6 +175,8 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
                     c.symbol.as_ref().map(|s| s.name.as_str()),
                 ),
                 symbol: c.symbol,
+                declarations: c.declarations,
+                text_hash: fingerprint::content_hash(c.text.as_bytes()),
             };
             queue.push(pending, c.text);
             if queue.is_full() {
@@ -270,6 +275,8 @@ struct Pending {
     file_hash: u64,
     terms: crate::lexical::TermVector,
     symbol: Option<crate::symbol::Symbol>,
+    declarations: Vec<crate::symbol::Declaration>,
+    text_hash: u64,
 }
 
 /// Chunks waiting for their vectors, kept in the order the walk found them.
@@ -349,6 +356,8 @@ impl Queue {
                 vector: crate::quant::quantize(&vector),
                 terms: p.terms,
                 symbol: p.symbol,
+                declarations: p.declarations,
+                text_hash: p.text_hash,
             });
         }
         self.texts.clear();
@@ -398,6 +407,7 @@ impl LazyEmbedder {
 
 pub struct Searcher {
     index: Index,
+    root: std::path::PathBuf,
     // Built on the first query, so opening an index does not pay for the model.
     embedder: Arc<LazyEmbedder>,
     index_path: std::path::PathBuf,
@@ -439,6 +449,7 @@ fn open_with(config: &Config, embedder: Arc<LazyEmbedder>) -> Result<Searcher> {
     let ann_map = index.ann.as_deref().and_then(crate::ann::load);
     Ok(Searcher {
         index,
+        root: config.root.clone(),
         embedder,
         index_path,
         index_mtime,
@@ -517,6 +528,7 @@ impl Searcher {
         }
         let qv = self.embedder.get()?.embed_query(query)?;
         let terms = crate::lexical::query_terms(query);
+        let names = crate::lexical::query_names(query);
 
         #[cfg(feature = "hnsw")]
         if prefix.is_none()
@@ -529,30 +541,64 @@ impl Searcher {
                 .collect();
             return Ok(self
                 .index
-                .search_fused_with(&dense, &qv, &terms, k)
+                .search_fused_with(&dense, &qv, &terms, &names, k)
                 .into_iter()
-                .map(|h| self.hit(h.record_idx, h.score))
+                .map(|h| self.hit(h.record_idx, h.score, &names))
                 .collect());
         }
 
         Ok(self
             .index
-            .search_fused(&qv, &terms, k, prefix)
+            .search_fused(&qv, &terms, &names, k, prefix)
             .into_iter()
-            .map(|h| self.hit(h.record_idx, h.score))
+            .map(|h| self.hit(h.record_idx, h.score, &names))
             .collect())
     }
 
-    fn hit(&self, record_idx: usize, score: f32) -> SearchHit {
+    /// A record holding the declaration the query names is reported as that
+    /// declaration: its label, its lines and a snippet that starts there.
+    fn hit(&self, record_idx: usize, score: f32, names: &[TermHash]) -> SearchHit {
         let r = &self.index.records[record_idx];
-        SearchHit {
+        let whole = || SearchHit {
             path: r.path.clone(),
             start_line: r.start_line,
             end_line: r.end_line,
             score,
             snippet: r.snippet.clone(),
             symbol: r.symbol.clone(),
+        };
+        let Some(declaration) = r.declaration_named(names) else {
+            return whole();
+        };
+        let start_line = declaration.start_line.max(r.start_line);
+        let end_line = declaration.end_line.min(r.end_line).max(start_line);
+        let snippet = match (start_line, end_line) == (r.start_line, r.end_line) {
+            true => Some(r.snippet.clone()),
+            false => self.lines(r, start_line, end_line),
+        };
+        match snippet {
+            Some(snippet) => SearchHit {
+                path: r.path.clone(),
+                start_line,
+                end_line,
+                score,
+                snippet,
+                symbol: Some(declaration.symbol.clone()),
+            },
+            None => whole(),
         }
+    }
+
+    /// Lines of an indexed file as they were indexed. A file changed since then
+    /// has nothing to offer: its lines may have moved.
+    fn lines(&self, record: &Record, start: usize, end: usize) -> Option<String> {
+        let bytes = std::fs::read(self.root.join(&record.path)).ok()?;
+        if fingerprint::content_hash(&bytes) != record.file_hash {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        let wanted: Vec<&str> = text.lines().skip(start - 1).take(end + 1 - start).collect();
+        Some(truncate(&dedent(&wanted.join("\n")), SNIPPET_BYTES))
     }
 }
 
