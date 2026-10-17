@@ -11,8 +11,8 @@
 - Tests rank below the code they test, unless the query asks for tests.
 - A score is measured from the index's noise floor, how closely text about
   anything but code matches it, so text unrelated to the repository scores
-  near 0. Scores fall with rank, and `--min-score` and
-  `min_score` keep the top of the ranking.
+  near 0. Scores fall with rank, and `--min-score` and `min_score` keep the
+  top of the ranking.
 - The first three hits carry their code, up to 40 lines, and `search` prints
   whole snippets when its output goes to another program, so an agent reads
   the answer without opening the file.

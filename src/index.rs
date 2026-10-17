@@ -117,6 +117,8 @@ pub struct Index {
     /// index: a cosine is reported as how far it rises above this. `None`
     /// until measured.
     pub noise_floor: Option<f32>,
+    /// Chunks embedded since the noise floor was measured.
+    pub embedded_since_floor: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -135,6 +137,7 @@ impl Index {
             records: Vec::new(),
             ann: None,
             noise_floor: None,
+            embedded_since_floor: 0,
         }
     }
 
@@ -364,7 +367,8 @@ impl Index {
             .filter(|c| c.is_finite() && *c > f32::MIN)
             .collect();
         closest.sort_by(|a, b| b.total_cmp(a));
-        self.noise_floor = closest.get(1).or(closest.first()).copied();
+        self.noise_floor = Some(closest.get(1).or(closest.first()).copied().unwrap_or(0.0));
+        self.embedded_since_floor = 0;
     }
 
     /// Keeps the better-ranked of any records that cover the same lines (a
@@ -1101,7 +1105,7 @@ mod tests {
         let bytes = bitcode::encode(&sample_index());
         assert_eq!(
             (FORMAT_VERSION, crate::fingerprint::content_hash(&bytes)),
-            (11, 0x5325_e983_d939_adda)
+            (11, 0x8aa4_2b7a_98ca_a8a0)
         );
     }
 
