@@ -623,13 +623,6 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
     }
 }
 
-/// What an agent is told about the `search` tool, so it reaches for it before
-/// guessing names with grep.
-const AGENT_NOTE: &str = "This repository is indexed by ripsem. To find where something is
-implemented, call the `search` tool of the `ripsem` MCP server first, with an
-identifier, an error message or a plain description of the behaviour. Use grep
-when every occurrence of a string is needed.";
-
 /// Writes the config as `init` does, because a `.ripsem` directory is what lets
 /// the server keep the index current, then the server entry and the note.
 fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
@@ -651,12 +644,13 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
     let (path, note) = match target {
         InstallCmd::ClaudeCode => (
             root.join("CLAUDE.md"),
-            format!("## Code search\n\n{AGENT_NOTE}\n"),
+            format!("## Code search\n\n{}\n", mcp::INSTRUCTIONS),
         ),
         InstallCmd::Cursor => (
             root.join(".cursor/rules/ripsem.mdc"),
             format!(
-                "---\ndescription: Finding code in this repository\nalwaysApply: true\n---\n\n{AGENT_NOTE}\n"
+                "---\ndescription: Finding code in this repository\nalwaysApply: true\n---\n\n{}\n",
+                mcp::INSTRUCTIONS
             ),
         ),
     };

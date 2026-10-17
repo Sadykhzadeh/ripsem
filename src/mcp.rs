@@ -19,6 +19,17 @@ use crate::pipeline;
 /// answer tells it to fall back to `initialize`.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
+/// What an agent is told about the `search` tool, so it reaches for it before
+/// guessing names with grep. Sent as the server instructions, which reach the
+/// model even from a client that loads tool descriptions only on demand, and
+/// written by `ripsem install` to CLAUDE.md or a Cursor rule.
+pub(crate) const INSTRUCTIONS: &str =
+    "This repository is indexed by ripsem. To find where something is
+implemented, call the `search` tool of the `ripsem` MCP server first, with an
+identifier, an error message or a plain description of the behaviour. Each hit
+names a file and a line range; read those lines rather than the whole file. Use
+grep when every occurrence of a string is needed.";
+
 /// A directory with a `.ripsem` data directory has opted in, through `ripsem
 /// init`, `index` or `install`, and its index is kept current while the server
 /// runs. Anywhere else, such as a home directory a client happened to start
@@ -149,7 +160,8 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
                         .and_then(Value::as_str)
                 ),
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "ripsem", "version": env!("CARGO_PKG_VERSION") }
+                "serverInfo": { "name": "ripsem", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": INSTRUCTIONS.replace('\n', " ")
             }),
         )),
         "tools/list" => Some(ok(id?, json!({ "tools": [tool_schema()] }))),
@@ -409,6 +421,17 @@ mod tests {
         let resp = handle(&cfg, None, &req("initialize", json!({}))).unwrap();
         assert_eq!(resp["result"]["serverInfo"]["name"], "ripsem");
         assert_eq!(resp["result"]["capabilities"]["tools"], json!({}));
+    }
+
+    /// Claude Code defers tool descriptions behind its tool search, so the
+    /// instructions are what tells the model the tool is there.
+    #[test]
+    fn initialize_tells_the_agent_when_to_search() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("initialize", json!({}))).unwrap();
+        let text = resp["result"]["instructions"].as_str().unwrap();
+        assert!(text.contains("call the `search` tool"), "got: {text}");
+        assert!(!text.contains('\n'), "got: {text}");
     }
 
     fn negotiated(params: Value) -> Value {
