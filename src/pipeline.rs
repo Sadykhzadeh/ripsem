@@ -418,6 +418,9 @@ fn open_with(config: &Config, embedder: Arc<LazyEmbedder>) -> Result<Searcher> {
     if !index_path.exists() {
         anyhow::bail!("no index yet; run `ripsem index` in this directory first");
     }
+    // Taken before the decode: a rebuild landing during it leaves a newer
+    // mtime than the one recorded, so the next refresh still picks it up.
+    let index_mtime = file_mtime(&index_path);
     // Only a missing file means there is no index. Any other failure carries
     // its own advice, such as rebuilding an index from an older ripsem.
     let index = Index::load(&index_path)?;
@@ -431,7 +434,6 @@ fn open_with(config: &Config, embedder: Arc<LazyEmbedder>) -> Result<Searcher> {
             crate::index::embedded_by(config.backend, &config.model)
         );
     }
-    let index_mtime = file_mtime(&index_path);
     let model = index.model.clone();
     #[cfg(feature = "hnsw")]
     let ann_map = index.ann.as_deref().and_then(crate::ann::load);
