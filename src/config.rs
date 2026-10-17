@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::cli::show_path;
 use crate::model::{self, DEFAULT_MODEL};
 
 /// Patterns are anchored to `.ripsem`, so a project checked out somewhere below
@@ -34,7 +35,10 @@ impl Default for Backend {
     }
 }
 
+/// Unknown keys are refused: a misspelt `exclude` would otherwise be dropped
+/// without a word and index everything it was meant to keep out.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub backend: Backend,
@@ -114,7 +118,7 @@ impl Config {
     /// survives every run.
     pub fn create_data_dir(&self) -> Result<()> {
         let dir = self.data_dir();
-        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", show_path(&dir)))?;
         let path = dir.join(".gitignore");
         match std::fs::OpenOptions::new()
             .write(true)
@@ -123,9 +127,9 @@ impl Config {
         {
             Ok(mut file) => file
                 .write_all(DATA_GITIGNORE.as_bytes())
-                .with_context(|| format!("writing {}", path.display())),
+                .with_context(|| format!("writing {}", show_path(&path))),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-            Err(e) => Err(e).with_context(|| format!("writing {}", path.display())),
+            Err(e) => Err(e).with_context(|| format!("writing {}", show_path(&path))),
         }
     }
 
@@ -147,9 +151,9 @@ impl Config {
         let path = cfg.config_path();
         if path.exists() {
             let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
+                .with_context(|| format!("reading {}", show_path(&path)))?;
             let mut parsed: Config =
-                toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+                toml::from_str(&text).with_context(|| format!("parsing {}", show_path(&path)))?;
             parsed.root = root.to_path_buf();
             cfg = parsed;
         }
@@ -168,6 +172,14 @@ impl Config {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn a_misspelt_key_is_an_error() {
+        let dir = TempDir::new();
+        dir.write(".ripsem/config.toml", "exlude = [\"vendor/\"]\n");
+        let err = format!("{:#}", Config::load(dir.path()).unwrap_err());
+        assert!(err.contains("exlude"), "{err}");
+    }
 
     #[test]
     fn defaults_are_sane() {

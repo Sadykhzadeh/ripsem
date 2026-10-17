@@ -8,6 +8,7 @@ use bitcode::{Decode, Encode};
 use rayon::prelude::*;
 
 use crate::chunk::Chunking;
+use crate::cli::show_path;
 use crate::config::Backend;
 use crate::lexical::{TermHash, TermVector, Weights};
 use crate::quant::{self, QuantizedVector};
@@ -72,7 +73,7 @@ impl Index {
 
     pub fn load(path: &Path) -> Result<Self> {
         let bytes =
-            std::fs::read(path).with_context(|| format!("reading index {}", path.display()))?;
+            std::fs::read(path).with_context(|| format!("reading index {}", show_path(path)))?;
         Self::decode(&bytes)
     }
 
@@ -118,9 +119,9 @@ impl Index {
                 file.write_all(&FORMAT_VERSION.to_le_bytes())?;
                 file.write_all(&body)
             })
-            .with_context(|| format!("writing index {}", tmp.display()))?;
+            .with_context(|| format!("writing index {}", show_path(&tmp)))?;
         std::fs::rename(&tmp, path)
-            .with_context(|| format!("replacing index {}", path.display()))?;
+            .with_context(|| format!("replacing index {}", show_path(path)))?;
         Ok(())
     }
 

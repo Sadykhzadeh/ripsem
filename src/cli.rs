@@ -355,7 +355,7 @@ pub(crate) fn plural(n: usize, noun: &str) -> String {
     }
 }
 
-fn show_path(path: &Path) -> String {
+pub(crate) fn show_path(path: &Path) -> String {
     let shown = path.display().to_string();
     shown
         .strip_prefix(r"\\?\")
