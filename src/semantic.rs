@@ -8,6 +8,9 @@ pub fn chunk(text: &str, spec: &LangSpec, max_lines: usize, overlap: usize) -> O
     let mut parser = Parser::new();
     parser.set_language(&spec.language).ok()?;
     let tree = parser.parse(text.as_bytes(), None)?;
+    if deeper_than(tree.root_node(), MAX_DEPTH) {
+        return None;
+    }
     let mut emitter = Emitter {
         text,
         max_lines: max_lines.max(1),
@@ -17,6 +20,32 @@ pub fn chunk(text: &str, spec: &LangSpec, max_lines: usize, overlap: usize) -> O
     emitter.walk(tree.root_node(), None);
     emitter.documentation(tree.root_node(), None);
     Some(emitter.out)
+}
+
+/// The walk below recurses once per level of the tree, and a few thousand
+/// levels overflow the stack. Only generated text nests that deep (a chain of
+/// thousands of `+`, a JSON document nested as deep), and line windows serve
+/// it as well as anything.
+const MAX_DEPTH: usize = 512;
+
+fn deeper_than(root: Node, limit: usize) -> bool {
+    let mut cursor = root.walk();
+    let mut depth = 0;
+    loop {
+        if cursor.goto_first_child() {
+            depth += 1;
+            if depth > limit {
+                return true;
+            }
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return false;
+            }
+            depth -= 1;
+        }
+    }
 }
 
 fn node_lines(node: &Node, text: &str) -> usize {
@@ -479,6 +508,19 @@ mod tests {
                 "{file}: got {found:?}"
             );
         }
+    }
+
+    #[test]
+    fn nesting_too_deep_to_walk_is_left_to_line_windows() {
+        let terms: Vec<String> = (0..5_000).map(|i| format!("a{i}")).collect();
+        let chain = format!("const x = {};\n", terms.join(" +\n"));
+        let nested = format!("{}{}\n", "[".repeat(5_000), "]".repeat(5_000));
+        for (file, src) in [("a.js", chain.as_str()), ("b.json", nested.as_str())] {
+            let spec = crate::lang::detect(Path::new(file)).unwrap();
+            assert!(chunk(src, &spec, 50, 4).is_none(), "{file}");
+        }
+        let shallow = format!("const x = {}1{};\n", "[".repeat(100), "]".repeat(100));
+        assert!(!chunk_source("c.js", &shallow, 50).is_empty());
     }
 
     #[test]
