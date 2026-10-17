@@ -14,9 +14,13 @@ use crate::{chunk, embed, fingerprint, walk};
 #[derive(Debug)]
 pub struct IndexStats {
     pub files: usize,
+    /// Files read and cut again: new or changed.
     pub embedded: usize,
     pub reused: usize,
     pub chunks: usize,
+    /// Chunks the model embedded. A changed file keeps the vectors of the
+    /// chunks whose text it still holds.
+    pub vectors: usize,
 }
 
 /// How far the index has fallen behind the files it was built from. Hits carry
@@ -134,6 +138,18 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         })
         .collect();
 
+    let unchanged: std::collections::HashSet<String> = scanned
+        .iter()
+        .filter(|(_, _, changed)| !changed)
+        .map(|&(i, _, _)| relative(&config.root, &files[i]))
+        .collect();
+    let known_vectors: HashMap<u64, crate::quant::QuantizedVector> = prev_chunks
+        .iter()
+        .filter(|(path, _)| !unchanged.contains(path.as_str()))
+        .flat_map(|(_, records)| records)
+        .map(|r| (r.text_hash, r.vector.clone()))
+        .collect();
+
     let mut index = Index::new(dims, config.backend, config.model.clone());
     index.chunking = chunking;
     let mut embedded = 0;
@@ -163,6 +179,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         }
         embedded += 1;
         for c in chunks {
+            let text_hash = fingerprint::content_hash(c.text.as_bytes());
             let pending = Pending {
                 path: rel.clone(),
                 start_line: c.start_line,
@@ -176,7 +193,8 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
                 ),
                 symbol: c.symbol,
                 declarations: c.declarations,
-                text_hash: fingerprint::content_hash(c.text.as_bytes()),
+                text_hash,
+                vector: known_vectors.get(&text_hash).cloned(),
             };
             queue.push(pending, c.text);
             if queue.is_full() {
@@ -192,6 +210,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         embedded,
         reused,
         chunks: index.records.len(),
+        vectors: queue.embedded,
     };
     // Before the early return below, so a data directory that lacks its
     // `.gitignore` gets one even when nothing needs reindexing.
@@ -277,6 +296,7 @@ struct Pending {
     symbol: Option<crate::symbol::Symbol>,
     declarations: Vec<crate::symbol::Declaration>,
     text_hash: u64,
+    vector: Option<crate::quant::QuantizedVector>,
 }
 
 /// Chunks waiting for their vectors, kept in the order the walk found them.
@@ -306,28 +326,57 @@ impl Queue {
         index: &mut Index,
         pb: &ProgressBar,
     ) -> Result<()> {
-        if self.texts.is_empty() {
-            return Ok(());
+        let mut order: Vec<usize> = (0..self.texts.len())
+            .filter(|&i| self.pending[i].vector.is_none())
+            .collect();
+        let mut vectors: Vec<Vec<f32>> = vec![Vec::new(); self.texts.len()];
+        if !order.is_empty() {
+            self.embed(&mut order, &mut vectors, config, embedder, index.dims, pb)?;
         }
+        for (p, vector) in self.pending.drain(..).zip(vectors) {
+            index.records.push(Record {
+                path: p.path,
+                start_line: p.start_line,
+                end_line: p.end_line,
+                snippet: p.snippet,
+                file_hash: p.file_hash,
+                vector: p.vector.unwrap_or_else(|| crate::quant::quantize(&vector)),
+                terms: p.terms,
+                symbol: p.symbol,
+                declarations: p.declarations,
+                text_hash: p.text_hash,
+            });
+        }
+        self.texts.clear();
+        Ok(())
+    }
+
+    fn embed(
+        &mut self,
+        order: &mut [usize],
+        vectors: &mut [Vec<f32>],
+        config: &Config,
+        embedder: &mut Option<Box<dyn embed::Embedder>>,
+        dims: usize,
+        pb: &ProgressBar,
+    ) -> Result<()> {
         let embedder = match embedder {
             Some(built) => built,
             None => {
                 let built = embed::build(config)?;
-                if built.dims() != index.dims {
+                if built.dims() != dims {
                     anyhow::bail!(
                         "model {} embeds {} dimensions, expected {}",
                         config.model,
                         built.dims(),
-                        index.dims
+                        dims
                     );
                 }
                 embedder.insert(built)
             }
         };
-        let mut order: Vec<usize> = (0..self.texts.len()).collect();
         order.sort_by_key(|&i| self.texts[i].len());
-        let mut vectors: Vec<Vec<f32>> = vec![Vec::new(); self.texts.len()];
-        for group in embed_groups(&order, &self.texts) {
+        for group in embed_groups(order, &self.texts) {
             let texts: Vec<String> = group
                 .iter()
                 .map(|&i| std::mem::take(&mut self.texts[i]))
@@ -346,21 +395,6 @@ impl Queue {
             self.embedded += group.len();
             pb.set_message(format!("{} chunks embedded", self.embedded));
         }
-        for (p, vector) in self.pending.drain(..).zip(vectors) {
-            index.records.push(Record {
-                path: p.path,
-                start_line: p.start_line,
-                end_line: p.end_line,
-                snippet: p.snippet,
-                file_hash: p.file_hash,
-                vector: crate::quant::quantize(&vector),
-                terms: p.terms,
-                symbol: p.symbol,
-                declarations: p.declarations,
-                text_hash: p.text_hash,
-            });
-        }
-        self.texts.clear();
         Ok(())
     }
 }
