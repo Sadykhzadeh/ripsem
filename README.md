@@ -1,20 +1,43 @@
-# ripsem
+<h1 align="center">ripsem</h1>
 
-[![ci](https://github.com/Sadykhzadeh/ripsem/actions/workflows/ci.yml/badge.svg)](https://github.com/Sadykhzadeh/ripsem/actions/workflows/ci.yml)
-[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+<p align="center"><i>Where is the code that does this?</i></p>
 
-Local, offline code search that answers one question: where is the code that
-does this? Ask with an identifier, an error string, or a plain description of
-the behaviour. One query, one ranked answer. No account, no API key, and
-nothing leaves the machine. Embeddings run on a model stored on your disk, and
-the index is a single file inside your repo.
+<p align="center">
+  <a href="https://github.com/Sadykhzadeh/ripsem/actions/workflows/ci.yml"><img alt="ci" src="https://github.com/Sadykhzadeh/ripsem/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/Sadykhzadeh/ripsem/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/Sadykhzadeh/ripsem?label=release&color=57606a"></a>
+  <a href="LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-57606a"></a>
+</p>
 
-Every query runs through two independent retrievers and their rankings are
-merged: BM25 over code-aware tokens, and vector similarity from the embedding
-model. A literal identifier match cannot be lost to semantic distance, and a
-question with no shared words still finds the right function.
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#usage">Usage</a> ·
+  <a href="#use-with-coding-agents">Coding agents</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#troubleshooting">Troubleshooting</a>
+</p>
 
-![ripsem answering a description, an error message and a misremembered name](docs/demo/search.gif)
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/demo/search-light.gif">
+    <img alt="ripsem answering a description, an error message and a misremembered name" src="docs/demo/search.gif" width="880">
+  </picture>
+</p>
+
+ripsem is local, offline code search for people and for coding agents. Ask with
+an identifier, an error message or a plain description of the behaviour, and get
+back the functions and types that answer it, ranked, with their names and line
+ranges.
+
+- **Every shape of question in one query.** BM25 over code-aware tokens and
+  vector similarity from a local embedding model, merged into one ranking. A
+  chunk holding every term of an identifier or an error message comes first.
+- **Answers are declarations.** A hit is a whole function or type, named after
+  it, in 17 languages, so a definition reads apart from a call site.
+- **Made for coding agents.** `ripsem install claude-code` or `ripsem install
+  cursor` adds an MCP server that keeps its index current while the agent edits,
+  and tells the agent when to use it.
+- **Offline.** No account, no API key, no service. The model downloads once and
+  runs on your CPU, and the index is one file inside your repository.
 
 ## Quick start
 
@@ -89,6 +112,15 @@ The `hnsw` feature adds an approximate-nearest-neighbour graph for indexes above
 500 000 chunks. It changes only how the vector arm gathers candidates; the
 lexical arm and the merge work the same at any size.
 
+### Shell completions
+
+```
+ripsem completions bash > ~/.local/share/bash-completion/completions/ripsem
+ripsem completions zsh > ~/.zfunc/_ripsem
+ripsem completions fish > ~/.config/fish/completions/ripsem.fish
+ripsem completions powershell >> $PROFILE
+```
+
 ## Usage
 
 ```
@@ -97,7 +129,7 @@ ripsem index                      # build the index (incremental on re-runs)
 ripsem search "where is auth set up?"
 ripsem status                     # index size, counts, model, drift from the tree
 ripsem status --json              # the same as JSON (schema ripsem/status/v1)
-ripsem watch                      # index and keep it in sync as files change
+ripsem watch                      # keep the index in sync as files change
 ```
 
 Like git, every command except `init` works from any subdirectory: it uses the
@@ -150,18 +182,29 @@ The model downloads once on first use, then everything is offline.
 
 ## Use with coding agents
 
-![indexing a repository and adding ripsem to Claude Code](docs/demo/setup.gif)
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/demo/setup-light.gif">
+    <img alt="adding ripsem to Claude Code, indexing a repository and searching it" src="docs/demo/setup.gif" width="880">
+  </picture>
+</p>
 
 ```
-ripsem index
-ripsem install claude-code        # writes ripsem into .mcp.json
-ripsem install cursor             # writes ripsem into .cursor/mcp.json
+ripsem install claude-code        # .mcp.json and a note in CLAUDE.md
+ripsem install cursor             # .cursor/mcp.json and a rule in .cursor/rules
 ```
+
+`install` registers the server, writes `.ripsem/config.toml`, and adds a short
+note that tells the agent to reach for `search` before grepping. Restart the
+agent in the directory and it can call `search` directly.
 
 `ripsem mcp` speaks MCP over stdio and exposes a single `search` tool: a
 `query`, and optionally a `path` to stay inside, a `limit` (default 5) and a
-`min_score`. After `install`, restart the agent in the directory and it can
-call `search` directly. A running server picks up a rebuilt index by itself.
+`min_score`. In a directory with a `.ripsem` directory the server keeps the
+index current by itself: it builds the index on its first start and re-embeds
+every file the agent changes. Running `ripsem index` once beforehand has the
+index ready before the first search.
+
 Any other MCP client takes the same entry in its own config:
 
 ```json
@@ -245,6 +288,33 @@ flowchart LR
    files whose content changed; a new model or new chunk settings rebuild it.
    `ripsem watch` keeps it current as files change, and the MCP server picks up
    a rebuilt index without a restart.
+
+## Troubleshooting
+
+**A file never shows up in results.** `ripsem index --dry-run` lists every file
+the index takes in. A file is left out when `.gitignore`, `.ripsemignore` or
+`exclude` matches it, when it is binary or larger than `max_file_kb`, or when
+`skip_generated` treats it as machine-written.
+
+**A result points at the wrong lines.** The file changed after it was indexed.
+`ripsem status` shows how far the index has drifted; `ripsem index` brings it up
+to date, and `ripsem watch` or a running MCP server keeps it there.
+
+**Search says the index was built with another model.** The config names a
+different model or backend than the index. `ripsem index` rebuilds it for the
+config.
+
+**The agent does not call `search`.** The server starts with the agent, so
+restart the agent in the repository after `install`. In Claude Code, `/mcp`
+lists the servers it has connected to.
+
+**The first index takes a while.** It downloads the model once and embeds every
+file. Every later run embeds only the files that changed. The model is cached in
+`~/.cache/ripsem` on Linux, `~/Library/Caches/ripsem` on macOS and
+`%LOCALAPPDATA%\ripsem\cache` on Windows.
+
+**`ripsem.exe` fails to start on Windows.** Keep `DirectML.dll` from the release
+archive in the same directory as `ripsem.exe`.
 
 ## Quality
 
