@@ -26,6 +26,7 @@ pub enum Command {
     Init,
     /// Build or update the index for this directory.
     Index {
+        /// Embed every file again instead of reusing the unchanged ones.
         #[arg(long)]
         force: bool,
         /// List the files that would be indexed and exit, without building
@@ -34,11 +35,14 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Search the index with a natural-language query.
+    /// Find code by an identifier, an error message or a description.
     Search {
+        /// What to look for, in any of those shapes.
         query: String,
+        /// Number of results.
         #[arg(short = 'k', long, default_value_t = 10)]
         limit: usize,
+        /// Print the results as JSON.
         #[arg(long)]
         json: bool,
         /// Limit results to a subdirectory (relative to the repo root), e.g.
@@ -48,7 +52,7 @@ pub enum Command {
         within: Option<String>,
         /// Number of snippet lines to print per hit in the human output. `0`
         /// prints just the location header with no snippet body. Ignored by
-        /// `--json`, which always returns the full snippet.
+        /// `--json`, which always returns the whole stored snippet.
         #[arg(long, value_name = "LINES", default_value_t = 3)]
         context: usize,
         /// Drop hits whose confidence is below this threshold, keeping only
@@ -92,9 +96,15 @@ pub enum ModelCmd {
     /// List the available embedding models.
     List,
     /// Set the embedding model for this directory.
-    Set { id: String },
+    Set {
+        /// A model id from `ripsem model list`.
+        id: String,
+    },
     /// Set the embedding backend (hash or fastembed).
-    Backend { name: String },
+    Backend {
+        /// `hash` or `fastembed`.
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
