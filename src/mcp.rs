@@ -34,14 +34,36 @@ grep when every occurrence of a string is needed.";
 /// init`, `index` or `install`, and its index is kept current while the server
 /// runs. Anywhere else, such as a home directory a client happened to start
 /// in, nothing is indexed behind the user's back.
-pub fn serve(config: Config) -> Result<()> {
-    if config.data_dir().is_dir() {
-        crate::watch::spawn(config.clone());
-    }
-    serve_on(config, std::io::stdin().lock(), std::io::stdout().lock())
+///
+/// A server given no `--path` and started outside an index follows the
+/// client's workspace roots instead. It moves to the project the first root is
+/// in, and again whenever the roots change, until it reaches a project with a
+/// `.ripsem` directory, where it stays and keeps the index current.
+pub fn serve(config: Config, explicit: bool) -> Result<()> {
+    serve_on(
+        config,
+        explicit,
+        crate::watch::spawn,
+        std::io::stdin().lock(),
+        std::io::stdout().lock(),
+    )
 }
 
-fn serve_on(mut config: Config, mut reader: impl BufRead, mut writer: impl Write) -> Result<()> {
+fn serve_on(
+    mut config: Config,
+    explicit: bool,
+    watch: impl Fn(Config),
+    mut reader: impl BufRead,
+    mut writer: impl Write,
+) -> Result<()> {
+    let watching = config.data_dir().is_dir();
+    if watching {
+        watch(config.clone());
+    }
+    let mut roots = Roots {
+        follow: !explicit && !watching,
+        ..Default::default()
+    };
     let mut session = None;
     let mut tried = None;
 
@@ -58,19 +80,122 @@ fn serve_on(mut config: Config, mut reader: impl BufRead, mut writer: impl Write
         if trimmed.is_empty() {
             continue;
         }
+        let mut ask = None;
         let response = match serde_json::from_str::<Value>(trimmed) {
             Ok(request) => {
+                let messages = match &request {
+                    Value::Array(batch) => batch.iter().collect(),
+                    message => vec![message],
+                };
+                for message in messages {
+                    ask = roots.ask(message).or(ask);
+                    if let Some(dir) = roots.project(message).filter(|dir| *dir != config.root)
+                        && let Ok(fresh) = Config::load(&dir)
+                    {
+                        config = fresh;
+                        session = None;
+                        tried = None;
+                        if config.data_dir().is_dir() {
+                            watch(config.clone());
+                            roots.follow = false;
+                        }
+                    }
+                }
                 hold_the_index(&mut session, &mut tried, &mut config);
                 reply(&config, session.as_ref(), &request)
             }
             Err(_) => Some(error(Value::Null, -32700, "parse error")),
         };
-        if let Some(response) = response {
-            writeln!(writer, "{}", serde_json::to_string(&response)?)?;
+        for message in response.into_iter().chain(ask) {
+            writeln!(writer, "{}", serde_json::to_string(&message)?)?;
             writer.flush()?;
         }
     }
     Ok(())
+}
+
+/// The client's workspace roots, for a server that follows them. A client
+/// that offers them in `initialize` is asked once it is initialized and again
+/// on each change, and only the answer to the latest question counts.
+#[derive(Default)]
+struct Roots {
+    follow: bool,
+    offered: bool,
+    asked: u64,
+}
+
+impl Roots {
+    /// The `roots/list` request this message calls for.
+    fn ask(&mut self, message: &Value) -> Option<Value> {
+        match message.get("method").and_then(Value::as_str)? {
+            "initialize" => {
+                self.offered = message
+                    .get("params")
+                    .and_then(|p| p.get("capabilities"))
+                    .and_then(|c| c.get("roots"))
+                    .is_some_and(|r| !r.is_null());
+                None
+            }
+            "notifications/initialized" | "notifications/roots/list_changed"
+                if self.follow && self.offered =>
+            {
+                self.asked += 1;
+                Some(json!({ "jsonrpc": "2.0", "id": self.asked, "method": "roots/list" }))
+            }
+            _ => None,
+        }
+    }
+
+    /// The project the first local root is in, from the answer to the latest
+    /// `roots/list`: the nearest directory at or above it with a `.ripsem`
+    /// directory, or the root itself.
+    fn project(&self, message: &Value) -> Option<PathBuf> {
+        let ours = self.follow && self.asked > 0 && message.get("method").is_none();
+        if !ours || *message.get("id")? != self.asked {
+            return None;
+        }
+        let dir = message
+            .get("result")?
+            .get("roots")?
+            .as_array()?
+            .iter()
+            .filter_map(|root| file_uri_path(root.get("uri")?.as_str()?))
+            .find_map(|path| path.canonicalize().ok().filter(|p| p.is_dir()))?;
+        Some(Config::find_root(&dir))
+    }
+}
+
+/// The local path a `file://` URI names, percent-decoded, with the slash in
+/// front of a Windows drive dropped. A URI with a host other than `localhost`
+/// names a network share and is not followed.
+fn file_uri_path(uri: &str) -> Option<PathBuf> {
+    let rest = uri
+        .get(..7)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("file://"))
+        .map(|_| &uri[7..])?;
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    if !rest.starts_with('/') {
+        return None;
+    }
+    let rest = &rest[..rest.find(['?', '#']).unwrap_or(rest.len())];
+    let mut bytes = Vec::with_capacity(rest.len());
+    let mut raw = rest.bytes();
+    while let Some(b) = raw.next() {
+        if b == b'%' {
+            let hex = [raw.next()?, raw.next()?];
+            bytes.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+        } else {
+            bytes.push(b);
+        }
+    }
+    let path = String::from_utf8(bytes).ok()?;
+    let drive = matches!(path.as_bytes(), [b'/', letter, b':', ..] if letter.is_ascii_alphabetic());
+    let path = PathBuf::from(if cfg!(windows) && drive {
+        &path[1..]
+    } else {
+        &path
+    });
+    (!is_network(&path)).then_some(path)
 }
 
 /// Keeps one searcher open across requests, taking it as soon as an index
@@ -145,9 +270,9 @@ fn negotiate(requested: Option<&str>) -> &'static str {
         .unwrap_or(PROTOCOL_VERSIONS[0])
 }
 
-/// A message without a method is a response, which this server sends no
-/// requests to receive, or malformed. A malformed one is answered as an
-/// invalid request rather than left for the client to wait on.
+/// A message without a method is a response, which [`Roots`] takes, or
+/// malformed. A malformed one is answered as an invalid request rather than
+/// left for the client to wait on.
 fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value) -> Option<Value> {
     let id = request.get("id").cloned();
     let Some(method) = request.get("method").and_then(Value::as_str) else {
@@ -958,7 +1083,7 @@ mod tests {
             ..Default::default()
         };
         let mut out = Vec::new();
-        serve_on(config, &input[..], &mut out).unwrap();
+        serve_on(config, false, |_| {}, &input[..], &mut out).unwrap();
         let replies: Vec<Value> = out
             .split(|&b| b == b'\n')
             .filter(|line| !line.is_empty())
@@ -969,6 +1094,169 @@ mod tests {
         assert_eq!(replies[0]["id"], Value::Null);
         assert_eq!(replies[1]["error"]["code"], -32700);
         assert_eq!(replies[2]["id"], 1);
+    }
+
+    fn file_uri(path: &Path) -> String {
+        let path = path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace(' ', "%20");
+        let path = path.strip_prefix("//?/").unwrap_or(&path);
+        match path.starts_with('/') {
+            true => format!("file://{path}"),
+            false => format!("file:///{path}"),
+        }
+    }
+
+    /// Feeds the lines to a server started in `start`, and returns what it
+    /// wrote and the roots it started keeping current.
+    fn converse(start: &Path, explicit: bool, lines: &[Value]) -> (Vec<Value>, Vec<PathBuf>) {
+        let watched = std::cell::RefCell::new(Vec::new());
+        let input: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        let mut out = Vec::new();
+        serve_on(
+            Config::load(start).unwrap(),
+            explicit,
+            |config: Config| watched.borrow_mut().push(config.root),
+            input.as_bytes(),
+            &mut out,
+        )
+        .unwrap();
+        let written = out
+            .split(|&b| b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        (written, watched.into_inner())
+    }
+
+    fn indexed_project() -> crate::testutil::TempDir {
+        let dir = crate::testutil::TempDir::new();
+        dir.write(
+            "my src/auth.rs",
+            "fn authenticate(user) { verify password }",
+        );
+        let config = Config {
+            backend: crate::config::Backend::Hash,
+            root: dir.path().canonicalize().unwrap(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+        dir
+    }
+
+    fn roots_answer(id: u64, uris: &[String]) -> Value {
+        let roots: Vec<Value> = uris.iter().map(|uri| json!({ "uri": uri })).collect();
+        json!({ "jsonrpc": "2.0", "id": id, "result": { "roots": roots } })
+    }
+
+    fn opening(capabilities: Value) -> [Value; 2] {
+        [
+            req("initialize", json!({ "capabilities": capabilities })),
+            json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+        ]
+    }
+
+    fn search_call() -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": { "name": "search", "arguments": { "query": "verify password" } }
+        })
+    }
+
+    fn roots_requests(written: &[Value]) -> Vec<Value> {
+        written
+            .iter()
+            .filter(|m| m["method"] == "roots/list")
+            .map(|m| m["id"].clone())
+            .collect()
+    }
+
+    /// A shared client starts the server in the home directory and tells it
+    /// the project through its roots.
+    #[test]
+    fn a_server_started_outside_a_project_follows_the_client_roots() {
+        let home = crate::testutil::TempDir::new();
+        let elsewhere = crate::testutil::TempDir::new();
+        let project = indexed_project();
+        let mut lines = opening(json!({ "roots": { "listChanged": true } })).to_vec();
+        lines.extend([
+            roots_answer(1, &[file_uri(elsewhere.path())]),
+            json!({ "jsonrpc": "2.0", "method": "notifications/roots/list_changed" }),
+            roots_answer(
+                2,
+                &[
+                    "https://example.com/repo".into(),
+                    file_uri(&project.path().join("my src")),
+                ],
+            ),
+            search_call(),
+        ]);
+
+        let (written, watched) = converse(home.path(), false, &lines);
+        assert_eq!(roots_requests(&written), [json!(1), json!(2)]);
+        let found = written.last().unwrap();
+        assert_eq!(found["id"], 7);
+        let text = found["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("my src/auth.rs"), "got: {found}");
+        assert_eq!(watched, [project.path().canonicalize().unwrap()]);
+    }
+
+    #[test]
+    fn a_server_given_a_project_does_not_ask_for_roots() {
+        let elsewhere = crate::testutil::TempDir::new();
+        let project = indexed_project();
+        let mut lines = opening(json!({ "roots": {} })).to_vec();
+        lines.push(roots_answer(1, &[file_uri(elsewhere.path())]));
+        lines.push(search_call());
+
+        let (written, watched) = converse(project.path(), true, &lines);
+        assert!(roots_requests(&written).is_empty(), "got: {written:?}");
+        let text = written.last().unwrap()["result"]["content"][0]["text"].clone();
+        assert!(text.as_str().unwrap().contains("auth.rs"), "got: {text}");
+        assert_eq!(watched, [project.path()]);
+
+        let (written, _) = converse(elsewhere.path(), true, &lines);
+        assert!(roots_requests(&written).is_empty(), "got: {written:?}");
+
+        let (written, watched) = converse(project.path(), false, &lines);
+        assert!(roots_requests(&written).is_empty(), "got: {written:?}");
+        assert_eq!(watched, [project.path()]);
+    }
+
+    #[test]
+    fn a_client_without_roots_is_not_asked_for_them() {
+        let home = crate::testutil::TempDir::new();
+        let (written, watched) = converse(home.path(), false, &opening(json!({})));
+        assert_eq!(written.len(), 1, "got: {written:?}");
+        assert!(roots_requests(&written).is_empty());
+        assert!(watched.is_empty());
+    }
+
+    #[test]
+    fn a_file_uri_names_a_local_path() {
+        let path = |uri: &str| file_uri_path(uri);
+        assert_eq!(
+            path("file:///home/me/my%20repo"),
+            Some(PathBuf::from("/home/me/my repo"))
+        );
+        assert_eq!(
+            path("FILE://localhost/srv/x"),
+            Some(PathBuf::from("/srv/x"))
+        );
+        assert_eq!(path("file:///srv/x?y#z"), Some(PathBuf::from("/srv/x")));
+        let drive = if cfg!(windows) {
+            "c:/Users/me"
+        } else {
+            "/c:/Users/me"
+        };
+        assert_eq!(path("file:///c%3A/Users/me"), Some(PathBuf::from(drive)));
+        assert_eq!(path("file://server/share"), None);
+        assert_eq!(path("file:///srv/%2"), None);
+        assert_eq!(path("https://example.com/repo"), None);
     }
 
     /// A file the server cannot use and the configuration does not explain,

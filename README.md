@@ -252,7 +252,9 @@ Without ripsem installed, the client can start it through npm with
 The server finds the index from the directory it starts in. To point it at a
 repository elsewhere, add `"--path", "/path/to/repo"` to `args`; `install
 cursor` writes `"--path", "${workspaceFolder}"`, which Cursor expands to the
-project.
+project. A client that shares its workspace roots, such as one that starts the
+server from the home directory, points it at the project itself, and `--path`
+overrides them.
 
 ## Configuration
 
