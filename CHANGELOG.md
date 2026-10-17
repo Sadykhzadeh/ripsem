@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 (2026-10-17)
+
+- `cargo install ripsem` builds with the embedding runtime and tree-sitter,
+  which are default features now. `--no-default-features` gives the
+  lightweight build on the hashing backend.
+
 ## 0.1.0 (2026-10-17)
 
 First public release.
