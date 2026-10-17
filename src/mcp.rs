@@ -19,31 +19,35 @@ use crate::pipeline;
 /// answer tells it to fall back to `initialize`.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-pub fn serve(mut config: Config) -> Result<()> {
-    let stdin = std::io::stdin();
-    let mut reader = stdin.lock();
-    let stdout = std::io::stdout();
-    let mut writer = stdout.lock();
+pub fn serve(config: Config) -> Result<()> {
+    serve_on(config, std::io::stdin().lock(), std::io::stdout().lock())
+}
 
+fn serve_on(mut config: Config, mut reader: impl BufRead, mut writer: impl Write) -> Result<()> {
     let mut session = None;
     let mut tried = None;
 
-    let mut line = String::new();
+    let mut line = Vec::new();
     loop {
         line.clear();
-        if reader.read_line(&mut line)? == 0 {
+        if reader.read_until(b'\n', &mut line)? == 0 {
             break;
         }
-        let trimmed = line.trim();
+        // Bytes that are not UTF-8 make a line that does not parse, not a
+        // reason to stop serving.
+        let text = String::from_utf8_lossy(&line);
+        let trimmed = text.trim();
         if trimmed.is_empty() {
             continue;
         }
-        let request: Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
-            Err(_) => continue,
+        let response = match serde_json::from_str::<Value>(trimmed) {
+            Ok(request) => {
+                hold_the_index(&mut session, &mut tried, &mut config);
+                reply(&config, session.as_ref(), &request)
+            }
+            Err(_) => Some(error(Value::Null, -32700, "parse error")),
         };
-        hold_the_index(&mut session, &mut tried, &mut config);
-        if let Some(response) = reply(&config, session.as_ref(), &request) {
+        if let Some(response) = response {
             writeln!(writer, "{}", serde_json::to_string(&response)?)?;
             writer.flush()?;
         }
@@ -55,9 +59,9 @@ pub fn serve(mut config: Config) -> Result<()> {
 /// exists. The server often starts before the first `ripsem index` finishes;
 /// once it has the index it only re-reads the file when it changes.
 ///
-/// `tried` is the index mtime at the last failed attempt. Opening decodes the
-/// whole file and can fail for a lasting reason (another model, an older
-/// format), so a retry waits for the file to change.
+/// `tried` holds the mtimes of the index and the config at the last failed
+/// attempt. Opening decodes the whole file and can fail for a lasting reason
+/// (another model, an older format), so a retry waits for either to change.
 ///
 /// `ripsem model` followed by `ripsem index --force` rebuilds the index for
 /// another model while the server runs. The held index cannot take it, so the
@@ -65,7 +69,7 @@ pub fn serve(mut config: Config) -> Result<()> {
 /// server opens the new index under it.
 fn hold_the_index(
     session: &mut Option<pipeline::Searcher>,
-    tried: &mut Option<std::time::SystemTime>,
+    tried: &mut Option<[Option<std::time::SystemTime>; 2]>,
     config: &mut Config,
 ) {
     if let Some(searcher) = session {
@@ -81,13 +85,15 @@ fn hold_the_index(
             _ => return,
         }
     }
-    let mtime = std::fs::metadata(config.index_path())
-        .and_then(|m| m.modified())
-        .ok();
-    if mtime.is_none() || mtime == *tried {
+    let mtime = |path: PathBuf| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let stamps = [mtime(config.index_path()), mtime(config.config_path())];
+    if stamps[0].is_none() || Some(stamps) == *tried {
         return;
     }
-    *tried = mtime;
+    *tried = Some(stamps);
+    if let Ok(fresh) = Config::load(&config.root) {
+        *config = fresh;
+    }
     *session = pipeline::open(config).ok();
     // The agent usually pauses between the handshake and its first search.
     if let Some(searcher) = session {
@@ -590,6 +596,7 @@ mod tests {
             root: dir.path().to_path_buf(),
             ..Default::default()
         };
+        config.save().unwrap();
 
         let mut session = None;
         let mut tried = None;
@@ -626,6 +633,7 @@ mod tests {
         // Configured for a model the index was not built with, which is a
         // failure that lasts until `ripsem index --force`.
         config.model = "all-MiniLM-L6-v2".into();
+        config.save().unwrap();
 
         let mut session = None;
         let mut tried = None;
@@ -678,6 +686,59 @@ mod tests {
         assert_eq!(searcher.model(), "all-MiniLM-L6-v2");
         let hits = searcher.query("verify password", 5).unwrap();
         assert_eq!(hits[0].path, "auth.rs");
+    }
+
+    /// `ripsem model set` and a first `ripsem index` after the server started
+    /// with no index at all.
+    #[test]
+    fn a_server_without_an_index_reads_the_config_again() {
+        use crate::config::Backend;
+        use crate::testutil::TempDir;
+
+        let dir = TempDir::new();
+        dir.write("auth.rs", "fn authenticate(user) { verify password }");
+        let mut config = Config {
+            backend: Backend::Hash,
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+
+        let mut session = None;
+        let mut tried = None;
+        hold_the_index(&mut session, &mut tried, &mut config);
+        assert!(session.is_none());
+
+        let mut switched = config.clone();
+        switched.model = "all-MiniLM-L6-v2".into();
+        switched.save().unwrap();
+        pipeline::index_repo(&switched, false).unwrap();
+
+        hold_the_index(&mut session, &mut tried, &mut config);
+        let searcher = session.as_ref().expect("the new index is held");
+        assert_eq!(searcher.model(), "all-MiniLM-L6-v2");
+    }
+
+    #[test]
+    fn a_line_that_is_not_json_is_a_parse_error() {
+        let input = b"{not json\n\xff\xfe\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
+        let dir = crate::testutil::TempDir::new();
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        serve_on(config, &input[..], &mut out).unwrap();
+        let replies: Vec<Value> = out
+            .split(|&b| b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(replies.len(), 3);
+        assert_eq!(replies[0]["error"]["code"], -32700);
+        assert_eq!(replies[0]["id"], Value::Null);
+        assert_eq!(replies[1]["error"]["code"], -32700);
+        assert_eq!(replies[2]["id"], 1);
     }
 
     /// A file the server cannot use and the configuration does not explain,
