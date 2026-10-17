@@ -1,5 +1,5 @@
 use std::io::{BufRead, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
@@ -262,6 +262,9 @@ pub(crate) fn scope_prefix(raw: &str, root: &Path) -> Result<Option<String>> {
         let candidate = Path::new(raw);
         match candidate.strip_prefix(root) {
             Ok(rel) => rel.to_path_buf(),
+            // Resolving a network path connects to its host, and the path
+            // comes from an agent that reads untrusted text.
+            Err(_) if is_network(candidate) => return Err(outside()),
             // The root is canonical (`\\?\` prefix on Windows), a typed path
             // usually is not.
             Err(_) => candidate
@@ -285,6 +288,16 @@ pub(crate) fn scope_prefix(raw: &str, root: &Path) -> Result<Option<String>> {
         }
     }
     Ok((!parts.is_empty()).then(|| parts.join("/")))
+}
+
+fn is_network(path: &Path) -> bool {
+    matches!(
+        path.components().next(),
+        Some(Component::Prefix(prefix)) if matches!(
+            prefix.kind(),
+            Prefix::UNC(..) | Prefix::VerbatimUNC(..) | Prefix::DeviceNS(_)
+        )
+    )
 }
 
 /// Drop hits whose score is below `min`. `None` keeps all.
@@ -503,6 +516,16 @@ mod tests {
         let elsewhere = std::env::temp_dir();
         let err = scope_prefix(&elsewhere.to_string_lossy(), &root).unwrap_err();
         assert!(err.to_string().contains("outside"), "got: {err}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_network_scope_is_refused_without_resolving_it() {
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        for raw in [r"\\host.invalid\share\src", "//host.invalid/share/src"] {
+            let err = scope_prefix(raw, &root).unwrap_err();
+            assert!(err.to_string().contains("outside"), "{raw}: {err}");
+        }
     }
 
     #[test]
