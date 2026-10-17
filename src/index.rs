@@ -368,10 +368,13 @@ impl Index {
     }
 
     /// Keeps the better-ranked of any records that cover the same lines (a
-    /// declaration and its doc record, or overlapping windows). Done before the
-    /// cut to `k`, so the caller still gets `k` distinct places.
+    /// declaration and its doc record, or overlapping windows), and of the
+    /// pieces of one declaration too large for a chunk. Done before the cut to
+    /// `k`, so the caller still gets `k` distinct places.
     fn best_of_each_place(&self, ranked: Vec<Candidate>, k: usize) -> Vec<Hit> {
         let mut taken: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+        let mut declared: std::collections::HashSet<(&str, &str)> =
+            std::collections::HashSet::new();
         // `k` comes from the caller, so cap the reservation at the index size.
         let mut out = Vec::with_capacity(k.min(self.records.len()));
         for candidate in ranked {
@@ -383,6 +386,11 @@ impl Index {
             if places
                 .iter()
                 .any(|&(start, end)| record.start_line <= end && record.end_line >= start)
+            {
+                continue;
+            }
+            if let Some(symbol) = &record.symbol
+                && !declared.insert((record.path.as_str(), symbol.name.as_str()))
             {
                 continue;
             }
@@ -839,6 +847,30 @@ mod tests {
         assert_eq!(paths(&index, &hits), ["a.rs", "NOTES.md"]);
         assert!((hits[0].score - 0.2).abs() < 0.02, "{}", hits[0].score);
         assert!(hits[1].score <= hits[0].score);
+    }
+
+    /// A function too large for one chunk is cut into pieces that all carry
+    /// its name. One place in the results is enough for it.
+    #[test]
+    fn the_pieces_of_one_declaration_take_one_place() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        for (start, vector) in [(1, vec![1.0, 0.0, 0.0]), (41, vec![0.9, 0.1, 0.0])] {
+            let mut piece = placed("big.rs", start, start + 39, vector);
+            piece.symbol = Some(Symbol {
+                kind: "fn".into(),
+                name: "resolve".into(),
+            });
+            index.records.push(piece);
+        }
+        let mut other = placed("small.rs", 1, 5, vec![0.5, 0.5, 0.0]);
+        other.symbol = Some(Symbol {
+            kind: "fn".into(),
+            name: "other".into(),
+        });
+        index.records.push(other);
+
+        let hits = index.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(paths(&index, &hits), ["big.rs", "small.rs"]);
     }
 
     #[test]
