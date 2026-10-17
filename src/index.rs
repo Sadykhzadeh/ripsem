@@ -68,10 +68,16 @@ impl Record {
         let named_like_a_class = [".java", ".kt", ".scala", ".cs", ".php", ".swift"]
             .iter()
             .any(|ext| file.ends_with(ext));
-        dirs.split('/').any(|dir| {
-            DIRS.contains(&dir) || SUFFIXES.iter().any(|s| dir.ends_with(&format!(".{s}")))
-        }) || stem.starts_with("test_")
-            || SUFFIXES.iter().any(|s| stem.ends_with(&format!("_{s}")))
+        let suffixed = |name: &str, separator: char| {
+            SUFFIXES.iter().any(|s| {
+                name.strip_suffix(s)
+                    .is_some_and(|rest| rest.ends_with(separator))
+            })
+        };
+        dirs.split('/')
+            .any(|dir| DIRS.contains(&dir) || suffixed(dir, '.'))
+            || stem.starts_with("test_")
+            || suffixed(stem, '_')
             || file.contains(".test.")
             || file.contains(".spec.")
             || (named_like_a_class && SUFFIXES.iter().any(|s| stem.ends_with(s)))
@@ -342,9 +348,6 @@ impl Index {
         self.best_of_each_place(candidates, k)
     }
 
-    /// Keeps the better-ranked of any records that cover the same lines (a
-    /// declaration and its doc record, or overlapping windows). Done before the
-    /// cut to `k`, so the caller still gets `k` distinct places.
     /// Text about cooking or sport is as unrelated to any code as a query
     /// can be. The second best of the closest matches such text finds is the
     /// floor, so one probe that happens to land near a stray comment does not
@@ -364,6 +367,9 @@ impl Index {
         self.noise_floor = closest.get(1).or(closest.first()).copied();
     }
 
+    /// Keeps the better-ranked of any records that cover the same lines (a
+    /// declaration and its doc record, or overlapping windows). Done before the
+    /// cut to `k`, so the caller still gets `k` distinct places.
     fn best_of_each_place(&self, ranked: Vec<Candidate>, k: usize) -> Vec<Hit> {
         let mut taken: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
         // `k` comes from the caller, so cap the reservation at the index size.

@@ -775,3 +775,32 @@ fn new_chunk_settings_keep_the_vectors_of_unchanged_chunks() {
     .unwrap();
     assert_eq!((back.chunks, back.vectors), (5, 4));
 }
+
+#[test]
+fn a_repository_with_nothing_to_index_is_written_once() {
+    let dir = TempDir::new();
+    dir.write("empty.txt", "   \n");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let written = std::fs::metadata(config.index_path())
+        .unwrap()
+        .modified()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    pipeline::index_repo(&config, false).unwrap();
+    let again = std::fs::metadata(config.index_path())
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(written, again);
+}
+
+#[test]
+fn a_huge_result_count_is_not_reserved_up_front() {
+    let dir = TempDir::new();
+    dir.write("a.rs", "fn alpha() {}\n");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let hits = pipeline::search(&config, "alpha", usize::MAX).unwrap();
+    assert_eq!(hits.len(), 1);
+}
