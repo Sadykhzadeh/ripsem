@@ -63,9 +63,8 @@ jobs:
           "$ripsem" search "load the embedding model" --context 0 | tee hits
           grep -q 'src/embed/fastembed.rs' hits
 
-  # Cargo.toml promises Rust 1.90, the newest rust-version among the locked
-  # dependencies. Every other job builds on stable, which would not notice a
-  # change that needs a later compiler.
+  # The rust-version in Cargo.toml. Every other job builds on stable, which
+  # would not notice a change that needs a later compiler.
   msrv:
     runs-on: ubuntu-latest
     steps:
@@ -74,10 +73,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --locked --all-targets --all-features
 
-  # Renovate keeps Cargo.toml current, but an advisory is usually against a
-  # transitive crate that only the lockfile names - rustls, h2 and
-  # crossbeam-epoch all had one while every direct dependency was up to date.
-  # A separate job so an advisory does not hide the state of the gates above.
+  # Renovate keeps Cargo.toml current, and an advisory is usually against a
+  # transitive crate that only the lockfile names. A separate job, so an
+  # advisory does not hide the state of the gates above.
   audit:
     runs-on: ubuntu-latest
     steps:

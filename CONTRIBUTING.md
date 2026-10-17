@@ -18,7 +18,8 @@ cargo test --features fastembed,treesitter --all-targets
 cargo test --features fastembed,treesitter --test semantic_search -- --ignored
 ```
 
-CI runs all of these on Linux and the pure-Rust ones on Windows.
+CI runs all of these on Linux, the pure-Rust ones on Windows, and a check on
+the minimum Rust version in `Cargo.toml`.
 
 ## Changes to ranking
 
@@ -31,10 +32,10 @@ cargo test --release --features fastembed,treesitter \
 ```
 
 Put the numbers before and after in the pull request, per corpus and per query
-shape. A change that lifts one shape and costs another is worth reporting
-too, but say so plainly. Name one benchmark per run as above: running them all
-takes a long time and downloads every model in the catalogue. Corpora are
-pinned, so numbers are comparable only between runs on the same corpora.
+shape, and say plainly which shapes it lifts and which it costs. Name one
+benchmark per run as above: running them all takes a long time and downloads
+every model in the catalogue. The corpora are pinned, so two runs differ only
+by what changed in the code.
 
 `misses` prints every question the merge answers below the top five and
 whether the answer was anywhere in either arm. It is the place to start when a

@@ -32,4 +32,4 @@ body:
     id: version
     attributes:
       label: Version and model
-      placeholder: ripsem 0.1.0, bge-small-en-v1.5
+      placeholder: ripsem --version, ripsem status
