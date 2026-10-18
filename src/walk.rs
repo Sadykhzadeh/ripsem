@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -128,6 +129,25 @@ fn is_internal(path: &Path, root: &Path) -> bool {
         .unwrap_or(path)
         .components()
         .any(|c| matches!(c.as_os_str().to_str(), Some(".ripsem") | Some(".git")))
+}
+
+/// The text a file holds. UTF-16 with its byte order mark, as Windows tools
+/// save it, is decoded and the mark dropped; anything else is read as UTF-8 with
+/// bad bytes replaced. Every reader of a file's text goes through here, so a
+/// line number means the same line in the index and in the snippets.
+pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
+    let units = |order: fn([u8; 2]) -> u16, rest: &[u8]| {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|pair| order([pair[0], pair[1]]))
+            .collect();
+        String::from_utf16_lossy(&units)
+    };
+    match bytes {
+        [0xFF, 0xFE, rest @ ..] => Cow::Owned(units(u16::from_le_bytes, rest)),
+        [0xFE, 0xFF, rest @ ..] => Cow::Owned(units(u16::from_be_bytes, rest)),
+        _ => String::from_utf8_lossy(bytes),
+    }
 }
 
 fn is_indexable(path: &Path, max_bytes: u64) -> bool {
@@ -336,5 +356,21 @@ mod tests {
         config.max_file_kb = 1;
 
         assert!(!names(&collect(&config).unwrap()).contains(&"big.txt".to_string()));
+    }
+
+    #[test]
+    fn decodes_utf16_with_its_byte_order_mark() {
+        let text = "fn a() {}\r\nfn b() {}";
+        let le: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        let be: Vec<u8> = [0xFE, 0xFF]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_be_bytes))
+            .collect();
+        assert_eq!(decode_text(&le), text);
+        assert_eq!(decode_text(&be), text);
+        assert_eq!(decode_text(b"plain\n"), "plain\n");
     }
 }
