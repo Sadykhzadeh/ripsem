@@ -17,7 +17,7 @@ pub struct Chunk {
 
 /// Changes whenever the same file and settings would give other chunks, so an
 /// index cut by an older ripsem is cut again. A test pins it to the output.
-const REVISION: u32 = 3;
+const REVISION: u32 = 4;
 
 /// Everything that decides how a file is cut into chunks. An index records the
 /// one it was built with, and reuses a file's records only under the same one.
@@ -157,7 +157,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (3, expected),
+            (4, expected),
             "{seen}"
         );
     }

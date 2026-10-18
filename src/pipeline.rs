@@ -55,7 +55,7 @@ pub fn drift(config: &Config, index: &Index) -> Result<Drift> {
         .par_iter()
         .filter_map(|path| {
             let bytes = std::fs::read(path).ok()?;
-            if chunk::is_blank(&String::from_utf8_lossy(&bytes)) {
+            if chunk::is_blank(&walk::decode_text(&bytes)) {
                 return None;
             }
             Some((
@@ -213,8 +213,8 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
             Ok(b) => b,
             Err(_) => continue,
         };
-        let text = String::from_utf8_lossy(&bytes);
-        let chunks = chunk::chunk_source(path, text.as_ref(), config);
+        let text = walk::decode_text(&bytes);
+        let chunks = chunk::chunk_source(path, &text, config);
         if chunks.is_empty() {
             continue;
         }
@@ -766,7 +766,7 @@ impl Searcher {
         if fingerprint::content_hash(&bytes) != record.file_hash {
             return None;
         }
-        let text = String::from_utf8_lossy(&bytes);
+        let text = walk::decode_text(&bytes);
         let wanted: Vec<&str> = text.lines().skip(start - 1).take(end + 1 - start).collect();
         Some(truncate(&dedent(&wanted.join("\n")), budget))
     }
