@@ -606,6 +606,35 @@ fn the_index_keeps_itself_current() {
 /// The field case: three small functions share one chunk, and the one asked
 /// for is neither the first nor the only place its name occurs.
 #[cfg(feature = "treesitter")]
+/// Windows tools save text as UTF-16 with a byte order mark. The file is text,
+/// so it is indexed, and its code is found and shown like any other file's.
+#[test]
+fn a_utf16_file_is_indexed_as_its_text() {
+    let dir = TempDir::new();
+    let src = "fn verify_password(user) {\n    check_secret(user)\n}\n";
+    let mut bytes = vec![0xFF, 0xFE];
+    bytes.extend(src.encode_utf16().flat_map(u16::to_le_bytes));
+    std::fs::write(dir.path.join("login.rs"), &bytes).unwrap();
+    dir.write(
+        "math.rs",
+        "fn add(a, b) { return arithmetic sum product divide remainder }",
+    );
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let hits = pipeline::search(&config, "verify password", 5).unwrap();
+    assert!(
+        !hits.is_empty() && hits[0].path == "login.rs",
+        "got {hits:#?}"
+    );
+    assert_eq!((hits[0].start_line, hits[0].end_line), (1, 3));
+    assert!(
+        hits[0].snippet.contains("check_secret"),
+        "{}",
+        hits[0].snippet
+    );
+}
+
 #[test]
 fn a_search_by_name_reports_the_declaration_not_its_chunk() {
     let dir = TempDir::new();

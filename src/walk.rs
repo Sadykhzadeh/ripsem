@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -130,6 +131,25 @@ fn is_internal(path: &Path, root: &Path) -> bool {
         .any(|c| matches!(c.as_os_str().to_str(), Some(".ripsem") | Some(".git")))
 }
 
+/// The text a file holds. UTF-16 with its byte order mark, as Windows tools
+/// save it, is decoded and the mark dropped; anything else is read as UTF-8 with
+/// bad bytes replaced. Every reader of a file's text goes through here, so a
+/// line number means the same line in the index and in the snippets.
+pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
+    let units = |order: fn([u8; 2]) -> u16, rest: &[u8]| {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|pair| order([pair[0], pair[1]]))
+            .collect();
+        String::from_utf16_lossy(&units)
+    };
+    match bytes {
+        [0xFF, 0xFE, rest @ ..] => Cow::Owned(units(u16::from_le_bytes, rest)),
+        [0xFE, 0xFF, rest @ ..] => Cow::Owned(units(u16::from_be_bytes, rest)),
+        _ => String::from_utf8_lossy(bytes),
+    }
+}
+
 fn is_indexable(path: &Path, max_bytes: u64) -> bool {
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
@@ -138,14 +158,31 @@ fn is_indexable(path: &Path, max_bytes: u64) -> bool {
     if meta.len() == 0 || meta.len() > max_bytes {
         return false;
     }
-    let mut file = match std::fs::File::open(path) {
+    let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return false,
     };
-    let mut prefix = [0u8; 1024];
-    match file.read(&mut prefix) {
-        Ok(n) => content_inspector::inspect(&prefix[..n]).is_text(),
+    let mut prefix = Vec::with_capacity(SNIFF_BYTES as usize);
+    match file.take(SNIFF_BYTES).read_to_end(&mut prefix) {
+        Ok(_) => reads_as_text(&prefix),
         Err(_) => false,
+    }
+}
+
+/// The bytes git looks at to call a file binary, which is also enough here.
+const SNIFF_BYTES: u64 = 8000;
+
+/// `content_inspector` looks for a NUL only in the first kilobyte, so the rest
+/// of the sniffed bytes are checked here. UTF-16 and UTF-32 text, which a byte
+/// order mark announces, has NULs by design.
+fn reads_as_text(prefix: &[u8]) -> bool {
+    match content_inspector::inspect(prefix) {
+        content_inspector::ContentType::UTF_16LE
+        | content_inspector::ContentType::UTF_16BE
+        | content_inspector::ContentType::UTF_32LE
+        | content_inspector::ContentType::UTF_32BE => true,
+        content_inspector::ContentType::BINARY => false,
+        _ => !prefix.contains(&0),
     }
 }
 
@@ -336,5 +373,38 @@ mod tests {
         config.max_file_kb = 1;
 
         assert!(!names(&collect(&config).unwrap()).contains(&"big.txt".to_string()));
+    }
+
+    /// Git calls a file binary when a NUL shows up in its first 8000 bytes. One
+    /// past the first kilobyte is still binary, not text with garbled words.
+    #[test]
+    fn a_nul_past_the_first_kilobyte_makes_a_file_binary() {
+        let dir = TempDir::new();
+        let mut blob = "fn kept() {}\n".repeat(200).into_bytes();
+        blob.extend_from_slice(b"\0\x01\x02 binary tail\n");
+        assert!(blob.len() < 8000 && blob[1024..].contains(&0));
+        std::fs::write(dir.path().join("dump.rs"), &blob).unwrap();
+        dir.write("keep.rs", "fn main() {}\n");
+
+        assert_eq!(
+            names(&collect(&config_at(dir.path())).unwrap()),
+            ["keep.rs"]
+        );
+    }
+
+    #[test]
+    fn decodes_utf16_with_its_byte_order_mark() {
+        let text = "fn a() {}\r\nfn b() {}";
+        let le: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        let be: Vec<u8> = [0xFE, 0xFF]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_be_bytes))
+            .collect();
+        assert_eq!(decode_text(&le), text);
+        assert_eq!(decode_text(&be), text);
+        assert_eq!(decode_text(b"plain\n"), "plain\n");
     }
 }

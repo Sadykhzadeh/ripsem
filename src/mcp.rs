@@ -68,10 +68,12 @@ fn serve_on(
     let mut tried = None;
 
     let mut line = Vec::new();
-    loop {
-        line.clear();
-        if reader.read_until(b'\n', &mut line)? == 0 {
-            break;
+    while let Some(cut) = read_request(&mut reader, &mut line, MAX_REQUEST_BYTES)? {
+        if cut {
+            let refused = error(Value::Null, -32600, "request is larger than 4 MiB");
+            writeln!(writer, "{}", serde_json::to_string(&refused)?)?;
+            writer.flush()?;
+            continue;
         }
         // Bytes that are not UTF-8 make a line that does not parse, not a
         // reason to stop serving.
@@ -115,6 +117,47 @@ fn serve_on(
         }
     }
     Ok(())
+}
+
+/// The largest request line the server reads. A search is a short question, so
+/// anything longer is a mistake or a flood, and holding it whole would let one
+/// line take as much memory as the client cares to send.
+const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+
+/// Reads one line into `line`, keeping at most `limit` bytes of it. The rest of
+/// a longer line is read and dropped, so the line after it still starts where
+/// it should. `None` is the end of the input; otherwise the flag says whether
+/// the line was cut short.
+fn read_request(
+    reader: &mut impl BufRead,
+    line: &mut Vec<u8>,
+    limit: usize,
+) -> std::io::Result<Option<bool>> {
+    line.clear();
+    let mut cut = false;
+    let mut any = false;
+    loop {
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
+            return Ok(any.then_some(cut));
+        }
+        any = true;
+        let (taken, done) = match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (buf.len(), false),
+        };
+        let room = limit - line.len();
+        if taken > room {
+            line.extend_from_slice(&buf[..room]);
+            cut = true;
+        } else {
+            line.extend_from_slice(&buf[..taken]);
+        }
+        reader.consume(taken);
+        if done {
+            return Ok(Some(cut));
+        }
+    }
 }
 
 /// The client's workspace roots, for a server that follows them. A client
@@ -1101,6 +1144,33 @@ mod tests {
         assert_eq!(replies[0]["id"], Value::Null);
         assert_eq!(replies[1]["error"]["code"], -32700);
         assert_eq!(replies[2]["id"], 1);
+    }
+
+    /// A request line is held whole only up to a size limit. A longer one is
+    /// refused as a request, and the lines after it are still answered.
+    #[test]
+    fn an_over_long_request_is_refused_and_the_next_one_is_served() {
+        let dir = crate::testutil::TempDir::new();
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let padding = "x".repeat(4 * 1024 * 1024);
+        let input = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":\"{padding}\"}}\n\
+             {{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}}\n"
+        );
+        let mut out = Vec::new();
+        serve_on(config, false, |_| {}, input.as_bytes(), &mut out).unwrap();
+        let replies: Vec<Value> = out
+            .split(|&b| b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(replies.len(), 2, "got {} replies", replies.len());
+        assert_eq!(replies[0]["error"]["code"], -32600);
+        assert_eq!(replies[0]["id"], Value::Null);
+        assert_eq!(replies[1]["id"], 2);
     }
 
     fn file_uri(path: &Path) -> String {
