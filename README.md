@@ -64,18 +64,19 @@ ranges.
     irm https://raw.githubusercontent.com/Sadykhzadeh/ripsem/master/install.ps1 | iex
     ```
 
-2. In your repository, build the index and ask it something:
+2. In your repository, ask it something:
 
     ```bash
-    ripsem index
     ripsem search "strip the auth header when redirecting to another host"
     ```
 
 3. Hand the same search to your coding agent with `ripsem install claude-code` or
    `ripsem install cursor` (see [below](#use-with-coding-agents)).
 
-The first `index` downloads the model (~133 MB) and embeds the repository;
-later runs embed only the code that changed.
+The first search in a git repository builds the index: it downloads the model
+(~133 MB) once and embeds the repository. Every search after that first embeds
+whatever changed since, so results never point at code that has moved. On
+Windows the first index runs on the GPU through DirectML when there is one.
 
 ### Why not grep?
 
@@ -157,7 +158,7 @@ ripsem completions powershell >> $PROFILE
 ```
 ripsem init                       # write .ripsem/config.toml
 ripsem index                      # build the index (incremental on re-runs)
-ripsem search "where is auth set up?"
+ripsem search "where is auth set up?"   # updates the index first
 ripsem status                     # index size, counts, model, drift from the tree
 ripsem status --json              # the same as JSON (schema ripsem/status/v1)
 ripsem watch                      # keep the index in sync as files change
@@ -339,8 +340,9 @@ the index takes in. A file is left out when `.gitignore`, `.ripsemignore` or
 `skip_generated` treats it as machine-written.
 
 **A result points at the wrong lines.** The file changed after it was indexed.
-`ripsem status` shows how far the index has drifted; `ripsem index` brings it up
-to date, and `ripsem watch` or a running MCP server keeps it there.
+`ripsem search` updates the index before it searches, and `ripsem watch` or a
+running MCP server keeps it current; `ripsem status` shows how far it has
+drifted.
 
 **Search says the index was built with another model.** The config names a
 different model or backend than the index. `ripsem index` rebuilds it for the
@@ -352,7 +354,10 @@ lists the servers it has connected to.
 
 **The first index takes a while.** It downloads the model once and embeds every
 file, showing the chunks embedded so far and an estimate of the time left.
-Every later run embeds only the code that changed. The model is cached in
+Every later run embeds only the code that changed. On Windows a job of 256
+chunks or more runs on the GPU through DirectML, about four times faster than
+on the CPU; `RIPSEM_NO_GPU=1` keeps it on the CPU, for example when a graphics
+driver misbehaves. The model is cached in
 `~/.cache/ripsem` on Linux, `~/Library/Caches/ripsem` on macOS and
 `%LOCALAPPDATA%\ripsem\cache` on Windows.
 

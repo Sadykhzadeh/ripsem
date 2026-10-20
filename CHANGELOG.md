@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- `ripsem search` updates the index before searching, so an edit made since
+  the last `ripsem index` is found where it is now. When nothing changed this
+  costs a walk of the tree, about 15 ms on a repository of 700 files.
+- The first `ripsem search` in a git repository builds the index instead of
+  asking for `ripsem index` first.
+- On Windows, indexing 256 chunks or more runs on the GPU through DirectML:
+  a first index of 5 000 chunks took 45 s instead of 173 s, and used 29 s of
+  CPU instead of 1 060 s. Queries and small updates stay on the CPU, where the
+  model starts faster. `RIPSEM_NO_GPU=1` keeps everything on the CPU.
+- `ripsem search` no longer crashes on its way out after an error, such as a
+  scope with nothing indexed under it, while the model was still loading.
 - `install.sh` and `install.ps1` install the latest release with one command,
   after checking it against the release's checksums.
 - A search for a name lands on its declaration: typed as code or spelled out in

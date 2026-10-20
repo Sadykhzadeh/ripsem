@@ -450,6 +450,41 @@ fn searching_without_an_index_is_a_clear_error() {
     assert!(err.to_string().contains("ripsem index"));
 }
 
+#[test]
+fn a_search_finds_code_written_after_the_index_was_built() {
+    let dir = TempDir::new();
+    dir.write("auth.rs", "fn authenticate(user) { verify password }");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    dir.write("beacon.rs", "fn zebraquux_beacon() { singular }");
+    let hits = pipeline::search_scoped(&config, "zebraquux beacon", 5, None).unwrap();
+    assert_eq!(hits[0].path, "beacon.rs");
+}
+
+#[test]
+fn the_first_search_in_a_repository_builds_its_index() {
+    let dir = TempDir::new();
+    std::fs::create_dir(dir.path.join(".git")).unwrap();
+    dir.write("auth.rs", "fn authenticate(user) { verify password }");
+    let config = config_for(&dir.path);
+
+    let hits = pipeline::search_scoped(&config, "verify password", 5, None).unwrap();
+    assert_eq!(hits[0].path, "auth.rs");
+    assert!(config.index_path().exists());
+}
+
+#[test]
+fn a_search_outside_a_repository_does_not_build_an_index() {
+    let dir = TempDir::new();
+    dir.write("auth.rs", "fn authenticate(user) { verify password }");
+    let config = config_for(&dir.path);
+
+    let err = pipeline::search_scoped(&config, "verify password", 5, None).unwrap_err();
+    assert!(err.to_string().contains("ripsem index"));
+    assert!(!config.index_path().exists());
+}
+
 /// The hash backend gives its own vectors under any model name, so an index it
 /// built cannot answer a query embedded by the model, or the other way round.
 #[test]
