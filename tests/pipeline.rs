@@ -670,6 +670,7 @@ fn a_utf16_file_is_indexed_as_its_text() {
     );
 }
 
+#[cfg(feature = "treesitter")]
 #[test]
 fn a_search_by_name_reports_the_declaration_not_its_chunk() {
     let dir = TempDir::new();
