@@ -138,8 +138,10 @@ fn is_internal(path: &Path, root: &Path) -> bool {
 pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
     let units = |order: fn([u8; 2]) -> u16, rest: &[u8]| {
         let units: Vec<u16> = rest
-            .chunks_exact(2)
-            .map(|pair| order([pair[0], pair[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&pair| order(pair))
             .collect();
         String::from_utf16_lossy(&units)
     };
