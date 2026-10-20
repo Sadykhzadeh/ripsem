@@ -15,16 +15,28 @@ pub trait Embedder: Send + Sync {
     fn embed_query(&self, text: &str) -> Result<Vec<f32>>;
 }
 
+/// Chunks waiting for vectors from which [`build_for`] puts the model on the
+/// GPU. Starting the device costs more than embedding a few chunks, and far
+/// more than one query, so smaller jobs stay on the CPU.
+pub const GPU_FROM_CHUNKS: usize = 256;
+
 pub fn build(config: &Config) -> Result<Box<dyn Embedder>> {
+    build_for(config, 0)
+}
+
+/// The model for embedding `chunks` texts in one go.
+pub fn build_for(config: &Config, chunks: usize) -> Result<Box<dyn Embedder>> {
     match config.backend {
         Backend::Hash => Ok(Box::new(hashing::HashEmbedder::new(config.dims()))),
         Backend::Fastembed => {
             #[cfg(feature = "fastembed")]
             {
-                Ok(Box::new(fastembed::FastEmbedder::new(&config.model)?))
+                let gpu = chunks >= GPU_FROM_CHUNKS && std::env::var_os("RIPSEM_NO_GPU").is_none();
+                Ok(Box::new(fastembed::FastEmbedder::new(&config.model, gpu)?))
             }
             #[cfg(not(feature = "fastembed"))]
             {
+                let _ = chunks;
                 anyhow::bail!(
                     "backend 'fastembed' needs a build with the model runtime: cargo build --features fastembed"
                 )
