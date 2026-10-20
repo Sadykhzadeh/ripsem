@@ -497,6 +497,7 @@ struct LazyEmbedder {
     config: Config,
     built: OnceLock<Box<dyn embed::Embedder>>,
     building: Mutex<()>,
+    warming: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl LazyEmbedder {
@@ -505,6 +506,7 @@ impl LazyEmbedder {
             config: config.clone(),
             built: OnceLock::new(),
             building: Mutex::new(()),
+            warming: Mutex::new(None),
         }
     }
 
@@ -526,9 +528,24 @@ impl LazyEmbedder {
     /// next [`LazyEmbedder::get`] to report.
     fn warm(self: &Arc<Self>) {
         let embedder = Arc::clone(self);
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             let _ = embedder.get();
         });
+        *self.warming.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+    }
+
+    /// Waits for a model [`LazyEmbedder::warm`] started. A process that exits
+    /// while the runtime is still being set up on another thread crashes on
+    /// the way out.
+    fn settle(&self) {
+        let handle = self
+            .warming
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -784,6 +801,9 @@ pub fn search_scoped(
     k: usize,
     prefix: Option<&str>,
 ) -> Result<Vec<SearchHit>> {
+    if query.trim().is_empty() {
+        anyhow::bail!("the query is empty; say what to look for");
+    }
     let embedder = Arc::new(LazyEmbedder::new(config));
     // Loading the model and decoding the index are independent, so they run
     // side by side. Without an index there is nothing to search and no reason
@@ -791,7 +811,12 @@ pub fn search_scoped(
     if config.index_path().exists() {
         embedder.warm();
     }
-    open_with(config, embedder)?.query_scoped(query, k, prefix)
+    let found = open_with(config, Arc::clone(&embedder))
+        .and_then(|searcher| searcher.query_scoped(query, k, prefix));
+    if found.is_err() {
+        embedder.settle();
+    }
+    found
 }
 
 /// Display `path` relative to `root` with forward slashes, matching the
