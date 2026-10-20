@@ -54,7 +54,7 @@ xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
 
 [features]
 default = ["fastembed", "treesitter"]
-fastembed = ["dep:fastembed"]
+fastembed = ["dep:fastembed", "dep:ort"]
 hnsw = ["dep:instant-distance"]
 treesitter = [
     "dep:tree-sitter",
@@ -76,6 +76,10 @@ treesitter = [
     "dep:tree-sitter-scala",
     "dep:tree-sitter-typescript",
 ]
+
+[target.'cfg(windows)'.dependencies]
+fastembed = { version = "7.0.0", optional = true, features = ["directml"] }
+ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = ["directml"] }
 
 [profile.release]
 opt-level = 3

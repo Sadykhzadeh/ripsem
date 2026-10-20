@@ -453,7 +453,7 @@ impl Queue {
         let embedder = match embedder {
             Some(built) => built,
             None => {
-                let built = embed::build(config)?;
+                let built = embed::build_for(config, self.awaiting)?;
                 if built.dims() != dims {
                     anyhow::bail!(
                         "model {} embeds {} dimensions, expected {}",

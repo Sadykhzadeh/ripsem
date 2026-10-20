@@ -14,15 +14,23 @@ pub struct FastEmbedder {
 }
 
 impl FastEmbedder {
-    pub fn new(model_id: &str) -> Result<Self> {
+    /// `gpu` asks for DirectML on Windows; without a usable device the runtime
+    /// stays on the CPU.
+    pub fn new(model_id: &str, gpu: bool) -> Result<Self> {
         let (embedding_model, dims, query_prefix) = map_model(model_id)?;
         let cache = cache_dir();
         std::fs::create_dir_all(&cache).ok();
-        let model = TextEmbedding::try_new(
-            TextInitOptions::new(embedding_model)
-                .with_cache_dir(cache)
-                .with_show_download_progress(true),
-        )?;
+        let options = TextInitOptions::new(embedding_model)
+            .with_cache_dir(cache)
+            .with_show_download_progress(true);
+        #[cfg(windows)]
+        let options = match gpu {
+            true => options.with_execution_providers(vec![ort::ep::DirectML::default().build()]),
+            false => options,
+        };
+        #[cfg(not(windows))]
+        let _ = gpu;
+        let model = TextEmbedding::try_new(options)?;
         Ok(Self {
             model: Mutex::new(model),
             dims,

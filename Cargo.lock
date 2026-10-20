@@ -2420,6 +2420,7 @@ dependencies = [
  "indicatif",
  "instant-distance",
  "notify",
+ "ort",
  "rayon",
  "serde",
  "serde_json",
