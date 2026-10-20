@@ -794,7 +794,8 @@ pub fn search(config: &Config, query: &str, k: usize) -> Result<Vec<SearchHit>> 
 }
 
 /// Like [`search`], limited to a normalized repo-relative path prefix (see
-/// `mcp::scope_prefix`). `None` searches the whole index.
+/// `mcp::scope_prefix`), after updating the index for files changed since it
+/// was built. `None` searches the whole index.
 pub fn search_scoped(
     config: &Config,
     query: &str,
@@ -804,12 +805,20 @@ pub fn search_scoped(
     if query.trim().is_empty() {
         anyhow::bail!("the query is empty; say what to look for");
     }
+    // A repository's first search builds its index rather than sending the
+    // user off to run `ripsem index`. Outside a repository the directory may
+    // be a home folder, which nobody wants embedded by accident.
+    if !config.index_path().exists() && config.root.join(".git").exists() {
+        eprintln!("no index yet; building one, which later searches only update");
+        index_repo(config, false)?;
+    }
     let embedder = Arc::new(LazyEmbedder::new(config));
     // Loading the model and decoding the index are independent, so they run
     // side by side. Without an index there is nothing to search and no reason
     // to load (or download) a model.
     if config.index_path().exists() {
         embedder.warm();
+        refresh(config);
     }
     let found = open_with(config, Arc::clone(&embedder))
         .and_then(|searcher| searcher.query_scoped(query, k, prefix));
@@ -817,6 +826,21 @@ pub fn search_scoped(
         embedder.settle();
     }
     found
+}
+
+/// Brings the index up to date with the tree while the model loads, so an
+/// edit made since the last `ripsem index` is found where it is now. When
+/// nothing changed this only walks and hashes the files. A failure, such as a
+/// read-only checkout, leaves the search to the index as it is.
+fn refresh(config: &Config) {
+    match index_repo(config, false) {
+        Ok(stats) if stats.embedded > 0 => eprintln!(
+            "updated the index: {} changed",
+            crate::cli::plural(stats.embedded, "file")
+        ),
+        Ok(_) => {}
+        Err(e) => eprintln!("warning: could not update the index: {e:#}"),
+    }
 }
 
 /// Display `path` relative to `root` with forward slashes, matching the
