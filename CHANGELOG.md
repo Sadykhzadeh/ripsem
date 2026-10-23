@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A file that matches in several places ranks above one that matched once.
 - A file whose name or directory matches the question ranks higher.
 - Results reach as many files as they can: each file places its best hit
   before any file places a second.

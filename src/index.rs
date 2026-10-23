@@ -358,6 +358,7 @@ impl Index {
             })
             .collect();
         self.credit_named_files(&mut candidates, lexical);
+        self.credit_files_matching_throughout(&mut candidates);
         candidates.sort_unstable_by(Candidate::rank);
         self.best_of_each_place(candidates, k)
     }
@@ -385,6 +386,30 @@ impl Index {
             if share >= MIN_PATH_SHARE {
                 candidate.agreement += best * share;
             }
+        }
+    }
+
+    /// A file that several candidates come from is more likely about the
+    /// question than one that matched once by chance. The best candidate of
+    /// each file gains up to a fifth of the best agreement, in proportion to
+    /// the agreement its file gathered across all its candidates.
+    fn credit_files_matching_throughout(&self, candidates: &mut [Candidate]) {
+        let best = candidates.iter().map(|c| c.agreement).fold(0.0, f32::max);
+        let mut files: HashMap<&str, (f32, usize)> = HashMap::new();
+        for (i, candidate) in candidates.iter().enumerate() {
+            let path = self.records[candidate.record_idx].path.as_str();
+            let file = files.entry(path).or_insert((0.0, i));
+            file.0 += candidate.agreement;
+            if candidate.agreement > candidates[file.1].agreement {
+                file.1 = i;
+            }
+        }
+        let most = files.values().map(|f| f.0).fold(0.0, f32::max);
+        if most <= 0.0 {
+            return;
+        }
+        for (gathered, i) in files.into_values() {
+            candidates[i].agreement += best * FILE_AGREEMENT_SHARE * gathered / most;
         }
     }
 
@@ -485,6 +510,8 @@ impl Index {
 const COMPLETE_COVERAGE: f32 = 0.999;
 
 const MIN_PATH_SHARE: f32 = 0.1;
+
+const FILE_AGREEMENT_SHARE: f32 = 0.2;
 
 static TEST_WORDS: std::sync::LazyLock<Vec<TermHash>> =
     std::sync::LazyLock::new(|| crate::lexical::query_terms("test tests testing spec specs"));
@@ -1045,6 +1072,21 @@ mod tests {
         ));
         let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms("register route"), &[], 2, None);
         assert_eq!(paths(&index, &hits), vec!["src/routes.rs", "src/util.rs"]);
+    }
+
+    #[test]
+    fn a_file_matching_in_several_places_outranks_a_single_close_match() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        index
+            .records
+            .push(placed("lone.rs", 1, 10, vec![1.0, 0.0, 0.0]));
+        for (start, x) in [(1, 0.99), (20, 0.98), (40, 0.97)] {
+            index
+                .records
+                .push(placed("many.rs", start, start + 9, vec![x, 1.0 - x, 0.0]));
+        }
+        let hits = index.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(paths(&index, &hits), vec!["many.rs", "lone.rs"]);
     }
 
     #[test]
