@@ -186,7 +186,7 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(cfg.model, DEFAULT_MODEL);
         assert!(cfg.chunk_lines > cfg.chunk_overlap);
-        assert_eq!(cfg.dims(), 384);
+        assert_eq!(cfg.dims(), 256);
     }
 
     #[test]

@@ -230,7 +230,10 @@ fn setting_the_model_or_backend_it_has_asks_for_no_rebuild() {
 
     let same = stdout(&ripsem(&dir.path, &["model", "backend", "hash"]));
     assert!(same.contains("already hash"), "{same}");
-    let same = stdout(&ripsem(&dir.path, &["model", "set", "bge-small-en-v1.5"]));
+    let same = stdout(&ripsem(
+        &dir.path,
+        &["model", "set", ripsem::model::DEFAULT_MODEL],
+    ));
     assert!(same.contains("needs no rebuild"), "{same}");
 
     let changed = stdout(&ripsem(&dir.path, &["model", "set", "all-MiniLM-L6-v2"]));

@@ -74,9 +74,10 @@ ranges.
    `ripsem install cursor` (see [below](#use-with-coding-agents)).
 
 The first search in a git repository builds the index: it downloads the model
-(~133 MB) once and embeds the repository. Every search after that first embeds
-whatever changed since, so results never point at code that has moved. On
-Windows the first index runs on the GPU through DirectML when there is one.
+(~32 MB) once and embeds the repository, which takes seconds. Every search
+after that first embeds whatever changed since, so results never point at code
+that has moved. With one of the transformer models from [Models](#models), the
+first index on Windows runs on the GPU through DirectML when there is one.
 
 ### Why not grep?
 
@@ -209,12 +210,12 @@ ripsem index                      # rebuilds the index for the new model
 
 | Model | Dims | Disk | Notes |
 | --- | --- | --- | --- |
-| bge-small-en-v1.5 | 384 | ~133 MB | default |
-| all-MiniLM-L6-v2 | 384 | ~90 MB | smallest and fastest to embed |
+| potion-code-16M-v2 | 256 | ~32 MB | default; static code model: indexes in seconds, without the ONNX runtime |
+| bge-small-en-v1.5 | 384 | ~133 MB | general English model |
+| all-MiniLM-L6-v2 | 384 | ~90 MB | smallest and fastest of the transformer models |
 | bge-base-en-v1.5 | 768 | ~436 MB | larger English model |
 | multilingual-e5-small | 384 | ~470 MB | queries and comments in other languages |
 | nomic-embed-text-v1.5 | 768 | ~550 MB | larger English model, the most memory to index |
-| potion-code-16M-v2 | 256 | ~32 MB | static code model: indexes in seconds, without the ONNX runtime |
 
 The model downloads once on first use, then everything is offline.
 
@@ -276,7 +277,7 @@ overrides them.
 
 ```toml
 backend = "fastembed"
-model = "bge-small-en-v1.5"
+model = "potion-code-16M-v2"
 chunk_lines = 40
 chunk_overlap = 8
 max_chunk_lines = 50

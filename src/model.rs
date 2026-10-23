@@ -7,23 +7,30 @@ pub struct ModelInfo {
     pub note: &'static str,
 }
 
-pub const DEFAULT_MODEL: &str = "bge-small-en-v1.5";
+pub const DEFAULT_MODEL: &str = "potion-code-16M-v2";
 
 pub fn catalog() -> &'static [ModelInfo] {
     &[
+        ModelInfo {
+            id: "potion-code-16M-v2",
+            dims: 256,
+            disk_mb: 32,
+            multilingual: false,
+            note: "Default. Static code model: indexes in seconds, no ONNX runtime.",
+        },
         ModelInfo {
             id: "bge-small-en-v1.5",
             dims: 384,
             disk_mb: 133,
             multilingual: false,
-            note: "Default.",
+            note: "General English model, through the ONNX runtime.",
         },
         ModelInfo {
             id: "all-MiniLM-L6-v2",
             dims: 384,
             disk_mb: 90,
             multilingual: false,
-            note: "Smallest and fastest to embed.",
+            note: "Smallest and fastest of the transformer models.",
         },
         ModelInfo {
             id: "bge-base-en-v1.5",
@@ -45,13 +52,6 @@ pub fn catalog() -> &'static [ModelInfo] {
             disk_mb: 550,
             multilingual: false,
             note: "Larger English model, the most memory to index.",
-        },
-        ModelInfo {
-            id: "potion-code-16M-v2",
-            dims: 256,
-            disk_mb: 32,
-            multilingual: false,
-            note: "Static code model: indexes in seconds, no ONNX runtime.",
         },
     ]
 }

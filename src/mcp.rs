@@ -1077,7 +1077,10 @@ mod tests {
         let mut session = None;
         let mut tried = None;
         hold_the_index(&mut session, &mut tried, &mut config);
-        assert_eq!(session.as_ref().unwrap().model(), "bge-small-en-v1.5");
+        assert_eq!(
+            session.as_ref().unwrap().model(),
+            crate::model::DEFAULT_MODEL
+        );
 
         let mut switched = Config::load(dir.path()).unwrap();
         switched.model = "all-MiniLM-L6-v2".into();

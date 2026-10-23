@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- New indexes use potion-code-16M-v2. An existing `.ripsem/config.toml` keeps
+  the model it names, so nothing is rebuilt until `ripsem model set` asks.
 - A file that matches in several places ranks above one that matched once.
 - A file whose name or directory matches the question ranks higher.
 - Results reach as many files as they can: each file places its best hit
