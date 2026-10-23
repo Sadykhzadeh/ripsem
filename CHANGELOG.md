@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `ripsem model set potion-code-16M-v2` picks a static code model that
+  indexes in seconds: 19 repositories of the semble benchmark indexed in 13 s
+  instead of 1 108 s with bge-small-en-v1.5 on an M1, at NDCG@10 0.778
+  against 0.769. It downloads 32 MB and runs without the ONNX runtime.
 - `ripsem search` updates the index before searching, so an edit made since
   the last `ripsem index` is found where it is now. When nothing changed this
   costs a walk of the tree, about 15 ms on a repository of 700 files.

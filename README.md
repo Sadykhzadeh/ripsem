@@ -214,6 +214,7 @@ ripsem index                      # rebuilds the index for the new model
 | bge-base-en-v1.5 | 768 | ~436 MB | larger English model |
 | multilingual-e5-small | 384 | ~470 MB | queries and comments in other languages |
 | nomic-embed-text-v1.5 | 768 | ~550 MB | larger English model, the most memory to index |
+| potion-code-16M-v2 | 256 | ~32 MB | static code model: indexes in seconds, without the ONNX runtime |
 
 The model downloads once on first use, then everything is offline.
 

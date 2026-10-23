@@ -46,9 +46,25 @@ pub fn catalog() -> &'static [ModelInfo] {
             multilingual: false,
             note: "Larger English model, the most memory to index.",
         },
+        ModelInfo {
+            id: "potion-code-16M-v2",
+            dims: 256,
+            disk_mb: 32,
+            multilingual: false,
+            note: "Static code model: indexes in seconds, no ONNX runtime.",
+        },
     ]
 }
 
 pub fn find(id: &str) -> Option<&'static ModelInfo> {
     catalog().iter().find(|m| m.id == id)
+}
+
+/// The Hugging Face repository of a static model. A static model embeds by
+/// looking each token up in a table and averaging, without the ONNX runtime.
+pub fn static_repo(id: &str) -> Option<&'static str> {
+    match id {
+        "potion-code-16M-v2" => Some("minishlab/potion-code-16M-v2"),
+        _ => None,
+    }
 }
