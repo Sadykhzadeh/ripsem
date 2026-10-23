@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Results reach as many files as they can: each file places its best hit
+  before any file places a second.
 - The model reads each chunk under its path and the declaration it belongs
   to. An index built before this embeds every chunk again on its next run.
 - `ripsem model set potion-code-16M-v2` picks a static code model that

@@ -385,28 +385,30 @@ impl Index {
     /// declaration and its doc record, or overlapping windows), and of the
     /// pieces of one declaration too large for a chunk. Done before the cut to
     /// `k`, so the caller still gets `k` distinct places.
+    ///
+    /// Each file places its best record before any file places a second, so
+    /// `k` results reach as many files as the ranking holds. A reader, or an
+    /// agent, decides which file to open from the list, and five pieces of one
+    /// file leave four slots that could have named another.
     fn best_of_each_place(&self, ranked: Vec<Candidate>, k: usize) -> Vec<Hit> {
         let mut taken: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
         let mut split: std::collections::HashSet<(&str, &Symbol)> =
             std::collections::HashSet::new();
         // `k` comes from the caller, so cap the reservation at the index size.
         let mut out = Vec::with_capacity(k.min(self.records.len()));
-        for candidate in ranked {
-            if out.len() == k {
-                break;
-            }
+        let mut admit = |candidate: &Candidate, out: &mut Vec<Hit>| {
             let record = &self.records[candidate.record_idx];
             let places = taken.entry(record.path.as_str()).or_default();
             if places
                 .iter()
                 .any(|&(start, end)| record.start_line <= end && record.end_line >= start)
             {
-                continue;
+                return;
             }
             if let Some(symbol) = record.piece_of()
                 && !split.insert((record.path.as_str(), symbol))
             {
-                continue;
+                return;
             }
             places.push((record.start_line, record.end_line));
             let reported = candidate.reported(self.noise_floor.unwrap_or(0.0));
@@ -417,6 +419,28 @@ impl Index {
                 score,
                 record_idx: candidate.record_idx,
             });
+        };
+        let mut files: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut later = Vec::new();
+        for candidate in ranked {
+            if out.len() == k {
+                return out;
+            }
+            if files.contains(self.records[candidate.record_idx].path.as_str()) {
+                later.push(candidate);
+                continue;
+            }
+            let before = out.len();
+            admit(&candidate, &mut out);
+            if out.len() > before {
+                files.insert(self.records[candidate.record_idx].path.as_str());
+            }
+        }
+        for candidate in later {
+            if out.len() == k {
+                break;
+            }
+            admit(&candidate, &mut out);
         }
         out
     }
@@ -956,6 +980,25 @@ mod tests {
         }
 
         assert_eq!(index.search(&[1.0, 0.0, 0.0], 3).len(), 3);
+    }
+
+    #[test]
+    fn each_file_places_one_result_before_any_places_a_second() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        index
+            .records
+            .push(placed("a.rs", 1, 10, vec![1.0, 0.0, 0.0]));
+        index
+            .records
+            .push(placed("a.rs", 20, 30, vec![0.95, 0.05, 0.0]));
+        index
+            .records
+            .push(placed("b.rs", 1, 10, vec![0.7, 0.3, 0.0]));
+
+        let hits = index.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(paths(&index, &hits), vec!["a.rs", "b.rs"]);
+        let hits = index.search(&[1.0, 0.0, 0.0], 3);
+        assert_eq!(paths(&index, &hits), vec!["a.rs", "b.rs", "a.rs"]);
     }
 
     #[test]
