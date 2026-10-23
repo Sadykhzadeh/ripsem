@@ -357,8 +357,60 @@ impl Index {
                 }
             })
             .collect();
+        self.credit_named_files(&mut candidates, lexical);
+        self.credit_files_matching_throughout(&mut candidates);
         candidates.sort_unstable_by(Candidate::rank);
         self.best_of_each_place(candidates, k)
+    }
+
+    /// A file named after what the query asks about is likely the answer:
+    /// "how is a route registered" is answered in `routes.go`, whose methods
+    /// need not say "route" in their bodies. Each candidate gains agreement in
+    /// proportion to the share of the query, weighted as BM25 weighs it, that
+    /// its file name or directory holds, up to the agreement of the best
+    /// candidate. A share under a tenth is one common word and counts for
+    /// nothing.
+    fn credit_named_files(&self, candidates: &mut [Candidate], lexical: &LexicalRanking) {
+        if lexical.terms.is_empty() {
+            return;
+        }
+        let best = candidates.iter().map(|c| c.agreement).fold(0.0, f32::max);
+        let mut shares: HashMap<&str, f32> = HashMap::new();
+        for candidate in candidates.iter_mut() {
+            let path = self.records[candidate.record_idx].path.as_str();
+            let share = *shares.entry(path).or_insert_with(|| {
+                let named =
+                    crate::lexical::presence_in(&lexical.terms, &crate::lexical::path_terms(path));
+                lexical.weights.coverage(named)
+            });
+            if share >= MIN_PATH_SHARE {
+                candidate.agreement += best * share;
+            }
+        }
+    }
+
+    /// A file that several candidates come from is more likely about the
+    /// question than one that matched once by chance. The best candidate of
+    /// each file gains up to a fifth of the best agreement, in proportion to
+    /// the agreement its file gathered across all its candidates.
+    fn credit_files_matching_throughout(&self, candidates: &mut [Candidate]) {
+        let best = candidates.iter().map(|c| c.agreement).fold(0.0, f32::max);
+        let mut files: HashMap<&str, (f32, usize)> = HashMap::new();
+        for (i, candidate) in candidates.iter().enumerate() {
+            let path = self.records[candidate.record_idx].path.as_str();
+            let file = files.entry(path).or_insert((0.0, i));
+            file.0 += candidate.agreement;
+            if candidate.agreement > candidates[file.1].agreement {
+                file.1 = i;
+            }
+        }
+        let most = files.values().map(|f| f.0).fold(0.0, f32::max);
+        if most <= 0.0 {
+            return;
+        }
+        for (gathered, i) in files.into_values() {
+            candidates[i].agreement += best * FILE_AGREEMENT_SHARE * gathered / most;
+        }
     }
 
     /// Text about cooking or sport is as unrelated to any code as a query
@@ -385,28 +437,30 @@ impl Index {
     /// declaration and its doc record, or overlapping windows), and of the
     /// pieces of one declaration too large for a chunk. Done before the cut to
     /// `k`, so the caller still gets `k` distinct places.
+    ///
+    /// Each file places its best record before any file places a second, so
+    /// `k` results reach as many files as the ranking holds. A reader, or an
+    /// agent, decides which file to open from the list, and five pieces of one
+    /// file leave four slots that could have named another.
     fn best_of_each_place(&self, ranked: Vec<Candidate>, k: usize) -> Vec<Hit> {
         let mut taken: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
         let mut split: std::collections::HashSet<(&str, &Symbol)> =
             std::collections::HashSet::new();
         // `k` comes from the caller, so cap the reservation at the index size.
         let mut out = Vec::with_capacity(k.min(self.records.len()));
-        for candidate in ranked {
-            if out.len() == k {
-                break;
-            }
+        let mut admit = |candidate: &Candidate, out: &mut Vec<Hit>| {
             let record = &self.records[candidate.record_idx];
             let places = taken.entry(record.path.as_str()).or_default();
             if places
                 .iter()
                 .any(|&(start, end)| record.start_line <= end && record.end_line >= start)
             {
-                continue;
+                return;
             }
             if let Some(symbol) = record.piece_of()
                 && !split.insert((record.path.as_str(), symbol))
             {
-                continue;
+                return;
             }
             places.push((record.start_line, record.end_line));
             let reported = candidate.reported(self.noise_floor.unwrap_or(0.0));
@@ -417,6 +471,28 @@ impl Index {
                 score,
                 record_idx: candidate.record_idx,
             });
+        };
+        let mut files: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut later = Vec::new();
+        for candidate in ranked {
+            if out.len() == k {
+                return out;
+            }
+            if files.contains(self.records[candidate.record_idx].path.as_str()) {
+                later.push(candidate);
+                continue;
+            }
+            let before = out.len();
+            admit(&candidate, &mut out);
+            if out.len() > before {
+                files.insert(self.records[candidate.record_idx].path.as_str());
+            }
+        }
+        for candidate in later {
+            if out.len() == k {
+                break;
+            }
+            admit(&candidate, &mut out);
         }
         out
     }
@@ -432,6 +508,10 @@ impl Index {
 }
 
 const COMPLETE_COVERAGE: f32 = 0.999;
+
+const MIN_PATH_SHARE: f32 = 0.1;
+
+const FILE_AGREEMENT_SHARE: f32 = 0.2;
 
 static TEST_WORDS: std::sync::LazyLock<Vec<TermHash>> =
     std::sync::LazyLock::new(|| crate::lexical::query_terms("test tests testing spec specs"));
@@ -956,6 +1036,57 @@ mod tests {
         }
 
         assert_eq!(index.search(&[1.0, 0.0, 0.0], 3).len(), 3);
+    }
+
+    #[test]
+    fn each_file_places_one_result_before_any_places_a_second() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        index
+            .records
+            .push(placed("a.rs", 1, 10, vec![1.0, 0.0, 0.0]));
+        index
+            .records
+            .push(placed("a.rs", 20, 30, vec![0.95, 0.05, 0.0]));
+        index
+            .records
+            .push(placed("b.rs", 1, 10, vec![0.7, 0.3, 0.0]));
+
+        let hits = index.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(paths(&index, &hits), vec!["a.rs", "b.rs"]);
+        let hits = index.search(&[1.0, 0.0, 0.0], 3);
+        assert_eq!(paths(&index, &hits), vec!["a.rs", "b.rs", "a.rs"]);
+    }
+
+    #[test]
+    fn a_file_named_after_the_question_outranks_an_equal_match_elsewhere() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        index.records.push(text_record(
+            "src/util.rs",
+            "fn register(route) {}",
+            vec![1.0, 0.0, 0.0],
+        ));
+        index.records.push(text_record(
+            "src/routes.rs",
+            "fn register(route) {}",
+            vec![0.9, 0.1, 0.0],
+        ));
+        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms("register route"), &[], 2, None);
+        assert_eq!(paths(&index, &hits), vec!["src/routes.rs", "src/util.rs"]);
+    }
+
+    #[test]
+    fn a_file_matching_in_several_places_outranks_a_single_close_match() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        index
+            .records
+            .push(placed("lone.rs", 1, 10, vec![1.0, 0.0, 0.0]));
+        for (start, x) in [(1, 0.99), (20, 0.98), (40, 0.97)] {
+            index
+                .records
+                .push(placed("many.rs", start, start + 9, vec![x, 1.0 - x, 0.0]));
+        }
+        let hits = index.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(paths(&index, &hits), vec!["many.rs", "lone.rs"]);
     }
 
     #[test]

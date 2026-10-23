@@ -39,7 +39,7 @@ impl FastEmbedder {
     }
 }
 
-fn cache_dir() -> PathBuf {
+pub fn cache_dir() -> PathBuf {
     ProjectDirs::from("", "", "ripsem")
         .map(|d| d.cache_dir().join("models"))
         .unwrap_or_else(|| PathBuf::from(".ripsem-models"))

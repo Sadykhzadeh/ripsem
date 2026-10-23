@@ -7,23 +7,30 @@ pub struct ModelInfo {
     pub note: &'static str,
 }
 
-pub const DEFAULT_MODEL: &str = "bge-small-en-v1.5";
+pub const DEFAULT_MODEL: &str = "potion-code-16M-v2";
 
 pub fn catalog() -> &'static [ModelInfo] {
     &[
+        ModelInfo {
+            id: "potion-code-16M-v2",
+            dims: 256,
+            disk_mb: 32,
+            multilingual: false,
+            note: "Default. Static code model: indexes in seconds, no ONNX runtime.",
+        },
         ModelInfo {
             id: "bge-small-en-v1.5",
             dims: 384,
             disk_mb: 133,
             multilingual: false,
-            note: "Default.",
+            note: "General English model, through the ONNX runtime.",
         },
         ModelInfo {
             id: "all-MiniLM-L6-v2",
             dims: 384,
             disk_mb: 90,
             multilingual: false,
-            note: "Smallest and fastest to embed.",
+            note: "Smallest and fastest of the transformer models.",
         },
         ModelInfo {
             id: "bge-base-en-v1.5",
@@ -51,4 +58,13 @@ pub fn catalog() -> &'static [ModelInfo] {
 
 pub fn find(id: &str) -> Option<&'static ModelInfo> {
     catalog().iter().find(|m| m.id == id)
+}
+
+/// The Hugging Face repository of a static model. A static model embeds by
+/// looking each token up in a table and averaging, without the ONNX runtime.
+pub fn static_repo(id: &str) -> Option<&'static str> {
+    match id {
+        "potion-code-16M-v2" => Some("minishlab/potion-code-16M-v2"),
+        _ => None,
+    }
 }

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- New indexes use potion-code-16M-v2. An existing `.ripsem/config.toml` keeps
+  the model it names, so nothing is rebuilt until `ripsem model set` asks.
+- A file that matches in several places ranks above one that matched once.
+- A file whose name or directory matches the question ranks higher.
+- Results reach as many files as they can: each file places its best hit
+  before any file places a second.
+- The model reads each chunk under its path and the declaration it belongs
+  to. An index built before this embeds every chunk again on its next run.
+- `ripsem model set potion-code-16M-v2` picks a static code model that
+  indexes in seconds: 19 repositories of the semble benchmark indexed in 13 s
+  instead of 1 108 s with bge-small-en-v1.5 on an M1, at NDCG@10 0.778
+  against 0.769. It downloads 32 MB and runs without the ONNX runtime.
 - `ripsem search` updates the index before searching, so an edit made since
   the last `ripsem index` is found where it is now. When nothing changed this
   costs a walk of the tree, about 15 ms on a repository of 700 files.
