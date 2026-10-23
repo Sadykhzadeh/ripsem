@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A file whose name or directory matches the question ranks higher.
 - Results reach as many files as they can: each file places its best hit
   before any file places a second.
 - The model reads each chunk under its path and the declaration it belongs
