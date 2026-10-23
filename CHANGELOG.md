@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The model reads each chunk under its path and the declaration it belongs
+  to. An index built before this embeds every chunk again on its next run.
 - `ripsem model set potion-code-16M-v2` picks a static code model that
   indexes in seconds: 19 repositories of the semble benchmark indexed in 13 s
   instead of 1 108 s with bge-small-en-v1.5 on an M1, at NDCG@10 0.778

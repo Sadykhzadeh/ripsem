@@ -220,7 +220,8 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         }
         embedded += 1;
         for c in chunks {
-            let text_hash = fingerprint::content_hash(c.text.as_bytes());
+            let text = model_text(&rel, c.symbol.as_ref(), &c.text);
+            let text_hash = fingerprint::content_hash(text.as_bytes());
             let pending = Pending {
                 path: rel.clone(),
                 start_line: c.start_line,
@@ -237,7 +238,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
                 text_hash,
                 vector: known_vectors.get(&text_hash).cloned(),
             };
-            queue.push(pending, c.text);
+            queue.push(pending, text);
             if queue.is_full() {
                 queue.flush(config, &mut embedder, &mut index, &pb)?;
             }
@@ -892,6 +893,16 @@ fn embedding_style() -> ProgressStyle {
         .unwrap_or_else(|_| ProgressStyle::default_bar())
 }
 
+/// What the model reads for a chunk: its path and the declaration it belongs
+/// to, then its text. A method's body rarely names its file or its type, and a
+/// question about behaviour often does.
+fn model_text(path: &str, symbol: Option<&crate::symbol::Symbol>, text: &str) -> String {
+    match symbol {
+        Some(symbol) => format!("{path}\n{}\n{text}", symbol.label()),
+        None => format!("{path}\n{text}"),
+    }
+}
+
 /// The models read at most 512 tokens, a few bytes each, of a longer text.
 fn model_bytes(text: &str) -> usize {
     text.len().min(2048)
@@ -903,6 +914,19 @@ const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 mod tests {
     use super::*;
     use crate::config::Backend;
+
+    #[test]
+    fn the_model_reads_a_chunk_under_its_path_and_declaration() {
+        let symbol = crate::symbol::Symbol {
+            kind: "fn".into(),
+            name: "Session::refresh".into(),
+        };
+        assert_eq!(
+            model_text("src/auth.rs", Some(&symbol), "body"),
+            "src/auth.rs\nfn Session::refresh\nbody"
+        );
+        assert_eq!(model_text("README.md", None, "text"), "README.md\ntext");
+    }
 
     fn hash_config() -> Config {
         Config {

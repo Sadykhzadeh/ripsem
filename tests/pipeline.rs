@@ -89,7 +89,7 @@ fn indexes_correctly_across_embedding_batches() {
 /// Chunks are embedded shortest first and stored in walk order, so a slip
 /// in putting the vectors back would give a record somebody else's vector.
 /// The hash backend is deterministic, so each record's vector can be checked
-/// against its own text.
+/// against its own text, read under its path as the model reads it.
 #[test]
 fn every_record_keeps_its_own_vector_when_embedded_out_of_order() {
     use ripsem::embed::Embedder;
@@ -110,7 +110,11 @@ fn every_record_keeps_its_own_vector_when_embedded_out_of_order() {
     let index = Index::load(&config.index_path()).unwrap();
     assert_eq!(index.records.len(), 50);
     for record in &index.records {
-        let own = embedder.embed_query(&record.snippet).unwrap();
+        let read = match &record.symbol {
+            Some(symbol) => format!("{}\n{}\n{}", record.path, symbol.label(), record.snippet),
+            None => format!("{}\n{}", record.path, record.snippet),
+        };
+        let own = embedder.embed_query(&read).unwrap();
         let similarity = ripsem::quant::dot(&record.vector, &own);
         assert!(similarity > 0.99, "{} got {similarity}", record.path);
     }
