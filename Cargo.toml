@@ -20,14 +20,18 @@ clap_complete = "4.6.11"
 content_inspector = "0.2.4"
 directories = "6.0.0"
 fastembed = { version = "7.0.0", optional = true }
+half = { version = "2.7.1", optional = true }
+hf-hub = { version = "0.5.0", optional = true, default-features = false, features = ["ureq"] }
 ignore = "0.4.26"
 indicatif = "0.18.4"
 instant-distance = { version = "0.6.1", optional = true, features = ["with-serde"] }
 notify = "8.2.0"
 rayon = "1.12.0"
+safetensors = { version = "0.8.0", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "2.0.18"
+tokenizers = { version = "0.23.2", optional = true, default-features = false, features = ["onig"] }
 toml = "1.1.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -54,7 +58,14 @@ xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
 
 [features]
 default = ["fastembed", "treesitter"]
-fastembed = ["dep:fastembed", "dep:ort"]
+fastembed = [
+    "dep:fastembed",
+    "dep:half",
+    "dep:hf-hub",
+    "dep:ort",
+    "dep:safetensors",
+    "dep:tokenizers",
+]
 hnsw = ["dep:instant-distance"]
 treesitter = [
     "dep:tree-sitter",

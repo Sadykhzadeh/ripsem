@@ -6,6 +6,8 @@ pub mod hashing;
 pub mod fastembed;
 #[cfg(all(feature = "fastembed", target_os = "linux", target_env = "gnu"))]
 mod ort_compat;
+#[cfg(feature = "fastembed")]
+pub mod static_model;
 
 use crate::config::{Backend, Config};
 
@@ -31,6 +33,12 @@ pub fn build_for(config: &Config, chunks: usize) -> Result<Box<dyn Embedder>> {
         Backend::Fastembed => {
             #[cfg(feature = "fastembed")]
             {
+                if let Some(repo) = crate::model::static_repo(&config.model) {
+                    return Ok(Box::new(static_model::StaticEmbedder::new(
+                        repo,
+                        &fastembed::cache_dir(),
+                    )?));
+                }
                 let gpu = chunks >= GPU_FROM_CHUNKS && std::env::var_os("RIPSEM_NO_GPU").is_none();
                 Ok(Box::new(fastembed::FastEmbedder::new(&config.model, gpu)?))
             }
