@@ -357,8 +357,35 @@ impl Index {
                 }
             })
             .collect();
+        self.credit_named_files(&mut candidates, lexical);
         candidates.sort_unstable_by(Candidate::rank);
         self.best_of_each_place(candidates, k)
+    }
+
+    /// A file named after what the query asks about is likely the answer:
+    /// "how is a route registered" is answered in `routes.go`, whose methods
+    /// need not say "route" in their bodies. Each candidate gains agreement in
+    /// proportion to the share of the query, weighted as BM25 weighs it, that
+    /// its file name or directory holds, up to the agreement of the best
+    /// candidate. A share under a tenth is one common word and counts for
+    /// nothing.
+    fn credit_named_files(&self, candidates: &mut [Candidate], lexical: &LexicalRanking) {
+        if lexical.terms.is_empty() {
+            return;
+        }
+        let best = candidates.iter().map(|c| c.agreement).fold(0.0, f32::max);
+        let mut shares: HashMap<&str, f32> = HashMap::new();
+        for candidate in candidates.iter_mut() {
+            let path = self.records[candidate.record_idx].path.as_str();
+            let share = *shares.entry(path).or_insert_with(|| {
+                let named =
+                    crate::lexical::presence_in(&lexical.terms, &crate::lexical::path_terms(path));
+                lexical.weights.coverage(named)
+            });
+            if share >= MIN_PATH_SHARE {
+                candidate.agreement += best * share;
+            }
+        }
     }
 
     /// Text about cooking or sport is as unrelated to any code as a query
@@ -456,6 +483,8 @@ impl Index {
 }
 
 const COMPLETE_COVERAGE: f32 = 0.999;
+
+const MIN_PATH_SHARE: f32 = 0.1;
 
 static TEST_WORDS: std::sync::LazyLock<Vec<TermHash>> =
     std::sync::LazyLock::new(|| crate::lexical::query_terms("test tests testing spec specs"));
@@ -999,6 +1028,23 @@ mod tests {
         assert_eq!(paths(&index, &hits), vec!["a.rs", "b.rs"]);
         let hits = index.search(&[1.0, 0.0, 0.0], 3);
         assert_eq!(paths(&index, &hits), vec!["a.rs", "b.rs", "a.rs"]);
+    }
+
+    #[test]
+    fn a_file_named_after_the_question_outranks_an_equal_match_elsewhere() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        index.records.push(text_record(
+            "src/util.rs",
+            "fn register(route) {}",
+            vec![1.0, 0.0, 0.0],
+        ));
+        index.records.push(text_record(
+            "src/routes.rs",
+            "fn register(route) {}",
+            vec![0.9, 0.1, 0.0],
+        ));
+        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms("register route"), &[], 2, None);
+        assert_eq!(paths(&index, &hits), vec!["src/routes.rs", "src/util.rs"]);
     }
 
     #[test]

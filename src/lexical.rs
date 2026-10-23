@@ -142,6 +142,52 @@ fn starts_new_piece(bytes: &[u8], i: usize) -> bool {
     false
 }
 
+/// The terms of a file's name and of the directory holding it, sorted. Each
+/// also stands with a trailing `s` dropped or added, so `handlers/` answers a
+/// question about a handler.
+pub fn path_terms(path: &str) -> Vec<TermHash> {
+    let path = std::path::Path::new(path);
+    let names = [
+        path.file_stem().and_then(|s| s.to_str()),
+        path.parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str()),
+    ];
+    let mut out = Vec::new();
+    let mut buffer = String::new();
+    let mut words = Vec::new();
+    for name in names.into_iter().flatten() {
+        for word in name.split(|c: char| !c.is_alphanumeric() && c != '_') {
+            words.push(word.to_string());
+            words.extend(split_identifier(word).into_iter().map(str::to_string));
+        }
+    }
+    for word in &words {
+        let word = word.to_lowercase();
+        push_term(&word, &mut buffer, &mut out);
+        match word.strip_suffix('s') {
+            Some(single) if single.len() >= MIN_NAME_BYTES => {
+                push_term(single, &mut buffer, &mut out)
+            }
+            _ => push_term(&format!("{word}s"), &mut buffer, &mut out),
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Which of `terms` a sorted list from [`path_terms`] holds, as the bits
+/// [`TermVector::presence`] gives.
+pub fn presence_in(terms: &[TermHash], sorted: &[TermHash]) -> u64 {
+    terms
+        .iter()
+        .take(MAX_QUERY_TERMS)
+        .enumerate()
+        .filter(|(_, t)| sorted.binary_search(t).is_ok())
+        .fold(0, |bits, (i, _)| bits | 1 << i)
+}
+
 #[derive(Debug, Clone, Default, Encode, Decode)]
 pub struct TermVector {
     terms: Vec<(TermHash, u8)>,
@@ -304,6 +350,19 @@ mod tests {
 
     fn named(query: &str, name: &str) -> bool {
         names(query).contains(&name_key(name).unwrap())
+    }
+
+    #[test]
+    fn a_path_offers_its_file_name_and_directory_in_either_number() {
+        let terms = path_terms("src/handlers/routeTable.go");
+        let has = |word: &str| presence_in(&terms_of(word), &terms) != 0;
+        assert!(has("handler"));
+        assert!(has("handlers"));
+        assert!(has("route"));
+        assert!(has("routes"));
+        assert!(has("table"));
+        assert!(!has("src"), "only the nearest directory counts");
+        assert!(!has("go"), "the extension is not a name");
     }
 
     #[test]
