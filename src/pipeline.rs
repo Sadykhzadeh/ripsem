@@ -198,48 +198,69 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     let mut queue = Queue::default();
 
     let pb = progress(scanned.len() as u64);
-    for (i, hash, changed) in scanned {
-        pb.inc(1);
-        let path = &files[i];
-        let rel = relative(&config.root, path);
+    for batch in scanned.chunks(PREPARE_BATCH) {
+        let prepared: Vec<Prepared> = batch
+            .par_iter()
+            .map(|&(i, hash, changed)| {
+                let path = &files[i];
+                let rel = relative(&config.root, path);
+                if !changed && prev_chunks.contains_key(&rel) {
+                    return Prepared::Unchanged(rel);
+                }
+                let Ok(bytes) = std::fs::read(path) else {
+                    return Prepared::Skipped;
+                };
+                let text = walk::decode_text(&bytes);
+                let chunks = chunk::chunk_source(path, &text, config);
+                if chunks.is_empty() {
+                    return Prepared::Skipped;
+                }
+                let pending = chunks
+                    .into_iter()
+                    .map(|c| {
+                        let text_hash = fingerprint::content_hash(c.text.as_bytes());
+                        let pending = Pending {
+                            path: rel.clone(),
+                            start_line: c.start_line,
+                            end_line: c.end_line,
+                            snippet: truncate(&dedent(&c.text), SNIPPET_BYTES),
+                            file_hash: hash,
+                            terms: crate::lexical::TermVector::new(
+                                &c.text,
+                                &rel,
+                                c.symbol.as_ref().map(|s| s.name.as_str()),
+                            ),
+                            symbol: c.symbol,
+                            declarations: c.declarations,
+                            text_hash,
+                            vector: known_vectors.get(&text_hash).cloned(),
+                        };
+                        (pending, c.text)
+                    })
+                    .collect();
+                Prepared::Cut(pending)
+            })
+            .collect();
 
-        if !changed && let Some(records) = prev_chunks.get_mut(&rel) {
-            index.records.append(records);
-            reused += 1;
-            continue;
-        }
-
-        let bytes = match std::fs::read(path) {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let text = walk::decode_text(&bytes);
-        let chunks = chunk::chunk_source(path, &text, config);
-        if chunks.is_empty() {
-            continue;
-        }
-        embedded += 1;
-        for c in chunks {
-            let text_hash = fingerprint::content_hash(c.text.as_bytes());
-            let pending = Pending {
-                path: rel.clone(),
-                start_line: c.start_line,
-                end_line: c.end_line,
-                snippet: truncate(&dedent(&c.text), SNIPPET_BYTES),
-                file_hash: hash,
-                terms: crate::lexical::TermVector::new(
-                    &c.text,
-                    &rel,
-                    c.symbol.as_ref().map(|s| s.name.as_str()),
-                ),
-                symbol: c.symbol,
-                declarations: c.declarations,
-                text_hash,
-                vector: known_vectors.get(&text_hash).cloned(),
-            };
-            queue.push(pending, c.text);
-            if queue.is_full() {
-                queue.flush(config, &mut embedder, &mut index, &pb)?;
+        for file in prepared {
+            pb.inc(1);
+            match file {
+                Prepared::Unchanged(rel) => {
+                    if let Some(records) = prev_chunks.get_mut(&rel) {
+                        index.records.append(records);
+                    }
+                    reused += 1;
+                }
+                Prepared::Skipped => {}
+                Prepared::Cut(chunks) => {
+                    embedded += 1;
+                    for (pending, text) in chunks {
+                        queue.push(pending, text);
+                        if queue.is_full() {
+                            queue.flush(config, &mut embedder, &mut index, &pb)?;
+                        }
+                    }
+                }
             }
         }
     }
@@ -341,6 +362,16 @@ fn embed_groups<'a>(order: &'a [usize], texts: &[String]) -> Vec<&'a [usize]> {
         }
     }
     groups
+}
+
+/// Files cut into chunks together on all cores, then queued in walk order.
+const PREPARE_BATCH: usize = 256;
+
+/// What one scanned file contributes to the index.
+enum Prepared {
+    Unchanged(String),
+    Cut(Vec<(Pending, String)>),
+    Skipped,
 }
 
 struct Pending {

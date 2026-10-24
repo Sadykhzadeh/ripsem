@@ -5,6 +5,9 @@
 - A search no longer reads a file outside the repository when the index on
   disk names one. A repository can ship its own `.ripsem` index, and a record
   pointing at `../` or an absolute path was re-read for its snippet.
+- `ripsem index` cuts files into chunks on every core instead of one. A first
+  index of 10 300 files (137 MB, 147 000 chunks) took 12.5 s instead of 52 s on
+  the hashing backend, and the index file is byte for byte the same.
 - `ripsem search` updates the index before searching, so an edit made since
   the last `ripsem index` is found where it is now. When nothing changed this
   costs a walk of the tree, about 15 ms on a repository of 700 files.
