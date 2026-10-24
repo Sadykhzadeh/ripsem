@@ -3,8 +3,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
+use ignore::{WalkBuilder, WalkState};
 use rayon::prelude::*;
 
 use crate::config::Config;
@@ -28,16 +28,22 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
     // Pruned during the walk so it never descends into `.git`.
     let root = config.root.clone();
     builder.filter_entry(move |entry| !is_internal(entry.path(), &root));
-    let mut candidates = Vec::new();
-    for result in builder.build() {
-        let entry = match result {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if entry.file_type().is_some_and(|t| t.is_file()) {
-            candidates.push(entry.into_path());
-        }
-    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    builder.build_parallel().run(|| {
+        let sender = sender.clone();
+        Box::new(move |result| {
+            if let Ok(entry) = result
+                && entry.file_type().is_some_and(|t| t.is_file())
+            {
+                let _ = sender.send(entry.into_path());
+            }
+            WalkState::Continue
+        })
+    });
+    drop(sender);
+    // Threads finish in any order; the index lists files in one.
+    let mut candidates: Vec<PathBuf> = receiver.into_iter().collect();
+    candidates.sort_unstable();
     // The text/binary check opens every file and is most of the cost, so it
     // runs in parallel.
     Ok(candidates
@@ -218,6 +224,19 @@ mod tests {
         assert!(names.contains(&"keep.rs".to_string()));
         assert!(!names.contains(&"blob.bin".to_string()));
         assert!(!names.contains(&"empty.txt".to_string()));
+    }
+
+    #[test]
+    fn files_come_back_in_path_order() {
+        let dir = TempDir::new();
+        for name in ["z.rs", "b/y.rs", "a/x.rs", "a/b/w.rs", "a-b.rs", "m.rs"] {
+            dir.write(name, "fn main() {}\n");
+        }
+        let collected = collect(&config_at(dir.path())).unwrap();
+        let mut sorted = collected.clone();
+        sorted.sort();
+        assert_eq!(collected, sorted);
+        assert_eq!(collected.len(), 6);
     }
 
     #[test]
