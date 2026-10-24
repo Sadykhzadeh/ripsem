@@ -779,6 +779,14 @@ impl Searcher {
     /// Lines of an indexed file as they were indexed. A file changed since then
     /// has nothing to offer: its lines may have moved.
     fn lines(&self, record: &Record, start: usize, end: usize, budget: usize) -> Option<String> {
+        // The index is data on disk, and a repository can ship one: a path that
+        // leaves the root is not a file this index could have been built from.
+        let inside = Path::new(&record.path)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+        if !inside || start == 0 || end < start {
+            return None;
+        }
         let bytes = std::fs::read(self.root.join(&record.path)).ok()?;
         if fingerprint::content_hash(&bytes) != record.file_hash {
             return None;
@@ -954,6 +962,51 @@ mod tests {
         assert_eq!(sizes, [32, 8, 4, 4, 2, 1]);
         assert_eq!(sizes.iter().sum::<usize>(), texts.len());
         assert!(embed_groups(&[], &texts).is_empty());
+    }
+
+    #[test]
+    fn a_record_naming_a_file_outside_the_root_reads_nothing() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("project/inside.txt", "one\ntwo\n");
+        dir.write("secret.txt", "classified\n");
+        let config = Config {
+            root: dir.path().join("project"),
+            ..hash_config()
+        };
+        let record = |path: &str, bytes: &[u8]| Record {
+            path: path.into(),
+            start_line: 1,
+            end_line: 1,
+            snippet: String::new(),
+            file_hash: fingerprint::content_hash(bytes),
+            text_hash: 0,
+            vector: crate::quant::quantize(&[]),
+            terms: Default::default(),
+            symbol: None,
+            declarations: Vec::new(),
+        };
+        let searcher = Searcher {
+            index: Index::new(0, Backend::Hash, config.model.clone()),
+            root: config.root.clone(),
+            embedder: Arc::new(LazyEmbedder::new(&config)),
+            index_path: config.index_path(),
+            index_mtime: None,
+            model: config.model.clone(),
+            #[cfg(feature = "hnsw")]
+            ann_map: None,
+        };
+        let inside = record("inside.txt", b"one\ntwo\n");
+        assert_eq!(searcher.lines(&inside, 2, 2, 100).as_deref(), Some("two"));
+        assert_eq!(searcher.lines(&inside, 0, 2, 100), None);
+        assert_eq!(searcher.lines(&inside, 2, 1, 100), None);
+        // The hash matches, as it would if the index were written to match.
+        let outside = record("../secret.txt", b"classified\n");
+        assert_eq!(searcher.lines(&outside, 1, 1, 100), None);
+        let absolute = dir.path().join("secret.txt").to_string_lossy().into_owned();
+        assert_eq!(
+            searcher.lines(&record(&absolute, b"classified\n"), 1, 1, 100),
+            None
+        );
     }
 
     #[test]

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A search no longer reads a file outside the repository when the index on
+  disk names one. A repository can ship its own `.ripsem` index, and a record
+  pointing at `../` or an absolute path was re-read for its snippet.
 - `ripsem search` updates the index before searching, so an edit made since
   the last `ripsem index` is found where it is now. When nothing changed this
   costs a walk of the tree, about 15 ms on a repository of 700 files.
