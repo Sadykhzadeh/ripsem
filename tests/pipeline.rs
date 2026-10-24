@@ -117,6 +117,35 @@ fn every_record_keeps_its_own_vector_when_embedded_out_of_order() {
 }
 
 #[test]
+fn files_cut_in_parallel_keep_their_records_across_batches() {
+    let dir = TempDir::new();
+    let count = 600;
+    for i in 0..count {
+        dir.write(
+            &format!("file{i}.rs"),
+            &format!("fn handler_{i}() {{ marker_{i} }}\n"),
+        );
+    }
+    let config = config_for(&dir.path);
+
+    let stats = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(
+        (stats.files, stats.embedded, stats.chunks),
+        (count, count, count)
+    );
+    for i in [0, 255, 256, 257, count - 1] {
+        let hits = pipeline::search(&config, &format!("marker_{i}"), 1).unwrap();
+        assert_eq!(hits[0].path, format!("file{i}.rs"));
+    }
+
+    dir.write("file300.rs", "fn handler_300() { renamed_marker }\n");
+    let stats = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!((stats.embedded, stats.reused), (1, count - 1));
+    let hits = pipeline::search(&config, "renamed_marker", 1).unwrap();
+    assert_eq!(hits[0].path, "file300.rs");
+}
+
+#[test]
 fn unchanged_files_are_reused_on_reindex() {
     let dir = TempDir::new();
     dir.write("a.rs", "alpha bravo charlie delta echo foxtrot");
