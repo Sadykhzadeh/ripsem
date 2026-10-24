@@ -198,48 +198,69 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     let mut queue = Queue::default();
 
     let pb = progress(scanned.len() as u64);
-    for (i, hash, changed) in scanned {
-        pb.inc(1);
-        let path = &files[i];
-        let rel = relative(&config.root, path);
+    for batch in scanned.chunks(PREPARE_BATCH) {
+        let prepared: Vec<Prepared> = batch
+            .par_iter()
+            .map(|&(i, hash, changed)| {
+                let path = &files[i];
+                let rel = relative(&config.root, path);
+                if !changed && prev_chunks.contains_key(&rel) {
+                    return Prepared::Unchanged(rel);
+                }
+                let Ok(bytes) = std::fs::read(path) else {
+                    return Prepared::Skipped;
+                };
+                let text = walk::decode_text(&bytes);
+                let chunks = chunk::chunk_source(path, &text, config);
+                if chunks.is_empty() {
+                    return Prepared::Skipped;
+                }
+                let pending = chunks
+                    .into_iter()
+                    .map(|c| {
+                        let text_hash = fingerprint::content_hash(c.text.as_bytes());
+                        let pending = Pending {
+                            path: rel.clone(),
+                            start_line: c.start_line,
+                            end_line: c.end_line,
+                            snippet: truncate(&dedent(&c.text), SNIPPET_BYTES),
+                            file_hash: hash,
+                            terms: crate::lexical::TermVector::new(
+                                &c.text,
+                                &rel,
+                                c.symbol.as_ref().map(|s| s.name.as_str()),
+                            ),
+                            symbol: c.symbol,
+                            declarations: c.declarations,
+                            text_hash,
+                            vector: known_vectors.get(&text_hash).cloned(),
+                        };
+                        (pending, c.text)
+                    })
+                    .collect();
+                Prepared::Cut(pending)
+            })
+            .collect();
 
-        if !changed && let Some(records) = prev_chunks.get_mut(&rel) {
-            index.records.append(records);
-            reused += 1;
-            continue;
-        }
-
-        let bytes = match std::fs::read(path) {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let text = walk::decode_text(&bytes);
-        let chunks = chunk::chunk_source(path, &text, config);
-        if chunks.is_empty() {
-            continue;
-        }
-        embedded += 1;
-        for c in chunks {
-            let text_hash = fingerprint::content_hash(c.text.as_bytes());
-            let pending = Pending {
-                path: rel.clone(),
-                start_line: c.start_line,
-                end_line: c.end_line,
-                snippet: truncate(&dedent(&c.text), SNIPPET_BYTES),
-                file_hash: hash,
-                terms: crate::lexical::TermVector::new(
-                    &c.text,
-                    &rel,
-                    c.symbol.as_ref().map(|s| s.name.as_str()),
-                ),
-                symbol: c.symbol,
-                declarations: c.declarations,
-                text_hash,
-                vector: known_vectors.get(&text_hash).cloned(),
-            };
-            queue.push(pending, c.text);
-            if queue.is_full() {
-                queue.flush(config, &mut embedder, &mut index, &pb)?;
+        for file in prepared {
+            pb.inc(1);
+            match file {
+                Prepared::Unchanged(rel) => {
+                    if let Some(records) = prev_chunks.get_mut(&rel) {
+                        index.records.append(records);
+                    }
+                    reused += 1;
+                }
+                Prepared::Skipped => {}
+                Prepared::Cut(chunks) => {
+                    embedded += 1;
+                    for (pending, text) in chunks {
+                        queue.push(pending, text);
+                        if queue.is_full() {
+                            queue.flush(config, &mut embedder, &mut index, &pb)?;
+                        }
+                    }
+                }
             }
         }
     }
@@ -341,6 +362,16 @@ fn embed_groups<'a>(order: &'a [usize], texts: &[String]) -> Vec<&'a [usize]> {
         }
     }
     groups
+}
+
+/// Files cut into chunks together on all cores, then queued in walk order.
+const PREPARE_BATCH: usize = 256;
+
+/// What one scanned file contributes to the index.
+enum Prepared {
+    Unchanged(String),
+    Cut(Vec<(Pending, String)>),
+    Skipped,
 }
 
 struct Pending {
@@ -779,6 +810,14 @@ impl Searcher {
     /// Lines of an indexed file as they were indexed. A file changed since then
     /// has nothing to offer: its lines may have moved.
     fn lines(&self, record: &Record, start: usize, end: usize, budget: usize) -> Option<String> {
+        // The index is data on disk, and a repository can ship one: a path that
+        // leaves the root is not a file this index could have been built from.
+        let inside = Path::new(&record.path)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+        if !inside || start == 0 || end < start {
+            return None;
+        }
         let bytes = std::fs::read(self.root.join(&record.path)).ok()?;
         if fingerprint::content_hash(&bytes) != record.file_hash {
             return None;
@@ -954,6 +993,51 @@ mod tests {
         assert_eq!(sizes, [32, 8, 4, 4, 2, 1]);
         assert_eq!(sizes.iter().sum::<usize>(), texts.len());
         assert!(embed_groups(&[], &texts).is_empty());
+    }
+
+    #[test]
+    fn a_record_naming_a_file_outside_the_root_reads_nothing() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("project/inside.txt", "one\ntwo\n");
+        dir.write("secret.txt", "classified\n");
+        let config = Config {
+            root: dir.path().join("project"),
+            ..hash_config()
+        };
+        let record = |path: &str, bytes: &[u8]| Record {
+            path: path.into(),
+            start_line: 1,
+            end_line: 1,
+            snippet: String::new(),
+            file_hash: fingerprint::content_hash(bytes),
+            text_hash: 0,
+            vector: crate::quant::quantize(&[]),
+            terms: Default::default(),
+            symbol: None,
+            declarations: Vec::new(),
+        };
+        let searcher = Searcher {
+            index: Index::new(0, Backend::Hash, config.model.clone()),
+            root: config.root.clone(),
+            embedder: Arc::new(LazyEmbedder::new(&config)),
+            index_path: config.index_path(),
+            index_mtime: None,
+            model: config.model.clone(),
+            #[cfg(feature = "hnsw")]
+            ann_map: None,
+        };
+        let inside = record("inside.txt", b"one\ntwo\n");
+        assert_eq!(searcher.lines(&inside, 2, 2, 100).as_deref(), Some("two"));
+        assert_eq!(searcher.lines(&inside, 0, 2, 100), None);
+        assert_eq!(searcher.lines(&inside, 2, 1, 100), None);
+        // The hash matches, as it would if the index were written to match.
+        let outside = record("../secret.txt", b"classified\n");
+        assert_eq!(searcher.lines(&outside, 1, 1, 100), None);
+        let absolute = dir.path().join("secret.txt").to_string_lossy().into_owned();
+        assert_eq!(
+            searcher.lines(&record(&absolute, b"classified\n"), 1, 1, 100),
+            None
+        );
     }
 
     #[test]
