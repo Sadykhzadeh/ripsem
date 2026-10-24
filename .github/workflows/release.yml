@@ -22,8 +22,10 @@ jobs:
   notices:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
       # Checked before anything is built, so a tag that does not match what
       # it releases fails in seconds.
       - name: Check the tag against Cargo.toml and the changelog
@@ -34,7 +36,7 @@ jobs:
           [ "$version" = "$crate" ] || { echo "tag $GITHUB_REF_NAME, Cargo.toml $crate"; exit 1; }
           heading=$(grep -m1 "^## $version " CHANGELOG.md) || { echo "CHANGELOG.md has no $version section"; exit 1; }
           case $heading in *unreleased*) echo "CHANGELOG.md still calls $version unreleased"; exit 1 ;; esac
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2
         with:
           tool: cargo-about@0.9.2
       - name: Collect notices
@@ -50,7 +52,7 @@ jobs:
           base=https://raw.githubusercontent.com/microsoft/onnxruntime/v${ort#ms@}
           curl -fsSL -o "$out/onnxruntime-LICENSE.txt" "$base/LICENSE"
           curl -fsSL -o "$out/onnxruntime-ThirdPartyNotices.txt" "$base/ThirdPartyNotices.txt"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: third-party-notices
           path: third-party-notices/
@@ -75,9 +77,11 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: third-party-notices
           path: third-party-notices
@@ -135,7 +139,7 @@ jobs:
           else
             tar -czf "$PACKAGE.tar.gz" "$PACKAGE"
           fi
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ripsem-${{ matrix.target }}
           path: ${{ env.PACKAGE }}.*
@@ -150,8 +154,8 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: ripsem-*
           path: dist
@@ -159,7 +163,7 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: sha256sum ripsem-* > SHA256SUMS
-      - uses: actions/attest-build-provenance@v4
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: dist/ripsem-*
       - name: Publish
@@ -184,9 +188,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: rust-lang/crates-io-auth-action@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1
         id: auth
       - run: cargo publish --locked
         env:
@@ -204,12 +210,12 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: ripsem-*
           path: dist
@@ -236,7 +242,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Publish
         run: |
           version=${GITHUB_REF_NAME#v}
