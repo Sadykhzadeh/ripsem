@@ -100,6 +100,7 @@ keep `DirectML.dll` next to `ripsem.exe`.
 | platform | runs on |
 | --- | --- |
 | `x86_64-unknown-linux-gnu` | glibc 2.35, libstdc++ 12 and OpenSSL 3 or newer: Ubuntu 22.04, Debian 12 and later |
+| `aarch64-unknown-linux-gnu` | glibc 2.39, libstdc++ 14 and OpenSSL 3 or newer on 64-bit Arm: Ubuntu 24.04, Debian 13 and later, such as on AWS Graviton; from the install script or the archive, not npm yet |
 | `aarch64-apple-darwin` | macOS 13.4 or newer on Apple silicon |
 | `x86_64-pc-windows-msvc` | Windows 10 or newer with the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) |
 
