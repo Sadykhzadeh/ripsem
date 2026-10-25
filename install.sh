@@ -9,6 +9,7 @@ set -eu
 repo=Sadykhzadeh/ripsem
 case "$(uname -s) $(uname -m)" in
   "Linux x86_64") target=x86_64-unknown-linux-gnu ;;
+  "Linux aarch64" | "Linux arm64") target=aarch64-unknown-linux-gnu ;;
   "Darwin arm64") target=aarch64-apple-darwin ;;
   *)
     echo "ripsem has no prebuilt binary for $(uname -s) $(uname -m); see https://github.com/$repo#install" >&2
