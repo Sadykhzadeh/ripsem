@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Releases include a Linux build for 64-bit Arm (`aarch64-unknown-linux-gnu`),
+  and `install.sh` installs it.
 - A search no longer reads a file outside the repository when the index on
   disk names one. A repository can ship its own `.ripsem` index, and a record
   pointing at `../` or an absolute path was re-read for its snippet.
