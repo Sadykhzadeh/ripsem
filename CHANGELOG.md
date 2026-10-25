@@ -11,6 +11,10 @@
 - The walk over the tree runs on several threads, and files are indexed in path
   order. On 10 300 files it took 0.4 s instead of 1.2 s, which every `ripsem
   search` and `ripsem index` pays before anything else.
+- `ripsem search` searches the index its update ends with instead of reading
+  and decoding the file once more, about 1 ms per MB of index saved.
+- The build leaves out fastembed's image models, which ripsem never used:
+  71 crates fewer to compile, among them the image, AVIF and EXR codecs.
 - `ripsem search` updates the index before searching, so an edit made since
   the last `ripsem index` is found where it is now. When nothing changed this
   costs a walk of the tree, about 15 ms on a repository of 700 files.
