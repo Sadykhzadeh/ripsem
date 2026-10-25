@@ -68,6 +68,10 @@ jobs:
           # it needs glibc 2.35, built on ubuntu-latest it would need 2.39.
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+          # The Arm ONNX Runtime that ort downloads is built with GCC 14 and
+          # does not link against the libstdc++ of 22.04.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
           - os: windows-latest
