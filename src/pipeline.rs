@@ -124,6 +124,14 @@ const UNRELATED: [&str; 12] = [
 const NOISE_DRIFT: usize = 10;
 
 pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
+    index_and_keep(config, force).map(|(stats, _)| stats)
+}
+
+/// Like [`index_repo`], and also hands back the index as it now stands on
+/// disk, so a search that refreshed first does not read and decode it again.
+/// `None` when the records in memory are not in the order the file holds them,
+/// which an ANN graph built over that file depends on.
+fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<Index>)> {
     // Loaded on the first chunk that needs a vector: a reindex that finds
     // nothing changed, or only files removed, never needs the model.
     let mut embedder: Option<Box<dyn embed::Embedder>> = None;
@@ -141,6 +149,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     let mut embedded_since_floor = 0;
     let mut reusable = false;
     let mut recut: Vec<Record> = Vec::new();
+    let mut prev_order: Vec<String> = Vec::new();
     let chunking = chunk::Chunking::of(config);
     if let Some(prev) = prev
         && prev.dims == dims
@@ -151,6 +160,7 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         if prev.chunking == chunking {
             reusable = true;
             prev_ann = prev.ann;
+            prev_order = file_order(&prev.records);
             for record in prev.records {
                 prev_chunks
                     .entry(record.path.clone())
@@ -286,7 +296,13 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
         && prev_ann.is_some() == wants_ann(index.records.len())
         && (prev_floor.is_some() || index.records.is_empty());
     if unchanged {
-        return Ok(stats);
+        if file_order(&index.records) != prev_order {
+            return Ok((stats, None));
+        }
+        index.noise_floor = prev_floor;
+        index.embedded_since_floor = embedded_since_floor;
+        index.ann = prev_ann;
+        return Ok((stats, Some(index)));
     }
 
     index.noise_floor = prev_floor;
@@ -315,7 +331,18 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     }
 
     index.save(&config.index_path())?;
-    Ok(stats)
+    Ok((stats, Some(index)))
+}
+
+/// Each file's path once, in the order its first record appears.
+fn file_order(records: &[Record]) -> Vec<String> {
+    let mut order: Vec<String> = Vec::new();
+    for r in records {
+        if order.last() != Some(&r.path) {
+            order.push(r.path.clone());
+        }
+    }
+    order
 }
 
 fn wants_ann(records: usize) -> bool {
@@ -609,6 +636,16 @@ fn open_with(config: &Config, embedder: Arc<LazyEmbedder>) -> Result<Searcher> {
     // Only a missing file means there is no index. Any other failure carries
     // its own advice, such as rebuilding an index from an older ripsem.
     let index = Index::load(&index_path)?;
+    searcher_over(config, index, embedder, index_mtime)
+}
+
+fn searcher_over(
+    config: &Config,
+    index: Index,
+    embedder: Arc<LazyEmbedder>,
+    index_mtime: Option<std::time::SystemTime>,
+) -> Result<Searcher> {
+    let index_path = config.index_path();
     // Queries are embedded with the configured model and backend; against an
     // index built with another the scores would mean nothing.
     if !index.built_for(config.backend, &config.model) {
@@ -855,12 +892,19 @@ pub fn search_scoped(
     // Loading the model and decoding the index are independent, so they run
     // side by side. Without an index there is nothing to search and no reason
     // to load (or download) a model.
+    let mut current = None;
     if config.index_path().exists() {
         embedder.warm();
-        refresh(config);
+        current = refresh(config);
     }
-    let found = open_with(config, Arc::clone(&embedder))
-        .and_then(|searcher| searcher.query_scoped(query, k, prefix));
+    let searcher = match current {
+        Some(index) => {
+            let mtime = file_mtime(&config.index_path());
+            searcher_over(config, index, Arc::clone(&embedder), mtime)
+        }
+        None => open_with(config, Arc::clone(&embedder)),
+    };
+    let found = searcher.and_then(|searcher| searcher.query_scoped(query, k, prefix));
     if found.is_err() {
         embedder.settle();
     }
@@ -870,15 +914,23 @@ pub fn search_scoped(
 /// Brings the index up to date with the tree while the model loads, so an
 /// edit made since the last `ripsem index` is found where it is now. When
 /// nothing changed this only walks and hashes the files. A failure, such as a
-/// read-only checkout, leaves the search to the index as it is.
-fn refresh(config: &Config) {
-    match index_repo(config, false) {
-        Ok(stats) if stats.embedded > 0 => eprintln!(
-            "updated the index: {} changed",
-            crate::cli::plural(stats.embedded, "file")
-        ),
-        Ok(_) => {}
-        Err(e) => eprintln!("warning: could not update the index: {e:#}"),
+/// read-only checkout, leaves the search to the index as it is. Returns the
+/// index it ended with, when it has one that matches the file.
+fn refresh(config: &Config) -> Option<Index> {
+    match index_and_keep(config, false) {
+        Ok((stats, index)) => {
+            if stats.embedded > 0 {
+                eprintln!(
+                    "updated the index: {} changed",
+                    crate::cli::plural(stats.embedded, "file")
+                );
+            }
+            index
+        }
+        Err(e) => {
+            eprintln!("warning: could not update the index: {e:#}");
+            None
+        }
     }
 }
 
@@ -1038,6 +1090,30 @@ mod tests {
             searcher.lines(&record(&absolute, b"classified\n"), 1, 1, 100),
             None
         );
+    }
+
+    #[test]
+    fn the_index_kept_after_a_refresh_is_the_one_on_disk() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("a.rs", "fn alpha() {}\n");
+        dir.write("b.rs", "fn beta() {}\n");
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        let on_disk = || bitcode::encode(&Index::load(&config.index_path()).unwrap());
+
+        let (_, built) = index_and_keep(&config, false).unwrap();
+        assert_eq!(bitcode::encode(&built.unwrap()), on_disk());
+
+        let (stats, kept) = index_and_keep(&config, false).unwrap();
+        assert_eq!(stats.embedded, 0);
+        assert_eq!(bitcode::encode(&kept.unwrap()), on_disk());
+
+        dir.write("b.rs", "fn beta() { gamma() }\n");
+        let (stats, updated) = index_and_keep(&config, false).unwrap();
+        assert_eq!(stats.embedded, 1);
+        assert_eq!(bitcode::encode(&updated.unwrap()), on_disk());
     }
 
     #[test]
