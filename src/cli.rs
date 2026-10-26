@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
 use crate::config::{Backend, Config};
@@ -758,7 +760,7 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
     };
     // Windows PowerShell writes a byte-order mark that JSON does not allow.
     let text = text.trim_start_matches('\u{feff}');
-    let mut doc: Value = if text.trim().is_empty() {
+    let doc: Value = if text.trim().is_empty() {
         json!({})
     } else {
         serde_json::from_str(text).with_context(|| {
@@ -776,7 +778,7 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
     }
 
     match doc.get("mcpServers") {
-        None => doc["mcpServers"] = json!({}),
+        None => {}
         Some(servers) if !servers.is_object() => anyhow::bail!(
             "mcpServers in {} is not a JSON object; fix it and run this again",
             show_path(&path)
@@ -795,11 +797,66 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
         InstallCmd::ClaudeCode => json!(["mcp"]),
         InstallCmd::Cursor => json!(["mcp", "--path", "${workspaceFolder}"]),
     };
-    doc["mcpServers"]["ripsem"] = json!({ "command": "ripsem", "args": args });
+    let entry = json!({ "command": "ripsem", "args": args });
 
-    std::fs::write(&path, serde_json::to_string_pretty(&doc)? + "\n")?;
+    let written = if text.trim().is_empty() {
+        serde_json::to_string_pretty(&json!({ "mcpServers": { "ripsem": entry } }))? + "\n"
+    } else {
+        // Only text is added, so the other servers keep their order and layout.
+        let top: HashMap<&str, &RawValue> = serde_json::from_str(text)?;
+        match top.get("mcpServers") {
+            Some(servers) => add_member(text, servers.get(), "ripsem", &entry),
+            None => add_member(text, text.trim(), "mcpServers", &json!({ "ripsem": entry })),
+        }
+    };
+    std::fs::write(&path, written)?;
     out!("added ripsem to {}", show_path(&path));
     Ok(())
+}
+
+/// `text` with `key: value` added as the last member of `object`, a JSON
+/// object that is a slice of `text`. When the object spans several lines the
+/// member goes on a line of its own, indented like its neighbours.
+fn add_member(text: &str, object: &str, key: &str, value: &Value) -> String {
+    let start = object.as_ptr() as usize - text.as_ptr() as usize;
+    let inner = &object[1..object.len() - 1];
+    let kept = inner.trim_end().len();
+    let key = Value::from(key);
+    let member = if object.contains('\n') {
+        let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+        let close = inner[kept..].rsplit('\n').next().unwrap_or("");
+        let indent = match kept {
+            0 => format!("{close}  "),
+            _ => {
+                let first = inner.split_once('\n').map_or("", |(_, rest)| rest);
+                first[..first.len() - first.trim_start().len()].to_string()
+            }
+        };
+        let unit = indent.strip_prefix(close).filter(|u| !u.is_empty());
+        let mut pretty = Vec::new();
+        let format = serde_json::ser::PrettyFormatter::with_indent(unit.unwrap_or("  ").as_bytes());
+        let mut serializer = serde_json::Serializer::with_formatter(&mut pretty, format);
+        serde::Serialize::serialize(value, &mut serializer).expect("a JSON value serializes");
+        let pretty = String::from_utf8_lossy(&pretty).replace('\n', &format!("{newline}{indent}"));
+        let comma = if kept == 0 { "" } else { "," };
+        let tail = if kept == 0 {
+            format!("{newline}{close}")
+        } else {
+            String::new()
+        };
+        format!("{comma}{newline}{indent}{key}: {pretty}{tail}")
+    } else {
+        let comma = if kept == 0 { "" } else { ", " };
+        format!("{comma}{key}: {value}")
+    };
+    // Whitespace inside an empty object is replaced by the member's own.
+    let skipped = if kept == 0 { inner.len() } else { 0 };
+    let at = start + 1 + kept;
+    let mut out = String::with_capacity(text.len() + member.len());
+    out.push_str(&text[..at]);
+    out.push_str(&member);
+    out.push_str(&text[at + skipped..]);
+    out
 }
 
 #[cfg(test)]
@@ -1121,5 +1178,79 @@ mod tests {
                 .unwrap();
         assert_eq!(doc["mcpServers"]["other"]["command"], "x");
         assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
+    }
+
+    #[test]
+    fn install_adds_its_entry_without_rewriting_the_rest() {
+        let dir = crate::testutil::TempDir::new();
+        let path = dir.path().join(".mcp.json");
+        let before = "{
+    \"version\": 2,
+    \"mcpServers\": {
+        \"zeta\": { \"command\": \"z\" },
+        \"alpha\": {\"command\":\"a\"}
+    },
+    \"inputs\": []
+}
+";
+        std::fs::write(&path, before).unwrap();
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        for kept in [
+            "    \"version\": 2,
+    \"mcpServers\": {
+",
+            "        \"zeta\": { \"command\": \"z\" },
+",
+            "        \"alpha\": {\"command\":\"a\"},
+",
+            "    },
+    \"inputs\": []
+}
+",
+        ] {
+            assert!(text.contains(kept), "{kept:?} in {text}");
+        }
+        assert!(
+            text.contains(
+                "
+        \"ripsem\": {
+            \"args\""
+            ),
+            "{text}"
+        );
+        let doc: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
+
+        std::fs::write(&path, "{\"b\":1,\"a\":[2]}").unwrap();
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("{\"b\":1,\"a\":[2],"), "{text}");
+        let doc: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
+    }
+
+    #[test]
+    fn install_adds_its_entry_to_any_layout() {
+        let dir = crate::testutil::TempDir::new();
+        let path = dir.path().join(".mcp.json");
+        for before in [
+            "{}",
+            "{\n}\n",
+            "{\"mcpServers\":{}}",
+            "{\n\t\"mcpServers\": {\n\t}\n}\n",
+            "{\r\n  \"mcpServers\": {\r\n    \"a\": {}\r\n  }\r\n}\r\n",
+            "{ \"x\": 1 }",
+            "\u{feff}{\"mcpServers\": {\"a\": 1}}",
+        ] {
+            std::fs::write(&path, before).unwrap();
+            cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let doc: Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text}"));
+            assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem", "{text}");
+            if before.contains("\r\n") {
+                assert!(!text.replace("\r\n", "").contains('\n'), "{text:?}");
+            }
+        }
     }
 }

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `ripsem install` adds its entry to `.mcp.json` or `.cursor/mcp.json` as text,
+  so the other servers keep their order, indentation and line endings instead
+  of being rewritten with sorted keys.
 - On Windows, `--in` and the MCP `path` argument ignore the case of ASCII letters,
   as the filesystem does: `--in SRC` finds what is under `src`.
 - `--path` naming a file is an error instead of treating the file as the
