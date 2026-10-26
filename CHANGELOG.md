@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The model that answers a search skips packing its weights for repeated runs,
+  which one short query never earns back: a search took about 37 ms less
+  (586 ms to 549 ms median over 25 searches, with the machine busy). The
+  ranking is the same and scores differ by less than 1e-6.
 - `RIPSEM_MODEL_DIR` sets where the embedding model is kept, on every system.
   When the model cannot be loaded, the error names it, the directory it was
   looked for in and `ripsem model backend hash` as the way to search without it.

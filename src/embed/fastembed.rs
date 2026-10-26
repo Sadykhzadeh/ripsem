@@ -15,14 +15,19 @@ pub struct FastEmbedder {
 
 impl FastEmbedder {
     /// `gpu` asks for DirectML on Windows; without a usable device the runtime
-    /// stays on the CPU.
-    pub fn new(model_id: &str, gpu: bool) -> Result<Self> {
+    /// stays on the CPU. A model that only answers queries skips packing its
+    /// weights for repeated runs, which a single short text never earns back.
+    pub fn new(model_id: &str, gpu: bool, queries_only: bool) -> Result<Self> {
         let (embedding_model, dims, query_prefix) = map_model(model_id)?;
         let cache = cache_dir();
         std::fs::create_dir_all(&cache).ok();
         let options = TextInitOptions::new(embedding_model)
             .with_cache_dir(cache.clone())
             .with_show_download_progress(true);
+        let options = match queries_only {
+            true => options.with_session_config("session.disable_prepacking", "1"),
+            false => options,
+        };
         #[cfg(windows)]
         let options = match gpu {
             true => options.with_execution_providers(vec![ort::ep::DirectML::default().build()]),
