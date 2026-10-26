@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- On Windows, `--in` and the MCP `path` argument ignore the case of ASCII letters,
+  as the filesystem does: `--in SRC` finds what is under `src`.
 - `--path` naming a file is an error instead of treating the file as the
   project directory.
 - `ripsem search` refuses `-k 0` and a `--min-score` outside 0 to 1 with an error,
