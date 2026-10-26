@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- The model that answers a search skips packing its weights for repeated runs,
+  which one short query never earns back: a search took about 37 ms less
+  (586 ms to 549 ms median over 25 searches, with the machine busy). The
+  ranking is the same and scores differ by less than 1e-6.
+- `RIPSEM_MODEL_DIR` sets where the embedding model is kept, on every system.
+  When the model cannot be loaded, the error names it, the directory it was
+  looked for in and `ripsem model backend hash` as the way to search without it.
+- On Windows, `ripsem watch` and the MCP server reindex once for a change instead
+  of twice: the late notice that the parent directory was modified no longer
+  counts as a change.
+- `ripsem install` adds its entry to `.mcp.json` or `.cursor/mcp.json` as text,
+  so the other servers keep their order, indentation and line endings instead
+  of being rewritten with sorted keys.
+- On Windows, `--in` and the MCP `path` argument ignore the case of ASCII letters,
+  as the filesystem does: `--in SRC` finds what is under `src`.
 - `--path` naming a file is an error instead of treating the file as the
   project directory.
 - `ripsem search` refuses `-k 0` and a `--min-score` outside 0 to 1 with an error,

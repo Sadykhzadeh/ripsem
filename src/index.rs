@@ -560,10 +560,23 @@ pub fn embedded_by(backend: Backend, model: &str) -> String {
 }
 
 fn path_in_scope(path: &str, prefix: &str) -> bool {
-    match path.strip_prefix(prefix) {
-        Some(rest) => rest.is_empty() || rest.starts_with('/'),
-        None => false,
-    }
+    scope_matches(path, prefix, cfg!(windows))
+}
+
+/// Whether `path` is `prefix` or lies under it. Windows folds the case of ASCII
+/// letters, as its filesystem does, while the index keeps the casing the walk
+/// found. The byte after the prefix is `/` or the end, so `src` does not take
+/// in `src2`.
+fn scope_matches(path: &str, prefix: &str, fold_case: bool) -> bool {
+    let (path, prefix) = (path.as_bytes(), prefix.as_bytes());
+    let Some(head) = path.get(..prefix.len()) else {
+        return false;
+    };
+    let same = match fold_case {
+        true => head.eq_ignore_ascii_case(prefix),
+        false => head == prefix,
+    };
+    same && path.get(prefix.len()).is_none_or(|&b| b == b'/')
 }
 
 /// Named per process: `ripsem watch` and `ripsem index` can save at once, and
@@ -646,6 +659,18 @@ mod tests {
         assert!(path_in_scope("src/a.rs", "src"));
         assert!(path_in_scope("src", "src"));
         assert!(!path_in_scope("source/a.rs", "src"));
+    }
+
+    #[test]
+    fn a_scope_ignores_case_only_where_the_filesystem_does() {
+        assert_eq!(path_in_scope("src/a.rs", "SRC"), cfg!(windows));
+        assert!(scope_matches("src/a.rs", "SRC/a.rs", true));
+        assert!(scope_matches("src", "Src", true));
+        assert!(!scope_matches("src/a.rs", "SRC", false));
+        assert!(!scope_matches("src2/a.rs", "SRC", true));
+        assert!(!scope_matches("srcs", "SRC", true));
+        assert!(!scope_matches("src", "SRC/a", true));
+        assert!(!scope_matches("\u{e9}a/x", "\u{c9}a", true));
     }
 
     #[test]

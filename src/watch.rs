@@ -4,6 +4,7 @@ use std::sync::mpsc::channel;
 use std::time::Duration;
 
 use anyhow::Result;
+use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
 
 use crate::cli::plural;
@@ -104,7 +105,16 @@ impl Burst {
             Ok(event) if matches!(event.kind, EventKind::Access(_)) => {}
             Ok(event) => {
                 self.rescan |= event.need_rescan();
-                self.paths.extend(event.paths);
+                // Windows reports a directory as modified, after the event for
+                // the file in it, whenever an entry is added or removed. The
+                // entry has its own event; a rename of the directory does not
+                // come as this kind.
+                let touched = matches!(
+                    event.kind,
+                    EventKind::Modify(ModifyKind::Any | ModifyKind::Metadata(_))
+                );
+                self.paths
+                    .extend(event.paths.into_iter().filter(|p| !(touched && p.is_dir())));
             }
             Err(_) => self.rescan = true,
         }
@@ -115,7 +125,9 @@ impl Burst {
 mod tests {
     use super::*;
     use notify::Event;
-    use notify::event::{AccessKind, AccessMode, DataChange, ModifyKind};
+    use notify::event::{
+        AccessKind, AccessMode, CreateKind, DataChange, MetadataKind, ModifyKind, RenameMode,
+    };
 
     #[test]
     fn reading_a_file_is_not_a_change() {
@@ -135,5 +147,32 @@ mod tests {
         )))
         .add_path("a.rs".into())));
         assert_eq!(burst.paths, [PathBuf::from("a.rs")]);
+    }
+
+    #[test]
+    fn a_directory_whose_entries_changed_is_not_a_change_of_its_own() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("src/a.rs", "fn a() {}");
+        let src = dir.path().join("src");
+        let on = |kind: ModifyKind, path: &PathBuf| {
+            let mut burst = Burst::default();
+            burst.add(Ok(
+                Event::new(EventKind::Modify(kind)).add_path(path.clone())
+            ));
+            burst.paths
+        };
+        assert!(on(ModifyKind::Any, &src).is_empty());
+        assert!(on(ModifyKind::Metadata(MetadataKind::Any), &src).is_empty());
+        assert_eq!(on(ModifyKind::Any, &src.join("a.rs")), [src.join("a.rs")]);
+        assert_eq!(
+            on(ModifyKind::Name(RenameMode::Any), &src),
+            vec![src.clone()]
+        );
+
+        let mut burst = Burst::default();
+        burst.add(Ok(
+            Event::new(EventKind::Create(CreateKind::Folder)).add_path(src.clone())
+        ));
+        assert_eq!(burst.paths, [src]);
     }
 }
