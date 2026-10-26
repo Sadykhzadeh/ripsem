@@ -20,23 +20,32 @@ pub trait Embedder: Send + Sync {
 /// more than one query, so smaller jobs stay on the CPU.
 pub const GPU_FROM_CHUNKS: usize = 256;
 
+/// The model for answering queries, one short text at a time.
 pub fn build(config: &Config) -> Result<Box<dyn Embedder>> {
-    build_for(config, 0)
+    build_with(config, 0, true)
 }
 
 /// The model for embedding `chunks` texts in one go.
 pub fn build_for(config: &Config, chunks: usize) -> Result<Box<dyn Embedder>> {
+    build_with(config, chunks, false)
+}
+
+fn build_with(config: &Config, chunks: usize, queries_only: bool) -> Result<Box<dyn Embedder>> {
     match config.backend {
         Backend::Hash => Ok(Box::new(hashing::HashEmbedder::new(config.dims()))),
         Backend::Fastembed => {
             #[cfg(feature = "fastembed")]
             {
                 let gpu = chunks >= GPU_FROM_CHUNKS && std::env::var_os("RIPSEM_NO_GPU").is_none();
-                Ok(Box::new(fastembed::FastEmbedder::new(&config.model, gpu)?))
+                Ok(Box::new(fastembed::FastEmbedder::new(
+                    &config.model,
+                    gpu,
+                    queries_only,
+                )?))
             }
             #[cfg(not(feature = "fastembed"))]
             {
-                let _ = chunks;
+                let _ = (chunks, queries_only);
                 anyhow::bail!(
                     "backend 'fastembed' needs a build with the model runtime: cargo build --features fastembed"
                 )
