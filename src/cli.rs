@@ -1,4 +1,4 @@
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -8,6 +8,35 @@ use serde_json::{Value, json};
 use crate::config::{Backend, Config};
 use crate::index::{self, Index};
 use crate::{embed, mcp, model, pipeline, walk, watch};
+
+/// Prints a line to stdout. A reader that has gone away, as `head` does once it
+/// has what it wants, ends the program quietly instead of panicking.
+macro_rules! out {
+    () => {
+        write_line(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        write_line(format_args!($($arg)*))
+    };
+}
+
+fn write_line(line: std::fmt::Arguments) {
+    let mut stdout = std::io::stdout().lock();
+    if let Err(e) = stdout
+        .write_fmt(line)
+        .and_then(|()| stdout.write_all(b"\n"))
+    {
+        stdout_failed(&e);
+    }
+}
+
+fn stdout_failed(e: &std::io::Error) -> ! {
+    if e.kind() != std::io::ErrorKind::BrokenPipe {
+        eprintln!("Error: failed printing to stdout: {e}");
+        std::process::exit(1);
+    }
+    std::process::exit(0);
+}
 
 #[derive(Parser)]
 #[command(name = "ripsem", version, about = "Local semantic code search")]
@@ -164,7 +193,11 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Model { action } => cmd_model(&root, action),
         Command::Install { target } => cmd_install(&root, target),
         Command::Completions { shell } => {
-            clap_complete::generate(shell, &mut Cli::command(), "ripsem", &mut std::io::stdout());
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "ripsem", &mut script);
+            if let Err(e) = std::io::stdout().write_all(&script) {
+                stdout_failed(&e);
+            }
             Ok(())
         }
     }
@@ -177,12 +210,12 @@ fn cmd_init(root: &Path) -> Result<()> {
     let path = show_path(&config.config_path());
     if config.config_path().exists() {
         config.create_data_dir()?;
-        println!("kept {path}, which already exists");
+        out!("kept {path}, which already exists");
     } else {
         config.save()?;
-        println!("wrote {path}");
+        out!("wrote {path}");
     }
-    println!("model: {} ({:?} backend)", config.model, config.backend);
+    out!("model: {} ({:?} backend)", config.model, config.backend);
     warn_about_backend(&config);
     Ok(())
 }
@@ -309,7 +342,7 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
     };
 
     if as_json {
-        println!(
+        out!(
             "{}",
             status_json(
                 &config.model,
@@ -322,33 +355,33 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!(
+    out!(
         "model:  {} ({:?} backend, {} dims)",
         config.model,
         config.backend,
         config.dims()
     );
     match (&facts, &error) {
-        (None, None) => println!("index:  missing — run `ripsem index`"),
-        (None, Some(e)) => println!("index:  unreadable ({e})"),
+        (None, None) => out!("index:  missing — run `ripsem index`"),
+        (None, Some(e)) => out!("index:  unreadable ({e})"),
         (Some(f), _) => {
-            println!("index:  {} ({})", f.path, human_size(f.size_bytes));
-            println!("chunks: {} across {}", f.chunks, plural(f.files, "file"));
-            println!("named:  {} with a declaration", plural(f.named, "chunk"));
+            out!("index:  {} ({})", f.path, human_size(f.size_bytes));
+            out!("chunks: {} across {}", f.chunks, plural(f.files, "file"));
+            out!("named:  {} with a declaration", plural(f.named, "chunk"));
             if let Some(drift) = &f.drift {
-                println!("tree:   {}", drift_line(drift));
+                out!("tree:   {}", drift_line(drift));
             }
             if f.ann {
-                println!("ann:    present (approximate search)");
+                out!("ann:    present (approximate search)");
             }
             if f.rechunk {
-                println!(
+                out!(
                     "note:   chunk settings differ from the ones the index was built with; \
                      `ripsem index` chunks every file again"
                 );
             }
             if f.stale {
-                println!(
+                out!(
                     "note:   index built with {}, config wants {}; run `ripsem index --force`",
                     index::embedded_by(f.index_backend, &f.index_model),
                     index::embedded_by(config.backend, &config.model)
@@ -396,13 +429,13 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
     if dry_run {
         let files = walk::collect(&config)?;
         for path in &files {
-            println!("{}", pipeline::relative(&config.root, path));
+            out!("{}", pipeline::relative(&config.root, path));
         }
-        println!("{} would be indexed", plural(files.len(), "file"));
+        out!("{} would be indexed", plural(files.len(), "file"));
         return Ok(());
     }
     let stats = pipeline::index_repo(&config, force)?;
-    println!(
+    out!(
         "{}: {} changed, {} unchanged -> {}, {} embedded",
         plural(stats.files, "file"),
         stats.embedded,
@@ -521,12 +554,12 @@ fn print_hits(
                 .into_iter()
                 .map(|(path, count)| json!({ "path": path, "count": count }))
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&rows)?);
+            out!("{}", serde_json::to_string_pretty(&rows)?);
         } else if counts.is_empty() {
-            println!("no matches");
+            out!("no matches");
         } else {
             for (path, count) in counts {
-                println!("{count:>5}  {path}");
+                out!("{count:>5}  {path}");
             }
         }
         return Ok(());
@@ -547,17 +580,17 @@ fn print_hits(
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&rows)?);
+        out!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
 
     if hits.is_empty() {
-        println!("no matches");
+        out!("no matches");
         return Ok(());
     }
     for h in hits {
         match &h.symbol {
-            Some(s) => println!(
+            Some(s) => out!(
                 "{}:{}-{}  {}  ({})",
                 h.path,
                 h.start_line,
@@ -565,7 +598,7 @@ fn print_hits(
                 s.label(),
                 show_score(h.score)
             ),
-            None => println!(
+            None => out!(
                 "{}:{}-{}  ({})",
                 h.path,
                 h.start_line,
@@ -575,10 +608,10 @@ fn print_hits(
         }
         for l in snippet_lines(&h.snippet, context) {
             for piece in wrap(l) {
-                println!("    {piece}");
+                out!("    {piece}");
             }
         }
-        println!();
+        out!();
     }
     Ok(())
 }
@@ -591,9 +624,11 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
                 let mark = if m.id == current { "*" } else { " " };
                 let lang = if m.multilingual { "multi" } else { "en" };
                 let disk = format!("~{}MB", m.disk_mb);
-                println!(
+                out!(
                     "{mark} {:<24} {}d  {disk:<6}  {lang:<5}  {}",
-                    m.id, m.dims, m.note
+                    m.id,
+                    m.dims,
+                    m.note
                 );
             }
             Ok(())
@@ -604,12 +639,12 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
             }
             let mut config = Config::load(root)?;
             if config.model == id && config.config_path().exists() {
-                println!("model is already {id}; the index needs no rebuild");
+                out!("model is already {id}; the index needs no rebuild");
                 return Ok(());
             }
             config.model = id.clone();
             config.save()?;
-            println!("model set to {id} (run `ripsem index --force` to rebuild)");
+            out!("model set to {id} (run `ripsem index --force` to rebuild)");
             Ok(())
         }
         ModelCmd::Backend { name } => {
@@ -620,12 +655,12 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
             };
             let mut config = Config::load(root)?;
             if config.backend == backend && config.config_path().exists() {
-                println!("backend is already {name}; the index needs no rebuild");
+                out!("backend is already {name}; the index needs no rebuild");
                 return Ok(());
             }
             config.backend = backend;
             config.save()?;
-            println!("backend set to {name} (run `ripsem index --force` to rebuild)");
+            out!("backend set to {name} (run `ripsem index --force` to rebuild)");
             Ok(())
         }
     }
@@ -644,7 +679,7 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
     };
     add_server(root, &target)?;
     add_note(root, &target)?;
-    println!("restart {name} in this directory to pick it up");
+    out!("restart {name} in this directory to pick it up");
     Ok(())
 }
 
@@ -668,7 +703,7 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
         Err(e) => return Err(e).with_context(|| format!("reading {}", show_path(&path))),
     };
     if existing.contains("ripsem") {
-        println!(
+        out!(
             "{} already mentions ripsem; left as it is",
             show_path(&path)
         );
@@ -682,7 +717,7 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
         false => format!("{}\n\n{note}", existing.trim_end()),
     };
     std::fs::write(&path, text)?;
-    println!("added a note on when to use it to {}", show_path(&path));
+    out!("added a note on when to use it to {}", show_path(&path));
     Ok(())
 }
 
@@ -730,7 +765,7 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
         ),
         // An entry already there may carry a --path or env the user added.
         Some(servers) if servers.get("ripsem").is_some() => {
-            println!("ripsem is already in {}; left as it is", show_path(&path));
+            out!("ripsem is already in {}; left as it is", show_path(&path));
             return Ok(());
         }
         Some(_) => {}
@@ -745,7 +780,7 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
     doc["mcpServers"]["ripsem"] = json!({ "command": "ripsem", "args": args });
 
     std::fs::write(&path, serde_json::to_string_pretty(&doc)? + "\n")?;
-    println!("added ripsem to {}", show_path(&path));
+    out!("added ripsem to {}", show_path(&path));
     Ok(())
 }
 
