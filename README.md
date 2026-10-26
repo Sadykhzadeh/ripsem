@@ -360,7 +360,8 @@ chunks or more runs on the GPU through DirectML, about four times faster than
 on the CPU; `RIPSEM_NO_GPU=1` keeps it on the CPU, for example when a graphics
 driver misbehaves. The model is cached in
 `~/.cache/ripsem` on Linux, `~/Library/Caches/ripsem` on macOS and
-`%LOCALAPPDATA%\ripsem\cache` on Windows.
+`%LOCALAPPDATA%\ripsem\cache` on Windows; `RIPSEM_MODEL_DIR` names another
+directory for it.
 
 **`ripsem.exe` fails to start on Windows.** A missing `VCRUNTIME140.dll` or
 `MSVCP140.dll` means the Microsoft Visual C++ Redistributable is not installed:
