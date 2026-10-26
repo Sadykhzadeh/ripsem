@@ -169,9 +169,13 @@ pub enum InstallCmd {
 
 pub fn run(cli: Cli) -> Result<()> {
     let root = match &cli.path {
-        Some(path) => path
-            .canonicalize()
-            .map_err(|_| anyhow::anyhow!("no such directory: {}", path.display()))?,
+        Some(path) => {
+            let root = path
+                .canonicalize()
+                .map_err(|_| anyhow::anyhow!("no such directory: {}", path.display()))?;
+            anyhow::ensure!(root.is_dir(), "not a directory: {}", path.display());
+            root
+        }
         None => {
             let here = Path::new(".").canonicalize().unwrap_or_else(|_| ".".into());
             match cli.command {

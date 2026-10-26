@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `--path` naming a file is an error instead of treating the file as the
+  project directory.
 - `ripsem search` refuses `-k 0` and a `--min-score` outside 0 to 1 with an error,
   as the MCP tool already does, instead of answering "no matches".
 - Output piped into a program that stops reading, such as `ripsem search | head`,
