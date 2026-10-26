@@ -291,3 +291,27 @@ fn piped_output_shows_the_first_hits_in_full() {
     ));
     assert!(!short.contains("finish();"), "{short}");
 }
+
+#[test]
+fn a_reader_that_goes_away_is_not_a_panic() {
+    let dir = TempDir::new();
+    for n in 0..400 {
+        dir.write(
+            &format!("src/module_with_a_long_name_{n:04}.rs"),
+            "fn f() {}",
+        );
+    }
+    for args in [&["index", "--dry-run"][..], &["completions", "powershell"]] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ripsem"))
+            .args(args)
+            .current_dir(&dir.path)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stdout.take());
+        let out = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("panicked"), "{args:?}: {stderr}");
+    }
+}

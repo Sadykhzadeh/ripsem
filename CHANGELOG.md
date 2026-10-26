@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Output piped into a program that stops reading, such as `ripsem search | head`,
+  ends quietly instead of panicking with "failed printing to stdout".
 - Releases include a Linux build for 64-bit Arm (`aarch64-unknown-linux-gnu`),
   and `install.sh` installs it.
 - A search no longer reads a file outside the repository when the index on
