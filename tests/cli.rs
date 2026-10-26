@@ -315,3 +315,17 @@ fn a_reader_that_goes_away_is_not_a_panic() {
         assert!(!stderr.contains("panicked"), "{args:?}: {stderr}");
     }
 }
+
+#[test]
+fn a_limit_or_score_that_cannot_match_is_an_error() {
+    let dir = TempDir::new();
+    for args in [
+        &["search", "x", "-k", "0"][..],
+        &["search", "x", "--min-score", "2"],
+        &["search", "x", "--min-score", "-0.5"],
+        &["search", "x", "--min-score", "NaN"],
+    ] {
+        let out = ripsem(&dir.path, args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+    }
+}

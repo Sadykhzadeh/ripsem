@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `ripsem search` refuses `-k 0` and a `--min-score` outside 0 to 1 with an error,
+  as the MCP tool already does, instead of answering "no matches".
 - Output piped into a program that stops reading, such as `ripsem search | head`,
   ends quietly instead of panicking with "failed printing to stdout".
 - Releases include a Linux build for 64-bit Arm (`aarch64-unknown-linux-gnu`),
