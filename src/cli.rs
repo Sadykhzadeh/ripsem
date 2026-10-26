@@ -1184,39 +1184,29 @@ mod tests {
     fn install_adds_its_entry_without_rewriting_the_rest() {
         let dir = crate::testutil::TempDir::new();
         let path = dir.path().join(".mcp.json");
-        let before = "{
-    \"version\": 2,
-    \"mcpServers\": {
-        \"zeta\": { \"command\": \"z\" },
-        \"alpha\": {\"command\":\"a\"}
-    },
-    \"inputs\": []
-}
-";
+        let before = concat!(
+            "{\n",
+            "    \"version\": 2,\n",
+            "    \"mcpServers\": {\n",
+            "        \"zeta\": { \"command\": \"z\" },\n",
+            "        \"alpha\": {\"command\":\"a\"}\n",
+            "    },\n",
+            "    \"inputs\": []\n",
+            "}\n",
+        );
         std::fs::write(&path, before).unwrap();
         cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         for kept in [
-            "    \"version\": 2,
-    \"mcpServers\": {
-",
-            "        \"zeta\": { \"command\": \"z\" },
-",
-            "        \"alpha\": {\"command\":\"a\"},
-",
-            "    },
-    \"inputs\": []
-}
-",
+            "    \"version\": 2,\n    \"mcpServers\": {\n",
+            "        \"zeta\": { \"command\": \"z\" },\n",
+            "        \"alpha\": {\"command\":\"a\"},\n",
+            "    },\n    \"inputs\": []\n}\n",
         ] {
             assert!(text.contains(kept), "{kept:?} in {text}");
         }
         assert!(
-            text.contains(
-                "
-        \"ripsem\": {
-            \"args\""
-            ),
+            text.contains("\n        \"ripsem\": {\n            \"args\""),
             "{text}"
         );
         let doc: Value = serde_json::from_str(&text).unwrap();
