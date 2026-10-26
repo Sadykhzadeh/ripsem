@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- On Windows, `ripsem watch` and the MCP server reindex once for a change instead
+  of twice: the late notice that the parent directory was modified no longer
+  counts as a change.
 - `ripsem install` adds its entry to `.mcp.json` or `.cursor/mcp.json` as text,
   so the other servers keep their order, indentation and line endings instead
   of being rewritten with sorted keys.
