@@ -339,3 +339,31 @@ fn a_path_that_is_a_file_is_not_a_directory() {
     assert!(!out.status.success());
     assert!(stderr(&out).contains("not a directory"), "{}", stderr(&out));
 }
+
+#[cfg(feature = "fastembed")]
+#[test]
+fn a_model_that_cannot_be_fetched_says_what_to_do() {
+    let dir = TempDir::new();
+    dir.write("a.rs", "fn a() {}");
+    let models = dir.path.join("models");
+    let out = Command::new(env!("CARGO_BIN_EXE_ripsem"))
+        .args(["index"])
+        .current_dir(&dir.path)
+        .env("RIPSEM_MODEL_DIR", &models)
+        .env("HF_ENDPOINT", "http://127.0.0.1:9")
+        .output()
+        .unwrap();
+    let message = stderr(&out);
+    assert!(!out.status.success(), "{message}");
+    assert!(models.is_dir(), "the override was not used: {message}");
+    for expected in [
+        "bge-small-en-v1.5",
+        models.to_str().unwrap(),
+        "ripsem model backend hash",
+    ] {
+        assert!(
+            message.contains(expected),
+            "{expected:?} missing from {message}"
+        );
+    }
+}

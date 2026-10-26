@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `RIPSEM_MODEL_DIR` sets where the embedding model is kept, on every system.
+  When the model cannot be loaded, the error names it, the directory it was
+  looked for in and `ripsem model backend hash` as the way to search without it.
 - On Windows, `ripsem watch` and the MCP server reindex once for a change instead
   of twice: the late notice that the parent directory was modified no longer
   counts as a change.
