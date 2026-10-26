@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `--path` naming a file is an error instead of treating the file as the
+  project directory.
+- `ripsem search` refuses `-k 0` and a `--min-score` outside 0 to 1 with an error,
+  as the MCP tool already does, instead of answering "no matches".
+- Output piped into a program that stops reading, such as `ripsem search | head`,
+  ends quietly instead of panicking with "failed printing to stdout".
 - Releases include a Linux build for 64-bit Arm (`aarch64-unknown-linux-gnu`),
   and `install.sh` installs it.
 - A search no longer reads a file outside the repository when the index on
