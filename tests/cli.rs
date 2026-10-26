@@ -329,3 +329,13 @@ fn a_limit_or_score_that_cannot_match_is_an_error() {
         assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
     }
 }
+
+#[test]
+fn a_path_that_is_a_file_is_not_a_directory() {
+    let dir = TempDir::new();
+    dir.write("main.rs", "fn main() {}");
+    let file = dir.path.join("main.rs");
+    let out = ripsem(&dir.path, &["--path", file.to_str().unwrap(), "status"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("not a directory"), "{}", stderr(&out));
+}
