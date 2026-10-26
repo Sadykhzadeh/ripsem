@@ -38,6 +38,20 @@ fn stdout_failed(e: &std::io::Error) -> ! {
     std::process::exit(0);
 }
 
+fn limit(text: &str) -> Result<usize, String> {
+    match text.parse::<usize>() {
+        Ok(0) | Err(_) => Err("must be a whole number, 1 or more".to_string()),
+        Ok(n) => Ok(n),
+    }
+}
+
+fn score(text: &str) -> Result<f32, String> {
+    match text.parse::<f32>() {
+        Ok(score) if (0.0..=1.0).contains(&score) => Ok(score),
+        _ => Err("must be a number from 0 to 1".to_string()),
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "ripsem", version, about = "Local semantic code search")]
 pub struct Cli {
@@ -70,7 +84,7 @@ pub enum Command {
         /// What to look for, in any of those shapes.
         query: String,
         /// Number of results.
-        #[arg(short = 'k', long, default_value_t = 10)]
+        #[arg(short = 'k', long, default_value_t = 10, value_parser = limit)]
         limit: usize,
         /// Print the results as JSON.
         #[arg(long)]
@@ -92,7 +106,7 @@ pub enum Command {
         /// 1, every term of the query found literally or an identical text,
         /// and falls with rank, so this keeps the top of the ranking. Absent
         /// means no filtering. Applies to both the human and `--json` output.
-        #[arg(long, value_name = "SCORE")]
+        #[arg(long, value_name = "SCORE", value_parser = score)]
         min_score: Option<f32>,
         /// Summarise as one line per file with its hit count (sorted by count),
         /// instead of listing each hit. Aggregates the top-`k` matches, so pair
