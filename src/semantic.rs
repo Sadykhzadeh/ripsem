@@ -127,11 +127,20 @@ impl Emitter<'_> {
                 lines = 0;
                 self.walk(child, scope);
             } else if lines + child_lines > self.max_lines {
-                if let Some((s, e)) = group.take() {
-                    self.push(&s, &e, scope);
+                let lead = group.and_then(|(s, _)| self.lead_in(&s, &child));
+                match (group.take(), lead) {
+                    (Some((s, _)), Some(first)) if first == s => {}
+                    (Some((s, _)), Some(first)) => {
+                        if let Some(e) = first.prev_named_sibling() {
+                            self.push(&s, &e, scope);
+                        }
+                    }
+                    (Some((s, e)), None) => self.push(&s, &e, scope),
+                    (None, _) => {}
                 }
-                group = Some((child, child));
-                lines = child_lines;
+                let start = lead.unwrap_or(child);
+                group = Some((start, child));
+                lines = last_row(&child, self.text) - start.start_position().row + 1;
             } else {
                 group = match group {
                     Some((s, _)) => Some((s, child)),
@@ -143,6 +152,37 @@ impl Emitter<'_> {
         if let Some((s, e)) = group {
             self.push(&s, &e, scope);
         }
+    }
+
+    /// The comments and attributes right above `next`, back to `start` at most,
+    /// that open a chunk with it within the size limit: the first of them. A
+    /// doc comment or a `#[test]` belongs with the declaration below it, not at
+    /// the end of the chunk before. One after code on the same line, or with a
+    /// blank line below it, is about something else.
+    fn lead_in<'t>(&self, start: &Node<'t>, next: &Node<'t>) -> Option<Node<'t>> {
+        let end = last_row(next, self.text);
+        let mut first = None;
+        let mut below = *next;
+        while let Some(node) = below.prev_named_sibling() {
+            let kind = node.kind();
+            let leads = ["comment", "attribute", "decorator"]
+                .iter()
+                .any(|k| kind.contains(k));
+            let trailing = node
+                .prev_named_sibling()
+                .is_some_and(|before| last_row(&before, self.text) == node.start_position().row);
+            if !leads
+                || trailing
+                || node.start_byte() < start.start_byte()
+                || last_row(&node, self.text) + 1 < below.start_position().row
+                || end - node.start_position().row + 1 > self.max_lines
+            {
+                break;
+            }
+            first = Some(node);
+            below = node;
+        }
+        first
     }
 
     /// A chunk grouping several small declarations is named after the first of
@@ -409,6 +449,42 @@ mod tests {
         assert!(chunks.len() >= 2);
         assert!(chunks.iter().any(|c| c.text.contains("fn first")));
         assert!(chunks.iter().any(|c| c.text.contains("fn second")));
+    }
+
+    #[test]
+    fn a_doc_comment_and_attribute_stay_with_the_function_below() {
+        let mut src = String::new();
+        for (name, value) in [("first", 1), ("second", 2), ("third", 3)] {
+            src.push_str(&format!("/// Opens the {name} door.\n#[inline]\n"));
+            src.push_str(&make_fn(name, 12, value));
+        }
+        let chunks = chunk_rust(&src, 20);
+        for chunk in chunks.iter().filter(|c| c.text.contains("let _")) {
+            let first = chunk.text.lines().next().unwrap();
+            assert!(first.starts_with("/// Opens"), "{}", chunk.text);
+            let last = chunk.text.trim_end().lines().last().unwrap();
+            assert_eq!(last, "}", "{}", chunk.text);
+        }
+        let starts: Vec<usize> = chunks
+            .iter()
+            .filter(|c| c.text.contains("let _"))
+            .map(|c| c.start_line)
+            .collect();
+        assert_eq!(starts, [1, 17, 33]);
+    }
+
+    #[test]
+    fn a_comment_after_code_or_a_blank_line_stays_where_it_is() {
+        let mut src = make_fn("first", 12, 1);
+        src.push_str("const LIMIT: u32 = 3; // about LIMIT\n");
+        src.push_str(&make_fn("second", 12, 2));
+        src.push_str("// about the file\n\n");
+        src.push_str(&make_fn("third", 12, 3));
+        let chunks = chunk_rust(&src, 20);
+        let holding = |needle: &str| chunks.iter().find(|c| c.text.contains(needle)).unwrap();
+        assert!(holding("about LIMIT").text.contains("const LIMIT"));
+        assert!(holding("about the file").text.contains("fn second"));
+        assert!(holding("fn third").text.starts_with("fn third"));
     }
 
     #[test]

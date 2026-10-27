@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A doc comment or attribute stays in the chunk of the declaration below it.
+  Where a chunk filled up between the two, the comment went to the end of the
+  chunk before, so a hit on `measure_noise_floor` ended with the doc comment of
+  the next method and the method's own chunk started without it. An index
+  built by an earlier version is cut again on the next `ripsem index`.
 - `install.sh` with a relative `RIPSEM_INSTALL_DIR`, such as `bin`, installs
   there instead of into its temporary directory, which it then deleted while
   reporting `installed ripsem v0.1.2 to bin/ripsem`.
