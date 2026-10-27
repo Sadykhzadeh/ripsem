@@ -190,6 +190,9 @@ list, so a threshold keeps the top of the ranking. Each index measures its own
 noise floor by matching queries about anything but code against it, so the
 scale follows the repository and the model.
 
+The words of a query need no quotes: `ripsem search where is auth set up`
+asks the same as `ripsem search "where is auth set up"`.
+
 - `-k <N>` sets the number of results (default 10).
 - `--json` prints machine-readable output.
 - `--in <subdir>` limits results to a subdirectory. A relative path starts
