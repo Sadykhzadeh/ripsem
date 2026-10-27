@@ -240,6 +240,32 @@ fn setting_the_model_or_backend_it_has_asks_for_no_rebuild() {
 }
 
 #[test]
+fn a_file_of_only_whitespace_is_not_counted_as_indexed() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn authenticate(user) { verify password }");
+    dir.write("blank.txt", "   \n\n\t\n");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+
+    let listed = stdout(&ripsem(&dir.path, &["index", "--dry-run"]));
+    assert!(!listed.contains("blank.txt"), "{listed}");
+    assert!(listed.contains("1 file would be indexed"), "{listed}");
+
+    let indexed = stdout(&ripsem(&dir.path, &["index"]));
+    assert!(
+        indexed.starts_with("1 file: 1 changed, 0 unchanged"),
+        "{indexed}"
+    );
+    let again = stdout(&ripsem(&dir.path, &["index"]));
+    assert!(
+        again.starts_with("1 file: 0 changed, 1 unchanged"),
+        "{again}"
+    );
+    let status = stdout(&ripsem(&dir.path, &["status"]));
+    assert!(status.contains("across 1 file\n"), "{status}");
+}
+
+#[test]
 fn a_path_that_does_not_exist_is_an_error() {
     let dir = TempDir::new();
     for args in [["index"], ["status"], ["init"]] {

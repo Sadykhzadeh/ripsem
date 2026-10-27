@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `ripsem index --dry-run` leaves out files with nothing but whitespace in
+  them, which the index never takes in, and the file counts of `ripsem index`
+  and `ripsem watch` agree with `ripsem status`: a repository with one blank
+  file read `26 files: 0 changed, 25 unchanged` while the index held 25.
 - The model that answers a search skips packing its weights for repeated runs,
   which one short query never earns back: a search took about 37 ms less
   (586 ms to 549 ms median over 25 searches, with the machine busy). The
