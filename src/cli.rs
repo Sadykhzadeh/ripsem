@@ -92,9 +92,10 @@ pub enum Command {
         /// Print the results as JSON.
         #[arg(long)]
         json: bool,
-        /// Limit results to a subdirectory (relative to the repo root), e.g.
-        /// `--in src/embed`. `.` or empty searches the whole index; a path
-        /// outside the repository is an error.
+        /// Limit results to a subdirectory, e.g. `--in src/embed`. A relative
+        /// path starts from the current directory, as in the shell, so `.`
+        /// is the directory you are in; a path outside the repository is an
+        /// error.
         #[arg(long = "in", value_name = "PREFIX")]
         within: Option<String>,
         /// Number of snippet lines to print per hit in the human output: 3 in
@@ -563,7 +564,7 @@ fn cmd_search(
     let config = Config::load(root)?;
     // Same normalisation as the MCP `search` tool.
     let prefix = match within {
-        Some(raw) => mcp::scope_prefix(raw, &config.root)?,
+        Some(raw) => mcp::scope_prefix(&from_here(raw, &config.root), &config.root)?,
         None => None,
     };
     let hits = pipeline::search_scoped(&config, query, limit, prefix.as_deref())?;
@@ -571,6 +572,21 @@ fn cmd_search(
     print_hits(&hits, as_json, context, count_by_file)?;
     warn_about_backend(&config);
     Ok(())
+}
+
+/// A relative `--in` read from the current directory, as the shell and git
+/// read a path, when that directory is inside the project. Run from `src`,
+/// `--in embed` means `src/embed`. From elsewhere, as with a `--path`, it is
+/// read from the project root.
+fn from_here(raw: &str, root: &Path) -> String {
+    let raw = raw.trim();
+    let here = Path::new(".").canonicalize().unwrap_or_default();
+    match here.strip_prefix(root) {
+        Ok(below) if !below.as_os_str().is_empty() && Path::new(raw).is_relative() => {
+            format!("{}/{raw}", below.to_string_lossy().replace('\\', "/"))
+        }
+        _ => raw.to_string(),
+    }
 }
 
 /// Prints search results in the shape the flags ask for.

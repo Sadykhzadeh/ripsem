@@ -266,6 +266,39 @@ fn a_file_of_only_whitespace_is_not_counted_as_indexed() {
 }
 
 #[test]
+fn a_scope_is_read_from_the_current_directory() {
+    let dir = TempDir::new();
+    dir.write("src/auth/login.rs", "fn login() { verify password }");
+    dir.write("src/admin.rs", "fn admin() { verify password }");
+    dir.write("docs/auth.md", "verify password");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+
+    let found = |cwd: &Path, scope: &str| {
+        let output = ripsem(
+            cwd,
+            &["search", "verify password", "--context", "0", "--in", scope],
+        );
+        let mut paths: Vec<String> = stdout(&output)
+            .lines()
+            .filter_map(|line| line.split(':').next())
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect();
+        paths.sort();
+        (paths, stderr(&output))
+    };
+    let src = dir.path.join("src");
+    assert_eq!(found(&src, "auth").0, ["src/auth/login.rs"]);
+    assert_eq!(found(&src, ".").0, ["src/admin.rs", "src/auth/login.rs"]);
+    assert_eq!(found(&src, "../docs").0, ["docs/auth.md"]);
+    assert_eq!(found(&dir.path, "src/auth").0, ["src/auth/login.rs"]);
+    let (paths, error) = found(&src, "../..");
+    assert!(paths.is_empty() && error.contains("outside"), "{error}");
+}
+
+#[test]
 fn a_path_that_does_not_exist_is_an_error() {
     let dir = TempDir::new();
     for args in [["index"], ["status"], ["init"]] {

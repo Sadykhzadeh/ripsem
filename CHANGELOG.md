@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `search --in` reads a relative path from the current directory, as the
+  shell does. Run from `src`, `--in auth` was read from the repository root
+  and answered "nothing is indexed under 'auth'", and `--in .` searched the
+  whole repository; they now mean `src/auth` and `src`.
 - `ripsem index --dry-run` leaves out files with nothing but whitespace in
   them, which the index never takes in, and the file counts of `ripsem index`
   and `ripsem watch` agree with `ripsem status`: a repository with one blank
