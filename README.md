@@ -192,8 +192,10 @@ scale follows the repository and the model.
 
 - `-k <N>` sets the number of results (default 10).
 - `--json` prints machine-readable output.
-- `--in <subdir>` limits results to a subdirectory (`./src/auth` and an absolute
-  path into the repository mean the same).
+- `--in <subdir>` limits results to a subdirectory. A relative path starts
+  from the current directory, as in the shell: in `src`, `--in auth` means
+  `src/auth` and `--in .` means `src`. An absolute path into the repository
+  works too.
 - `--context <N>` sets how many snippet lines print per hit (3 in a terminal,
   the whole snippet when the output goes to another program; `0` prints just
   the locations).
