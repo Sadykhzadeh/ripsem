@@ -504,6 +504,18 @@ fn the_first_search_in_a_repository_builds_its_index() {
 }
 
 #[test]
+fn the_first_search_after_init_builds_the_index() {
+    let dir = TempDir::new();
+    dir.write("auth.rs", "fn authenticate(user) { verify password }");
+    let config = config_for(&dir.path);
+    config.save().unwrap();
+
+    let hits = pipeline::search_scoped(&config, "verify password", 5, None).unwrap();
+    assert_eq!(hits[0].path, "auth.rs");
+    assert!(config.index_path().exists());
+}
+
+#[test]
 fn a_search_outside_a_repository_does_not_build_an_index() {
     let dir = TempDir::new();
     dir.write("auth.rs", "fn authenticate(user) { verify password }");

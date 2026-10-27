@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The first `ripsem search` after `ripsem init` builds the index, as it does
+  in a git repository, instead of answering "no index yet".
 - `ripsem watch` and the MCP server reindex when `.ripsem/config.toml`
   changes. A new `exclude`, `max_file_kb` or `skip_generated` took effect
   only once some other file changed.
