@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
+use rayon::prelude::*;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
@@ -447,7 +448,7 @@ fn human_size(bytes: u64) -> String {
 fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
     let config = Config::load(root)?;
     if dry_run {
-        let files = walk::collect(&config)?;
+        let files = indexable(&config)?;
         for path in &files {
             out!("{}", pipeline::relative(&config.root, path));
         }
@@ -465,6 +466,18 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
     );
     warn_about_backend(&config);
     Ok(())
+}
+
+/// The files `ripsem index` would take in: those the walk finds, less any
+/// with nothing but whitespace in them, which yield no chunk.
+fn indexable(config: &Config) -> Result<Vec<PathBuf>> {
+    Ok(walk::collect(config)?
+        .into_par_iter()
+        .filter(|path| {
+            std::fs::read(path)
+                .is_ok_and(|bytes| !crate::chunk::is_blank(&walk::decode_text(&bytes)))
+        })
+        .collect())
 }
 
 /// A score to three places for the human output. One that rounds to zero

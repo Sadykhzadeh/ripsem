@@ -14,6 +14,8 @@ use crate::{chunk, embed, fingerprint, walk};
 
 #[derive(Debug)]
 pub struct IndexStats {
+    /// Files the index holds after this run. A file with nothing but
+    /// whitespace in it is walked but yields no chunk, so it is not one.
     pub files: usize,
     /// Files read and cut again: new or changed.
     pub embedded: usize,
@@ -278,7 +280,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     pb.finish_and_clear();
 
     let stats = IndexStats {
-        files: files.len(),
+        files: embedded + reused,
         embedded,
         reused,
         chunks: index.records.len(),
