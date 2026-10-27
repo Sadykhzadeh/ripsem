@@ -94,9 +94,10 @@ pub fn reaches_any(config: &Config, paths: &[PathBuf]) -> bool {
     if paths.iter().any(|p| !p.starts_with(root)) {
         return true;
     }
-    // The one ignore source that lives inside `.git`.
+    // The one ignore source that lives inside `.git`, and the config, whose
+    // excludes and limits decide what the walk keeps.
     let exclude = root.join(".git").join("info").join("exclude");
-    if paths.contains(&exclude) {
+    if paths.contains(&exclude) || paths.contains(&config.config_path()) {
         return true;
     }
     let targets: Vec<PathBuf> = paths
@@ -360,6 +361,10 @@ mod tests {
         assert!(!reaches("Cargo.lock"), "generated files are skipped too");
         assert!(!reaches(".git/index"));
         assert!(!reaches(".ripsem/index.bin"));
+        assert!(
+            reaches(".ripsem/config.toml"),
+            "a new exclude or size limit changes the walk"
+        );
     }
 
     #[test]
