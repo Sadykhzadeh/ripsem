@@ -884,9 +884,11 @@ pub fn search_scoped(
         anyhow::bail!("the query is empty; say what to look for");
     }
     // A repository's first search builds its index rather than sending the
-    // user off to run `ripsem index`. Outside a repository the directory may
-    // be a home folder, which nobody wants embedded by accident.
-    if !config.index_path().exists() && config.root.join(".git").exists() {
+    // user off to run `ripsem index`, and so does a directory `ripsem init`
+    // opted in. Anywhere else the directory may be a home folder, which nobody
+    // wants embedded by accident.
+    let opted_in = config.root.join(".git").exists() || config.data_dir().is_dir();
+    if !config.index_path().exists() && opted_in {
         eprintln!("no index yet; building one, which later searches only update");
         index_repo(config, false)?;
     }
