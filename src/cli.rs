@@ -84,8 +84,10 @@ pub enum Command {
     },
     /// Find code by an identifier, an error message or a description.
     Search {
-        /// What to look for, in any of those shapes.
-        query: String,
+        /// What to look for, in any of those shapes. Several words need no
+        /// quotes: `ripsem search where is auth set up` is one query.
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
         /// Number of results.
         #[arg(short = 'k', long, default_value_t = 10, value_parser = limit)]
         limit: usize,
@@ -201,7 +203,7 @@ pub fn run(cli: Cli) -> Result<()> {
             count_by_file,
         } => cmd_search(
             &root,
-            &query,
+            &query.join(" "),
             limit,
             json,
             within.as_deref(),

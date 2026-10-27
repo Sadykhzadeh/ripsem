@@ -299,6 +299,31 @@ fn a_scope_is_read_from_the_current_directory() {
 }
 
 #[test]
+fn the_words_of_a_query_need_no_quotes() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn authenticate(user) { verify password }");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+
+    let quoted = ripsem(&dir.path, &["search", "verify the password", "--json"]);
+    let words = ripsem(
+        &dir.path,
+        &["search", "verify", "the", "password", "--json"],
+    );
+    assert!(words.status.success(), "{}", stderr(&words));
+    assert!(stdout(&words).contains("src/auth.rs"));
+    assert_eq!(stdout(&words), stdout(&quoted));
+
+    let after = ripsem(
+        &dir.path,
+        &["search", "-k", "1", "verify", "password", "--context", "0"],
+    );
+    assert_eq!(stdout(&after).lines().filter(|l| !l.is_empty()).count(), 1);
+    assert!(!ripsem(&dir.path, &["search"]).status.success());
+}
+
+#[test]
 fn a_path_that_does_not_exist_is_an_error() {
     let dir = TempDir::new();
     for args in [["index"], ["status"], ["init"]] {

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `ripsem search` takes a query of several words without quotes:
+  `ripsem search where is auth set up` was refused with "unexpected
+  argument 'is' found".
 - `search --in` reads a relative path from the current directory, as the
   shell does. Run from `src`, `--in auth` was read from the repository root
   and answered "nothing is indexed under 'auth'", and `--in .` searched the
