@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `install.sh` with a relative `RIPSEM_INSTALL_DIR`, such as `bin`, installs
+  there instead of into its temporary directory, which it then deleted while
+  reporting `installed ripsem v0.1.2 to bin/ripsem`.
 - The first `ripsem search` after `ripsem init` builds the index, as it does
   in a git repository, instead of answering "no index yet".
 - `ripsem watch` and the MCP server reindex when `.ripsem/config.toml`
