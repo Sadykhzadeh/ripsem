@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `ripsem watch` and the MCP server reindex when `.ripsem/config.toml`
+  changes. A new `exclude`, `max_file_kb` or `skip_generated` took effect
+  only once some other file changed.
 - `ripsem search` takes a query of several words without quotes:
   `ripsem search where is auth set up` was refused with "unexpected
   argument 'is' found".
