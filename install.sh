@@ -17,6 +17,12 @@ case "$(uname -s) $(uname -m)" in
     ;;
 esac
 dir=${RIPSEM_INSTALL_DIR:-$HOME/.local/bin}
+# The download is unpacked from a temporary directory, so a relative one is
+# taken from where the script was started.
+case $dir in
+  /*) ;;
+  *) dir=$PWD/$dir ;;
+esac
 
 latest=$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest")
 tag=${latest##*/}
