@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- A UTF-8 byte order mark at the start of a file, as Windows editors write it,
+  is no longer part of the first line of the indexed text, and a file of
+  nothing but the mark is skipped as blank.
+- A stretch of a source file the parser could not make sense of is cut into
+  chunks like any other text. Lines after an error were left out of the index
+  and could not be found.
+- A `chunk_lines`, `max_chunk_lines` or `max_file_kb` of 0 in `config.toml` is
+  an error. `max_file_kb = 0` indexed nothing and said nothing.
+- An `exclude` pattern that starts with `!` is an error that points to
+  `.ripsemignore`, where a negation works. It used to have no effect.
+- The MCP server answers a request whose `id` is not a string or an integer,
+  or whose `jsonrpc` is not `"2.0"`, with an invalid-request error.
+- A failed write of the index removes its temporary file.
 - `install.sh` with a relative `RIPSEM_INSTALL_DIR`, such as `bin`, installs
   there instead of into its temporary directory, which it then deleted while
   reporting `installed ripsem v0.1.2 to bin/ripsem`.
