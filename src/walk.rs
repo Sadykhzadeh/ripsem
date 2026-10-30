@@ -74,6 +74,10 @@ fn builder(config: &Config) -> Result<WalkBuilder> {
             .map(String::as_str)
             .chain(defaults.iter().copied())
         {
+            anyhow::ensure!(
+                !pattern.starts_with('!'),
+                "exclude pattern '{pattern}' cannot start with '!'; put a negation in .ripsemignore"
+            );
             overrides
                 .add(&format!("!{pattern}"))
                 .with_context(|| format!("invalid exclude pattern '{pattern}'"))?;
@@ -140,8 +144,9 @@ fn is_internal(path: &Path, root: &Path) -> bool {
 
 /// The text a file holds. UTF-16 with its byte order mark, as Windows tools
 /// save it, is decoded and the mark dropped; anything else is read as UTF-8 with
-/// bad bytes replaced. Every reader of a file's text goes through here, so a
-/// line number means the same line in the index and in the snippets.
+/// bad bytes replaced, after a UTF-8 mark if there is one. Every reader of a
+/// file's text goes through here, so a line number means the same line in the
+/// index and in the snippets.
 pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
     let units = |order: fn([u8; 2]) -> u16, rest: &[u8]| {
         let units: Vec<u16> = rest
@@ -155,6 +160,7 @@ pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
     match bytes {
         [0xFF, 0xFE, rest @ ..] => Cow::Owned(units(u16::from_le_bytes, rest)),
         [0xFE, 0xFF, rest @ ..] => Cow::Owned(units(u16::from_be_bytes, rest)),
+        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest),
         _ => String::from_utf8_lossy(bytes),
     }
 }
@@ -332,6 +338,15 @@ mod tests {
     }
 
     #[test]
+    fn a_negated_exclude_is_an_error() {
+        let dir = TempDir::new();
+        let mut config = config_at(dir.path());
+        config.exclude = vec!["*.md".into(), "!keep.md".into()];
+        let err = format!("{:#}", collect(&config).unwrap_err());
+        assert!(err.contains(".ripsemignore"), "{err}");
+    }
+
+    #[test]
     fn a_change_the_walk_would_see_reaches_the_index() {
         let dir = TempDir::new();
         dir.write(".gitignore", "target/\n*.log\n");
@@ -432,5 +447,14 @@ mod tests {
         assert_eq!(decode_text(&le), text);
         assert_eq!(decode_text(&be), text);
         assert_eq!(decode_text(b"plain\n"), "plain\n");
+    }
+
+    #[test]
+    fn drops_the_utf8_byte_order_mark() {
+        assert_eq!(
+            decode_text(b"\xEF\xBB\xBFusing System;\n"),
+            "using System;\n"
+        );
+        assert!(crate::chunk::is_blank(&decode_text(b"\xEF\xBB\xBF\n")));
     }
 }
