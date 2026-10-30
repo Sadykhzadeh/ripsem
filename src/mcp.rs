@@ -329,6 +329,15 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
         let response = request.get("result").is_some() || request.get("error").is_some();
         return (!response).then(|| error(id.unwrap_or(Value::Null), -32600, "invalid request"));
     };
+    if !id
+        .as_ref()
+        .is_none_or(|id| id.is_string() || id.is_i64() || id.is_u64())
+    {
+        return Some(error(Value::Null, -32600, "invalid request"));
+    }
+    if request.get("jsonrpc").is_some_and(|v| v != "2.0") {
+        return Some(error(id.unwrap_or(Value::Null), -32600, "invalid request"));
+    }
 
     match method {
         "initialize" => Some(ok(
@@ -598,6 +607,30 @@ mod tests {
 
     fn req(method: &str, params: Value) -> Value {
         json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+    }
+
+    #[test]
+    fn an_id_that_is_not_a_string_or_integer_is_an_invalid_request() {
+        let cfg = Config::default();
+        for id in [json!(null), json!(1.5), json!([1]), json!({}), json!(true)] {
+            let request = json!({ "jsonrpc": "2.0", "id": id, "method": "ping" });
+            let resp = handle(&cfg, None, &request).unwrap();
+            assert_eq!(resp["error"]["code"], -32600, "{id}");
+            assert_eq!(resp["id"], Value::Null);
+        }
+        for id in [json!(7), json!("a")] {
+            let request = json!({ "jsonrpc": "2.0", "id": id, "method": "ping" });
+            assert_eq!(handle(&cfg, None, &request).unwrap()["id"], id);
+        }
+    }
+
+    #[test]
+    fn another_jsonrpc_version_is_an_invalid_request() {
+        let cfg = Config::default();
+        let request = json!({ "jsonrpc": "1.0", "id": 3, "method": "ping" });
+        let resp = handle(&cfg, None, &request).unwrap();
+        assert_eq!(resp["error"]["code"], -32600);
+        assert_eq!(resp["id"], 3);
     }
 
     #[test]
