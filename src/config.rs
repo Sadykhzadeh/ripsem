@@ -155,9 +155,25 @@ impl Config {
             let mut parsed: Config =
                 toml::from_str(&text).with_context(|| format!("parsing {}", show_path(&path)))?;
             parsed.root = root.to_path_buf();
+            parsed
+                .check_sizes()
+                .with_context(|| format!("in {}", show_path(&path)))?;
             cfg = parsed;
         }
         Ok(cfg)
+    }
+
+    /// A size of 0 would not fail anywhere else: a file limit of 0 indexes
+    /// nothing, and a window of 0 lines cuts a chunk for every line.
+    fn check_sizes(&self) -> Result<()> {
+        for (key, value) in [
+            ("chunk_lines", self.chunk_lines as u64),
+            ("max_chunk_lines", self.max_chunk_lines as u64),
+            ("max_file_kb", self.max_file_kb),
+        ] {
+            anyhow::ensure!(value > 0, "{key} must be 1 or more");
+        }
+        Ok(())
     }
 
     pub fn save(&self) -> Result<()> {
@@ -179,6 +195,16 @@ mod tests {
         dir.write(".ripsem/config.toml", "exlude = [\"vendor/\"]\n");
         let err = format!("{:#}", Config::load(dir.path()).unwrap_err());
         assert!(err.contains("exlude"), "{err}");
+    }
+
+    #[test]
+    fn a_size_of_zero_is_an_error() {
+        for key in ["chunk_lines", "max_chunk_lines", "max_file_kb"] {
+            let dir = TempDir::new();
+            dir.write(".ripsem/config.toml", &format!("{key} = 0\n"));
+            let err = format!("{:#}", Config::load(dir.path()).unwrap_err());
+            assert!(err.contains(&format!("{key} must be 1 or more")), "{err}");
+        }
     }
 
     #[test]
