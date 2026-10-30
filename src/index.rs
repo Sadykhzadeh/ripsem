@@ -199,10 +199,15 @@ impl Index {
                 file.write_all(&FORMAT_VERSION.to_le_bytes())?;
                 file.write_all(&body)
             })
-            .with_context(|| format!("writing index {}", show_path(&tmp)))?;
+            .with_context(|| format!("writing index {}", show_path(&tmp)))
+            .inspect_err(|_| {
+                let _ = std::fs::remove_file(&tmp);
+            })?;
         std::fs::rename(&tmp, path)
-            .with_context(|| format!("replacing index {}", show_path(path)))?;
-        Ok(())
+            .with_context(|| format!("replacing index {}", show_path(path)))
+            .inspect_err(|_| {
+                let _ = std::fs::remove_file(&tmp);
+            })
     }
 
     /// Whether any indexed file lies under the repo-relative `prefix`.
@@ -1104,6 +1109,19 @@ mod tests {
         sample_index().save(&path).unwrap();
         assert!(Index::load(&path).is_ok());
         let left: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["index.bin"]);
+    }
+
+    #[test]
+    fn a_failed_save_leaves_no_temp_file() {
+        let dir = TempDir::new();
+        let path = dir.path().join("index.bin");
+        std::fs::create_dir(&path).unwrap();
+        assert!(sample_index().save(&path).is_err());
+        let left: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
