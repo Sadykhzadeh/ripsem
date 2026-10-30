@@ -74,6 +74,10 @@ fn builder(config: &Config) -> Result<WalkBuilder> {
             .map(String::as_str)
             .chain(defaults.iter().copied())
         {
+            anyhow::ensure!(
+                !pattern.starts_with('!'),
+                "exclude pattern '{pattern}' cannot start with '!'; put a negation in .ripsemignore"
+            );
             overrides
                 .add(&format!("!{pattern}"))
                 .with_context(|| format!("invalid exclude pattern '{pattern}'"))?;
@@ -331,6 +335,15 @@ mod tests {
         let mut config = config_at(dir.path());
         config.exclude = vec!["[".into()];
         assert!(collect(&config).is_err());
+    }
+
+    #[test]
+    fn a_negated_exclude_is_an_error() {
+        let dir = TempDir::new();
+        let mut config = config_at(dir.path());
+        config.exclude = vec!["*.md".into(), "!keep.md".into()];
+        let err = format!("{:#}", collect(&config).unwrap_err());
+        assert!(err.contains(".ripsemignore"), "{err}");
     }
 
     #[test]
