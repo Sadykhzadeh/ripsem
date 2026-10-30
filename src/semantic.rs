@@ -111,7 +111,7 @@ impl Emitter<'_> {
     fn walk_children(&mut self, node: Node, scope: Option<&Symbol>) {
         let mut cursor = node.walk();
         let children: Vec<Node> = node.named_children(&mut cursor).collect();
-        if children.is_empty() {
+        if children.is_empty() || node.is_error() {
             self.push_windows(&node, scope);
             return;
         }
@@ -816,5 +816,129 @@ mod tests {
                 "{file}: {src:?}"
             );
         }
+    }
+
+    #[test]
+    fn every_line_lands_in_a_chunk() {
+        let many = |f: &dyn Fn(usize) -> String| (0..30).map(f).collect::<String>();
+        let cases: Vec<(&str, String)> = vec![
+            (
+                "a.rs",
+                many(&|n| format!("use a::b{n};\nconst X{n}: u8 = 1;\nstatic Y{n}: u8 = 2;\n")),
+            ),
+            (
+                "a.rs",
+                many(&|n| format!("fn f{n}() {{\n    let x = 1;\n}}\n;\n")),
+            ),
+            (
+                "a.py",
+                many(&|n| format!("import m{n}\nx{n} = 1\nprint(x{n})\n")),
+            ),
+            (
+                "a.js",
+                many(&|n| format!("var a{n} = 1;\nconsole.log(a{n});\nif (a{n}) {{ run(); }}\n")),
+            ),
+            (
+                "a.ts",
+                many(&|n| format!("type T{n} = number;\nlet a{n}: T{n} = 1;\nrun(a{n});\n")),
+            ),
+            (
+                "a.go",
+                format!(
+                    "package main\nimport \"fmt\"\n{}",
+                    many(&|n| format!("var a{n} = 1\nfunc f{n}() {{\n fmt.Println(a{n})\n}}\n"))
+                ),
+            ),
+            (
+                "a.sh",
+                many(&|n| format!("A{n}=1\necho $A{n}\nif [ -z $A{n} ]; then\n  exit 1\nfi\n")),
+            ),
+            (
+                "a.c",
+                many(&|n| format!("#include <a{n}.h>\n#define X{n} 1\nint v{n} = X{n};\n")),
+            ),
+            (
+                "a.css",
+                many(&|n| format!("@import 'a{n}.css';\n.a{n} {{\n  color: red;\n}}\n")),
+            ),
+            (
+                "a.html",
+                many(&|n| format!("<!-- c{n} -->\n<div>\n  <p>t{n}</p>\n</div>\n")),
+            ),
+            (
+                "a.json",
+                format!("[\n{}0\n]\n", many(&|n| format!("  {{\"a\": {n}}},\n"))),
+            ),
+            (
+                "a.rb",
+                many(&|n| format!("require 'a{n}'\nx{n} = 1\nputs x{n}\n")),
+            ),
+            (
+                "a.php",
+                format!("<?php\n{}", many(&|n| format!("$a{n} = 1;\necho $a{n};\n"))),
+            ),
+            (
+                "a.kt",
+                format!(
+                    "{}{}",
+                    many(&|n| format!("import a.b{n}\n")),
+                    many(&|n| format!("val x{n} = 1\nfun f{n}() = x{n}\n"))
+                ),
+            ),
+            (
+                "a.scala",
+                many(&|n| format!("import a.b{n}\nval x{n} = 1\nprintln(x{n})\n")),
+            ),
+            (
+                "build.gradle.kts",
+                many(&|n| {
+                    format!("println({n})\ndependencies {{\n    implementation(\"x{n}\")\n}}\n")
+                }),
+            ),
+            (
+                "a.java",
+                format!("package p;\n{}", many(&|n| format!("import a.B{n};\n"))),
+            ),
+            ("a.cs", many(&|n| format!("using A{n};\n"))),
+            (
+                "a.cpp",
+                many(&|n| format!("#include <a{n}>\nusing namespace n{n};\nint v{n} = 1;\n")),
+            ),
+        ];
+        for (file, src) in cases {
+            let chunks = chunk_source(file, &src, 8);
+            let kept: std::collections::HashSet<&str> = chunks
+                .iter()
+                .flat_map(|c| c.text.lines())
+                .map(|l| l.trim().trim_end_matches([',', ';']))
+                .collect();
+            let lost: Vec<&str> = src
+                .lines()
+                .map(str::trim)
+                .map(|l| l.trim_end_matches([',', ';']))
+                .filter(|l| l.contains(char::is_alphanumeric) && !kept.contains(l))
+                .take(5)
+                .collect();
+            assert!(
+                lost.is_empty(),
+                "{file}: lost {lost:?} of {:?}",
+                chunks
+                    .iter()
+                    .map(|c| (c.start_line, c.end_line, c.text.lines().count()))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// Text the parser could not place sits in an error node, whose few named
+    /// children are not all of it.
+    #[test]
+    fn a_stretch_the_parser_gave_up_on_is_still_cut() {
+        let src: String = (0..30)
+            .map(|n| format!("import a.b{n}\nval x{n} = 1\nprintln(x{n})\n"))
+            .collect();
+        let chunks = chunk_source("a.kt", &src, 8);
+        let text: String = chunks.iter().map(|c| c.text.as_str()).collect();
+        assert!(text.contains("println(x29)"));
     }
 }
