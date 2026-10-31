@@ -79,13 +79,22 @@ fn builder(config: &Config) -> Result<WalkBuilder> {
                 "exclude pattern '{pattern}' cannot start with '!'; put a negation in .ripsemignore"
             );
             overrides
-                .add(&format!("!{pattern}"))
+                .add(&format!("!{}", slashed(pattern)))
                 .with_context(|| format!("invalid exclude pattern '{pattern}'"))?;
         }
         builder.overrides(overrides.build().context("building exclude overrides")?);
     }
 
     Ok(builder)
+}
+
+/// Globs treat a backslash as an escape, but on Windows it is the separator
+/// and cannot be part of a name, so `vendor\third_party` means `vendor/third_party`.
+fn slashed(pattern: &str) -> Cow<'_, str> {
+    match cfg!(windows) && pattern.contains('\\') {
+        true => Cow::Owned(pattern.replace('\\', "/")),
+        false => Cow::Borrowed(pattern),
+    }
 }
 
 /// Whether a change at any of these paths can alter what [`collect`] returns:
@@ -327,6 +336,21 @@ mod tests {
         config.skip_generated = false;
 
         assert!(names(&collect(&config).unwrap()).contains(&"Cargo.lock".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_exclude_written_with_backslashes_matches_a_directory() {
+        let dir = TempDir::new();
+        dir.write("keep.rs", "fn main() {}\n");
+        dir.write("vendor/third_party/skip.rs", "fn main() {}\n");
+        dir.write("vendor/own.rs", "fn main() {}\n");
+        let mut config = config_at(dir.path());
+        config.exclude = vec!["vendor\\third_party".into()];
+
+        let mut found = names(&collect(&config).unwrap());
+        found.sort();
+        assert_eq!(found, ["keep.rs", "own.rs"]);
     }
 
     #[test]

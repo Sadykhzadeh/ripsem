@@ -937,3 +937,36 @@ fn a_named_block_does_not_hide_the_methods_inside_it() {
         "{hits:#?}"
     );
 }
+
+#[test]
+fn a_single_long_line_is_indexed_in_pieces() {
+    let dir = TempDir::new();
+    let filler: String = (0..20_000).map(|n| format!("a{n},")).collect();
+    dir.write("bundle.js", &format!("var t=[{filler}];{filler}"));
+    let config = config_for(&dir.path);
+    let stats = pipeline::index_repo(&config, false).unwrap();
+    assert!(stats.chunks > 100, "{} chunks", stats.chunks);
+
+    let hits = pipeline::search(&config, "a19999", 3).unwrap();
+    assert_eq!(hits[0].path, "bundle.js");
+}
+
+#[test]
+fn a_hit_deep_in_a_long_line_shows_that_part_of_it() {
+    let dir = TempDir::new();
+    let filler: String = (0..20_000).map(|n| format!("a{n},")).collect();
+    dir.write(
+        "bundle.js",
+        &format!("var t=[{filler}zebracrossing,{filler}];"),
+    );
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let hits = pipeline::search(&config, "zebracrossing", 3).unwrap();
+    assert_eq!(hits[0].path, "bundle.js");
+    assert!(
+        !hits[0].snippet.starts_with("var t=[a0,"),
+        "{}",
+        hits[0].snippet
+    );
+}
