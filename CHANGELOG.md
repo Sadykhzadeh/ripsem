@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- An `exclude` pattern written with backslashes on Windows, such as
+  `vendor\third_party`, matches that directory. The backslash was read as an
+  escape, so the pattern matched nothing.
 - A line longer than 2 KB, as in a minified bundle or a one-line JSON file, is
   cut into pieces that each get their own chunk and embedding. Only the
   first 2 KB of such a file could be matched by meaning, and a hit showed
