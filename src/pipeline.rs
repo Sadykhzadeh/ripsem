@@ -863,6 +863,11 @@ impl Searcher {
         }
         let text = walk::decode_text(&bytes);
         let wanted: Vec<&str> = text.lines().skip(start - 1).take(end + 1 - start).collect();
+        // A line that long was indexed in pieces, and its start is not the
+        // part a hit is about.
+        if wanted.iter().any(|l| l.len() > chunk::MAX_CHUNK_BYTES) {
+            return None;
+        }
         Some(truncate(&dedent(&wanted.join("\n")), budget))
     }
 }

@@ -22,7 +22,7 @@ const REVISION: u32 = 6;
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
 /// would otherwise be embedded from its first few hundred characters only.
-const MAX_CHUNK_BYTES: usize = 2048;
+pub(crate) const MAX_CHUNK_BYTES: usize = 2048;
 
 /// Everything that decides how a file is cut into chunks. An index records the
 /// one it was built with, and reuses a file's records only under the same one.
