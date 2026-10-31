@@ -109,7 +109,7 @@ The embedding runtime in the x86-64 builds needs a CPU with AVX2 (Intel
 Haswell, AMD Excavator or newer). The binaries are built with the embedding
 runtime and tree-sitter; the model itself downloads on first use.
 
-`cargo install` builds from source, with Rust 1.90 or newer. The build
+`cargo install` builds from source, with Rust 1.92 or newer. The build
 downloads a prebuilt ONNX Runtime, and needs a C and C++ compiler, plus
 pkg-config and the OpenSSL headers on Linux (`build-essential pkg-config
 libssl-dev` on Debian and Ubuntu).

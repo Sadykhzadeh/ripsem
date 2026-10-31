@@ -2,7 +2,7 @@
 name = "ripsem"
 version = "0.1.2"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.92"
 license = "Apache-2.0"
 description = "Local, offline semantic code search with an MCP server for coding agents"
 repository = "https://github.com/Sadykhzadeh/ripsem"
@@ -19,7 +19,7 @@ clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = "4.6.11"
 content_inspector = "0.2.4"
 directories = "6.0.0"
-fastembed = { version = "7.0.0", optional = true, default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
+fastembed = { version = "7.5.0", optional = true, default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
 ignore = "0.4.26"
 indicatif = "0.18.4"
 instant-distance = { version = "0.6.1", optional = true, features = ["with-serde"] }
@@ -78,8 +78,8 @@ treesitter = [
 ]
 
 [target.'cfg(windows)'.dependencies]
-fastembed = { version = "7.0.0", optional = true, default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls", "directml"] }
-ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = ["directml"] }
+fastembed = { version = "7.5.0", optional = true, default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls", "directml"] }
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = ["directml"] }
 
 [profile.release]
 opt-level = 3
