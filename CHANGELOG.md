@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A line longer than 2 KB, as in a minified bundle or a one-line JSON file, is
+  cut into pieces that each get their own chunk and embedding. Only the
+  first 2 KB of such a file could be matched by meaning, and a hit showed
+  the start of the line rather than the match.
 - A UTF-8 byte order mark at the start of a file, as Windows editors write it,
   is no longer part of the first line of the indexed text, and a file of
   nothing but the mark is skipped as blank.

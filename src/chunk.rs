@@ -17,7 +17,12 @@ pub struct Chunk {
 
 /// Changes whenever the same file and settings would give other chunks, so an
 /// index cut by an older ripsem is cut again. A test pins it to the output.
-const REVISION: u32 = 5;
+const REVISION: u32 = 6;
+
+/// A line longer than this is cut into pieces of at most this many bytes. The
+/// models read about this much of a text, so a minified bundle on one line
+/// would otherwise be embedded from its first few hundred characters only.
+const MAX_CHUNK_BYTES: usize = 2048;
 
 /// Everything that decides how a file is cut into chunks. An index records the
 /// one it was built with, and reuses a file's records only under the same one.
@@ -43,6 +48,14 @@ impl Chunking {
 }
 
 pub fn chunk_source(path: &Path, text: &str, config: &Config) -> Vec<Chunk> {
+    let chunks = cut(path, text, config);
+    match chunks.iter().any(has_long_line) {
+        true => chunks.into_iter().flat_map(split_long_lines).collect(),
+        false => chunks,
+    }
+}
+
+fn cut(path: &Path, text: &str, config: &Config) -> Vec<Chunk> {
     #[cfg(feature = "treesitter")]
     if let Some(spec) = crate::lang::detect(path)
         && let Some(chunks) =
@@ -54,6 +67,82 @@ pub fn chunk_source(path: &Path, text: &str, config: &Config) -> Vec<Chunk> {
     #[cfg(not(feature = "treesitter"))]
     let _ = path;
     chunk_file(text, config.chunk_lines, config.chunk_overlap)
+}
+
+fn has_long_line(chunk: &Chunk) -> bool {
+    chunk.text.len() > MAX_CHUNK_BYTES && chunk.text.split('\n').any(|l| l.len() > MAX_CHUNK_BYTES)
+}
+
+/// Lines of a chunk that fit stay together; a longer line becomes pieces of its
+/// own, all reporting that line. The symbol is kept on every piece and the
+/// declarations on the first.
+fn split_long_lines(chunk: Chunk) -> Vec<Chunk> {
+    if !has_long_line(&chunk) {
+        return vec![chunk];
+    }
+    let mut out: Vec<Chunk> = Vec::new();
+    let mut group: Vec<&str> = Vec::new();
+    let mut group_start = chunk.start_line;
+    let push = |out: &mut Vec<Chunk>, text: String, start: usize, end: usize| {
+        if is_blank(&text) {
+            return;
+        }
+        out.push(Chunk {
+            start_line: start,
+            end_line: end,
+            text,
+            symbol: chunk.symbol.clone(),
+            declarations: match out.is_empty() {
+                true => chunk.declarations.clone(),
+                false => Vec::new(),
+            },
+        });
+    };
+    for (i, line) in chunk.text.split('\n').enumerate() {
+        let number = (chunk.start_line + i).min(chunk.end_line);
+        if line.len() <= MAX_CHUNK_BYTES {
+            if group.is_empty() {
+                group_start = number;
+            }
+            group.push(line);
+            continue;
+        }
+        if !group.is_empty() {
+            push(&mut out, group.join("\n"), group_start, number - 1);
+            group.clear();
+        }
+        let mut rest = line;
+        while !rest.is_empty() {
+            let (piece, tail) = rest.split_at(cut_at(rest));
+            push(&mut out, piece.to_string(), number, number);
+            rest = tail;
+        }
+    }
+    if !group.is_empty() {
+        push(&mut out, group.join("\n"), group_start, chunk.end_line);
+    }
+    out
+}
+
+/// Where to cut a line for a piece of at most [`MAX_CHUNK_BYTES`]: on a
+/// character boundary, after punctuation or a space when one is near, so a
+/// word is not split between two pieces.
+fn cut_at(line: &str) -> usize {
+    if line.len() <= MAX_CHUNK_BYTES {
+        return line.len();
+    }
+    let mut end = MAX_CHUNK_BYTES;
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    let near = end.saturating_sub(MAX_CHUNK_BYTES / 8);
+    match line.as_bytes()[near..end]
+        .iter()
+        .rposition(|b| !b.is_ascii_alphanumeric() && *b != b'_' && b.is_ascii())
+    {
+        Some(i) => near + i + 1,
+        None => end,
+    }
 }
 
 /// Text with nothing but whitespace in it yields no chunk, so a file made only
@@ -157,7 +246,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (5, expected),
+            (6, expected),
             "{seen}"
         );
     }
@@ -168,5 +257,33 @@ mod tests {
         let chunks = chunk_file(&body, 3, 9);
         assert_eq!(chunks.last().unwrap().end_line, 6);
         assert!(chunks.len() <= body.lines().count());
+    }
+
+    #[test]
+    fn a_single_long_line_is_cut_so_all_of_it_is_searchable() {
+        let line: String = (0..30_000).map(|n| format!("w{n};")).collect();
+        for file in ["min.js", "data.txt"] {
+            let chunks = chunk_source(Path::new(file), &line, &Config::default());
+            assert!(chunks.len() > 1, "{file}: {} chunk", chunks.len());
+            assert!(chunks.iter().all(|c| c.text.len() <= MAX_CHUNK_BYTES));
+            assert!(chunks.iter().all(|c| (c.start_line, c.end_line) == (1, 1)));
+            assert_eq!(
+                chunks.iter().map(|c| c.text.as_str()).collect::<String>(),
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_line_among_short_ones_keeps_its_line_number() {
+        let long = "\u{e9}".repeat(3000);
+        let text = format!("first\nsecond\n{long}\nlast\n");
+        let chunks = chunk_source(Path::new("a.txt"), &text, &Config::default());
+        let spans: Vec<(usize, usize)> =
+            chunks.iter().map(|c| (c.start_line, c.end_line)).collect();
+        assert_eq!(spans, [(1, 2), (3, 3), (3, 3), (3, 3), (4, 4)]);
+        assert!(chunks.iter().all(|c| c.text.len() <= MAX_CHUNK_BYTES));
+        let pieces: String = chunks[1..4].iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(pieces, long);
     }
 }
