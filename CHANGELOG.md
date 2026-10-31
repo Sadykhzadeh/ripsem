@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The model runtime is fastembed 7.5 on ONNX Runtime 1.31 (ort 2.0.0-rc.15).
+  Building from source needs Rust 1.92 or newer, up from 1.90.
 - An `exclude` pattern written with backslashes on Windows, such as
   `vendor\third_party`, matches that directory. The backslash was read as an
   escape, so the pattern matched nothing.
