@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-11-01)
 
 - A doc comment or attribute stays in the chunk of the declaration below it.
   Where a chunk filled up between the two, the comment went to the end of the
