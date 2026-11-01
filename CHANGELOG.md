@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A doc comment or attribute stays in the chunk of the declaration below it.
+  Where a chunk filled up between the two, the comment went to the end of the
+  chunk before, so a hit on `measure_noise_floor` ended with the doc comment of
+  the next method and the method's own chunk started without it. An index
+  built by an earlier version is cut again on the next `ripsem index`.
 - The model runtime is fastembed 7.5 on ONNX Runtime 1.31 (ort 2.0.0-rc.15).
   Building from source needs Rust 1.92 or newer, up from 1.90.
 - An `exclude` pattern written with backslashes on Windows, such as
