@@ -109,7 +109,13 @@ fn push_term(word: &str, buffer: &mut String, out: &mut Vec<TermHash>) {
         return;
     }
     buffer.clear();
-    buffer.extend(word.chars().flat_map(char::to_lowercase));
+    // Most code is ASCII, where lowering is a byte at a time.
+    if word.is_ascii() {
+        buffer.push_str(word);
+        buffer.make_ascii_lowercase();
+    } else {
+        buffer.extend(word.chars().flat_map(char::to_lowercase));
+    }
     out.push(xxh3_64(buffer.as_bytes()));
 }
 
@@ -376,6 +382,17 @@ mod tests {
         assert!(contains("bge_small_en_v1", "v1"));
         assert!(contains("utf8Decode", "utf8"));
         assert!(contains("utf8Decode", "decode"));
+    }
+
+    #[test]
+    fn a_term_is_the_hash_of_its_lowercase_text() {
+        for word in ["HTTPServer", "parse_Header", "ÜberCache", "ÄRGER"] {
+            assert_eq!(
+                terms_of(word)[0],
+                xxh3_64(word.to_lowercase().as_bytes()),
+                "{word}"
+            );
+        }
     }
 
     #[test]
