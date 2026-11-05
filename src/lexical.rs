@@ -90,14 +90,16 @@ fn written_as_code(text: &str, word: &str, position: usize) -> bool {
 }
 
 fn collect_terms(text: &str, buffer: &mut String, out: &mut Vec<TermHash>) {
+    // Reused across words, so splitting an identifier allocates nothing.
+    let mut pieces = Vec::new();
     for word in text.split(|c: char| !c.is_alphanumeric() && c != '_') {
         if word.is_empty() {
             continue;
         }
         push_term(word, buffer, out);
-        let pieces = split_identifier(word);
+        split_identifier_into(word, &mut pieces);
         if pieces.len() > 1 {
-            for piece in pieces {
+            for piece in &pieces {
                 push_term(piece, buffer, out);
             }
         }
@@ -109,12 +111,24 @@ fn push_term(word: &str, buffer: &mut String, out: &mut Vec<TermHash>) {
         return;
     }
     buffer.clear();
-    buffer.extend(word.chars().flat_map(char::to_lowercase));
+    // Most code is ASCII, where lowering is a byte at a time.
+    if word.is_ascii() {
+        buffer.push_str(word);
+        buffer.make_ascii_lowercase();
+    } else {
+        buffer.extend(word.chars().flat_map(char::to_lowercase));
+    }
     out.push(xxh3_64(buffer.as_bytes()));
 }
 
 fn split_identifier(word: &str) -> Vec<&str> {
     let mut out = Vec::new();
+    split_identifier_into(word, &mut out);
+    out
+}
+
+fn split_identifier_into<'a>(word: &'a str, out: &mut Vec<&'a str>) {
+    out.clear();
     for segment in word.split('_').filter(|s| !s.is_empty()) {
         let bytes = segment.as_bytes();
         let mut start = 0;
@@ -126,7 +140,6 @@ fn split_identifier(word: &str) -> Vec<&str> {
         }
         out.push(&segment[start..]);
     }
-    out
 }
 
 fn starts_new_piece(bytes: &[u8], i: usize) -> bool {
@@ -376,6 +389,17 @@ mod tests {
         assert!(contains("bge_small_en_v1", "v1"));
         assert!(contains("utf8Decode", "utf8"));
         assert!(contains("utf8Decode", "decode"));
+    }
+
+    #[test]
+    fn a_term_is_the_hash_of_its_lowercase_text() {
+        for word in ["HTTPServer", "parse_Header", "ÜberCache", "ÄRGER"] {
+            assert_eq!(
+                terms_of(word)[0],
+                xxh3_64(word.to_lowercase().as_bytes()),
+                "{word}"
+            );
+        }
     }
 
     #[test]

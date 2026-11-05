@@ -155,13 +155,15 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     // nothing changed, or only files removed, never needs the model.
     let mut embedder: Option<Box<dyn embed::Embedder>> = None;
     let dims = config.dims();
-    let files = walk::collect_hashed(config)?;
-
-    let prev = if !force && config.index_path().exists() {
-        Index::load(&config.index_path()).ok()
-    } else {
-        None
-    };
+    // The walk waits on the disk and the decode on one core, so they overlap.
+    let (files, prev) = rayon::join(
+        || walk::collect_hashed(config),
+        || match !force && config.index_path().exists() {
+            true => Index::load(&config.index_path()).ok(),
+            false => None,
+        },
+    );
+    let files = files?;
     let mut prev_chunks: HashMap<String, Vec<Record>> = HashMap::new();
     let mut prev_ann = None;
     let mut prev_floor = None;
