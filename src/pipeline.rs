@@ -53,17 +53,19 @@ impl Drift {
 pub fn drift(config: &Config, index: &Index) -> Result<Drift> {
     let indexed = index.file_hashes();
     let rechunk = index.chunking != chunk::Chunking::of(config);
-    let present: Vec<(String, u64)> = walk::collect(config)?
+    // A file the index holds at this hash has chunks, so it is not blank and
+    // need not be read again.
+    let present: Vec<(String, u64)> = walk::collect_hashed(config)?
         .par_iter()
-        .filter_map(|path| {
-            let bytes = std::fs::read(path).ok()?;
-            if chunk::is_blank(&walk::decode_text(&bytes)) {
-                return None;
+        .filter_map(|(path, hash)| {
+            let rel = relative(&config.root, path);
+            if indexed.get(rel.as_str()) != Some(hash) {
+                let bytes = std::fs::read(path).ok()?;
+                if chunk::is_blank(&walk::decode_text(&bytes)) {
+                    return None;
+                }
             }
-            Some((
-                relative(&config.root, path),
-                fingerprint::content_hash(&bytes),
-            ))
+            Some((rel, *hash))
         })
         .collect();
 
@@ -129,6 +131,21 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     index_and_keep(config, force).map(|(stats, _)| stats)
 }
 
+/// [`index_repo`] for a process that exits soon after, such as `ripsem index`.
+pub fn index_repo_once(config: &Config, force: bool) -> Result<IndexStats> {
+    index_and_keep(config, force).map(|(stats, index)| {
+        leave_to_exit(index);
+        stats
+    })
+}
+
+/// Freeing every record of a large index one by one takes about as long as a
+/// refresh that finds nothing to do (177 ms for 211k chunks), and the process
+/// is about to give all of its memory back at once anyway.
+fn leave_to_exit<T>(value: T) {
+    std::mem::forget(value);
+}
+
 /// Like [`index_repo`], and also hands back the index as it now stands on
 /// disk, so a search that refreshed first does not read and decode it again.
 /// `None` when the records in memory are not in the order the file holds them,
@@ -138,7 +155,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     // nothing changed, or only files removed, never needs the model.
     let mut embedder: Option<Box<dyn embed::Embedder>> = None;
     let dims = config.dims();
-    let files = walk::collect(config)?;
+    let files = walk::collect_hashed(config)?;
 
     let prev = if !force && config.index_path().exists() {
         Index::load(&config.index_path()).ok()
@@ -163,11 +180,15 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
             reusable = true;
             prev_ann = prev.ann;
             prev_order = file_order(&prev.records);
+            // Looked up by `&str`, so a path is copied once per file rather
+            // than once per record.
             for record in prev.records {
-                prev_chunks
-                    .entry(record.path.clone())
-                    .or_default()
-                    .push(record);
+                match prev_chunks.get_mut(record.path.as_str()) {
+                    Some(records) => records.push(record),
+                    None => {
+                        prev_chunks.insert(record.path.clone(), vec![record]);
+                    }
+                }
             }
         } else {
             recut = prev.records;
@@ -181,19 +202,17 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     let scanned: Vec<(usize, u64, bool)> = files
         .par_iter()
         .enumerate()
-        .filter_map(|(i, path)| {
-            let bytes = std::fs::read(path).ok()?;
-            let hash = fingerprint::content_hash(&bytes);
+        .map(|(i, (path, hash))| {
             let rel = relative(&config.root, path);
-            let changed = prev_hash.get(rel.as_str()) != Some(&hash);
-            Some((i, hash, changed))
+            let changed = prev_hash.get(rel.as_str()) != Some(hash);
+            (i, *hash, changed)
         })
         .collect();
 
     let unchanged: std::collections::HashSet<String> = scanned
         .iter()
         .filter(|(_, _, changed)| !changed)
-        .map(|&(i, _, _)| relative(&config.root, &files[i]))
+        .map(|&(i, _, _)| relative(&config.root, &files[i].0))
         .collect();
     let known_vectors: HashMap<u64, crate::quant::QuantizedVector> = prev_chunks
         .iter()
@@ -214,7 +233,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
         let prepared: Vec<Prepared> = batch
             .par_iter()
             .map(|&(i, hash, changed)| {
-                let path = &files[i];
+                let path = &files[i].0;
                 let rel = relative(&config.root, path);
                 if !changed && prev_chunks.contains_key(&rel) {
                     return Prepared::Unchanged(rel);
@@ -895,7 +914,7 @@ pub fn search_scoped(
     let opted_in = config.root.join(".git").exists() || config.data_dir().is_dir();
     if !config.index_path().exists() && opted_in {
         eprintln!("no index yet; building one, which later searches only update");
-        index_repo(config, false)?;
+        index_repo_once(config, false)?;
     }
     let embedder = Arc::new(LazyEmbedder::new(config));
     // Loading the model and decoding the index are independent, so they run
@@ -913,7 +932,11 @@ pub fn search_scoped(
         }
         None => open_with(config, Arc::clone(&embedder)),
     };
-    let found = searcher.and_then(|searcher| searcher.query_scoped(query, k, prefix));
+    let found = searcher.and_then(|searcher| {
+        let found = searcher.query_scoped(query, k, prefix);
+        leave_to_exit(searcher.index);
+        found
+    });
     if found.is_err() {
         embedder.settle();
     }

@@ -8,6 +8,7 @@ use ignore::{WalkBuilder, WalkState};
 use rayon::prelude::*;
 
 use crate::config::Config;
+use crate::fingerprint::content_hash;
 
 /// Machine-written files that are committed on purpose, so `.gitignore` does not
 /// cover them. A lock file can outweigh all the hand-written source in a repo.
@@ -23,6 +24,35 @@ const GENERATED: &[&str] = &[
 ];
 
 pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
+    // The text/binary check opens every file and is most of the cost, so it
+    // runs in parallel.
+    Ok(candidates(config)?
+        .into_par_iter()
+        .filter(|path| reads_file_as_text(path))
+        .collect())
+}
+
+/// [`collect`], with each file's [`content_hash`]. The file is read once for
+/// both the text check and the hash, where checking first and hashing after
+/// would open it twice.
+pub fn collect_hashed(config: &Config) -> Result<Vec<(PathBuf, u64)>> {
+    Ok(candidates(config)?
+        .into_par_iter()
+        .map_init(Vec::new, |buffer, path| {
+            buffer.clear();
+            std::fs::File::open(&path)
+                .and_then(|mut file| file.read_to_end(buffer))
+                .ok()?;
+            let sniffed = &buffer[..buffer.len().min(SNIFF_BYTES as usize)];
+            reads_as_text(sniffed).then(|| (path, content_hash(buffer)))
+        })
+        .flatten()
+        .collect())
+}
+
+/// Every file the walk reaches within the size limit, in path order. The size
+/// comes from the directory listing, which on Windows costs no system call.
+fn candidates(config: &Config) -> Result<Vec<PathBuf>> {
     let max_bytes = config.max_file_kb.saturating_mul(1024);
     let mut builder = builder(config)?;
     // Pruned during the walk so it never descends into `.git`.
@@ -34,6 +64,9 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
         Box::new(move |result| {
             if let Ok(entry) = result
                 && entry.file_type().is_some_and(|t| t.is_file())
+                && entry
+                    .metadata()
+                    .is_ok_and(|m| m.len() > 0 && m.len() <= max_bytes)
             {
                 let _ = sender.send(entry.into_path());
             }
@@ -44,12 +77,7 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
     // Threads finish in any order; the index lists files in one.
     let mut candidates: Vec<PathBuf> = receiver.into_iter().collect();
     candidates.sort_unstable();
-    // The text/binary check opens every file and is most of the cost, so it
-    // runs in parallel.
-    Ok(candidates
-        .into_par_iter()
-        .filter(|path| is_indexable(path, max_bytes))
-        .collect())
+    Ok(candidates)
 }
 
 fn builder(config: &Config) -> Result<WalkBuilder> {
@@ -174,14 +202,7 @@ pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
     }
 }
 
-fn is_indexable(path: &Path, max_bytes: u64) -> bool {
-    let meta = match std::fs::metadata(path) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-    if meta.len() == 0 || meta.len() > max_bytes {
-        return false;
-    }
+fn reads_file_as_text(path: &Path) -> bool {
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return false,
