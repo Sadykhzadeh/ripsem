@@ -180,11 +180,15 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
             reusable = true;
             prev_ann = prev.ann;
             prev_order = file_order(&prev.records);
+            // Looked up by `&str`, so a path is copied once per file rather
+            // than once per record.
             for record in prev.records {
-                prev_chunks
-                    .entry(record.path.clone())
-                    .or_default()
-                    .push(record);
+                match prev_chunks.get_mut(record.path.as_str()) {
+                    Some(records) => records.push(record),
+                    None => {
+                        prev_chunks.insert(record.path.clone(), vec![record]);
+                    }
+                }
             }
         } else {
             recut = prev.records;
