@@ -90,14 +90,16 @@ fn written_as_code(text: &str, word: &str, position: usize) -> bool {
 }
 
 fn collect_terms(text: &str, buffer: &mut String, out: &mut Vec<TermHash>) {
+    // Reused across words, so splitting an identifier allocates nothing.
+    let mut pieces = Vec::new();
     for word in text.split(|c: char| !c.is_alphanumeric() && c != '_') {
         if word.is_empty() {
             continue;
         }
         push_term(word, buffer, out);
-        let pieces = split_identifier(word);
+        split_identifier_into(word, &mut pieces);
         if pieces.len() > 1 {
-            for piece in pieces {
+            for piece in &pieces {
                 push_term(piece, buffer, out);
             }
         }
@@ -121,6 +123,12 @@ fn push_term(word: &str, buffer: &mut String, out: &mut Vec<TermHash>) {
 
 fn split_identifier(word: &str) -> Vec<&str> {
     let mut out = Vec::new();
+    split_identifier_into(word, &mut out);
+    out
+}
+
+fn split_identifier_into<'a>(word: &'a str, out: &mut Vec<&'a str>) {
+    out.clear();
     for segment in word.split('_').filter(|s| !s.is_empty()) {
         let bytes = segment.as_bytes();
         let mut start = 0;
@@ -132,7 +140,6 @@ fn split_identifier(word: &str) -> Vec<&str> {
         }
         out.push(&segment[start..]);
     }
-    out
 }
 
 fn starts_new_piece(bytes: &[u8], i: usize) -> bool {
