@@ -53,17 +53,19 @@ impl Drift {
 pub fn drift(config: &Config, index: &Index) -> Result<Drift> {
     let indexed = index.file_hashes();
     let rechunk = index.chunking != chunk::Chunking::of(config);
-    let present: Vec<(String, u64)> = walk::collect(config)?
+    // A file the index holds at this hash has chunks, so it is not blank and
+    // need not be read again.
+    let present: Vec<(String, u64)> = walk::collect_hashed(config)?
         .par_iter()
-        .filter_map(|path| {
-            let bytes = std::fs::read(path).ok()?;
-            if chunk::is_blank(&walk::decode_text(&bytes)) {
-                return None;
+        .filter_map(|(path, hash)| {
+            let rel = relative(&config.root, path);
+            if indexed.get(rel.as_str()) != Some(hash) {
+                let bytes = std::fs::read(path).ok()?;
+                if chunk::is_blank(&walk::decode_text(&bytes)) {
+                    return None;
+                }
             }
-            Some((
-                relative(&config.root, path),
-                fingerprint::content_hash(&bytes),
-            ))
+            Some((rel, *hash))
         })
         .collect();
 
@@ -138,7 +140,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     // nothing changed, or only files removed, never needs the model.
     let mut embedder: Option<Box<dyn embed::Embedder>> = None;
     let dims = config.dims();
-    let files = walk::collect(config)?;
+    let files = walk::collect_hashed(config)?;
 
     let prev = if !force && config.index_path().exists() {
         Index::load(&config.index_path()).ok()
@@ -181,19 +183,17 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     let scanned: Vec<(usize, u64, bool)> = files
         .par_iter()
         .enumerate()
-        .filter_map(|(i, path)| {
-            let bytes = std::fs::read(path).ok()?;
-            let hash = fingerprint::content_hash(&bytes);
+        .map(|(i, (path, hash))| {
             let rel = relative(&config.root, path);
-            let changed = prev_hash.get(rel.as_str()) != Some(&hash);
-            Some((i, hash, changed))
+            let changed = prev_hash.get(rel.as_str()) != Some(hash);
+            (i, *hash, changed)
         })
         .collect();
 
     let unchanged: std::collections::HashSet<String> = scanned
         .iter()
         .filter(|(_, _, changed)| !changed)
-        .map(|&(i, _, _)| relative(&config.root, &files[i]))
+        .map(|&(i, _, _)| relative(&config.root, &files[i].0))
         .collect();
     let known_vectors: HashMap<u64, crate::quant::QuantizedVector> = prev_chunks
         .iter()
@@ -214,7 +214,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
         let prepared: Vec<Prepared> = batch
             .par_iter()
             .map(|&(i, hash, changed)| {
-                let path = &files[i];
+                let path = &files[i].0;
                 let rel = relative(&config.root, path);
                 if !changed && prev_chunks.contains_key(&rel) {
                     return Prepared::Unchanged(rel);

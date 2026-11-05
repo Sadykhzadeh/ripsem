@@ -8,6 +8,7 @@ use ignore::{WalkBuilder, WalkState};
 use rayon::prelude::*;
 
 use crate::config::Config;
+use crate::fingerprint::content_hash;
 
 /// Machine-written files that are committed on purpose, so `.gitignore` does not
 /// cover them. A lock file can outweigh all the hand-written source in a repo.
@@ -23,6 +24,35 @@ const GENERATED: &[&str] = &[
 ];
 
 pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
+    // The text/binary check opens every file and is most of the cost, so it
+    // runs in parallel.
+    Ok(candidates(config)?
+        .into_par_iter()
+        .filter(|path| reads_file_as_text(path))
+        .collect())
+}
+
+/// [`collect`], with each file's [`content_hash`]. The file is read once for
+/// both the text check and the hash, where checking first and hashing after
+/// would open it twice.
+pub fn collect_hashed(config: &Config) -> Result<Vec<(PathBuf, u64)>> {
+    Ok(candidates(config)?
+        .into_par_iter()
+        .map_init(Vec::new, |buffer, path| {
+            buffer.clear();
+            std::fs::File::open(&path)
+                .and_then(|mut file| file.read_to_end(buffer))
+                .ok()?;
+            let sniffed = &buffer[..buffer.len().min(SNIFF_BYTES as usize)];
+            reads_as_text(sniffed).then(|| (path, content_hash(buffer)))
+        })
+        .flatten()
+        .collect())
+}
+
+/// Every file the walk reaches within the size limit, in path order. The size
+/// comes from the directory listing, which on Windows costs no system call.
+fn candidates(config: &Config) -> Result<Vec<PathBuf>> {
     let max_bytes = config.max_file_kb.saturating_mul(1024);
     let mut builder = builder(config)?;
     // Pruned during the walk so it never descends into `.git`.
@@ -47,13 +77,7 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
     // Threads finish in any order; the index lists files in one.
     let mut candidates: Vec<PathBuf> = receiver.into_iter().collect();
     candidates.sort_unstable();
-    // The text/binary check opens every file and is most of the cost, so it
-    // runs in parallel. The size was checked above from the directory listing,
-    // which on Windows costs no extra system call.
-    Ok(candidates
-        .into_par_iter()
-        .filter(|path| reads_file_as_text(path))
-        .collect())
+    Ok(candidates)
 }
 
 fn builder(config: &Config) -> Result<WalkBuilder> {
