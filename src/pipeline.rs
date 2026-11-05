@@ -131,6 +131,21 @@ pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
     index_and_keep(config, force).map(|(stats, _)| stats)
 }
 
+/// [`index_repo`] for a process that exits soon after, such as `ripsem index`.
+pub fn index_repo_once(config: &Config, force: bool) -> Result<IndexStats> {
+    index_and_keep(config, force).map(|(stats, index)| {
+        leave_to_exit(index);
+        stats
+    })
+}
+
+/// Freeing every record of a large index one by one takes about as long as a
+/// refresh that finds nothing to do (177 ms for 211k chunks), and the process
+/// is about to give all of its memory back at once anyway.
+fn leave_to_exit<T>(value: T) {
+    std::mem::forget(value);
+}
+
 /// Like [`index_repo`], and also hands back the index as it now stands on
 /// disk, so a search that refreshed first does not read and decode it again.
 /// `None` when the records in memory are not in the order the file holds them,
@@ -895,7 +910,7 @@ pub fn search_scoped(
     let opted_in = config.root.join(".git").exists() || config.data_dir().is_dir();
     if !config.index_path().exists() && opted_in {
         eprintln!("no index yet; building one, which later searches only update");
-        index_repo(config, false)?;
+        index_repo_once(config, false)?;
     }
     let embedder = Arc::new(LazyEmbedder::new(config));
     // Loading the model and decoding the index are independent, so they run
@@ -913,7 +928,11 @@ pub fn search_scoped(
         }
         None => open_with(config, Arc::clone(&embedder)),
     };
-    let found = searcher.and_then(|searcher| searcher.query_scoped(query, k, prefix));
+    let found = searcher.and_then(|searcher| {
+        let found = searcher.query_scoped(query, k, prefix);
+        leave_to_exit(searcher.index);
+        found
+    });
     if found.is_err() {
         embedder.settle();
     }

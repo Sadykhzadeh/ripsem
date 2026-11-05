@@ -458,7 +458,7 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
         out!("{} would be indexed", plural(files.len(), "file"));
         return Ok(());
     }
-    let stats = pipeline::index_repo(&config, force)?;
+    let stats = pipeline::index_repo_once(&config, force)?;
     out!(
         "{}: {} changed, {} unchanged -> {}, {} embedded",
         plural(stats.files, "file"),
