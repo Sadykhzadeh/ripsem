@@ -34,6 +34,9 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
         Box::new(move |result| {
             if let Ok(entry) = result
                 && entry.file_type().is_some_and(|t| t.is_file())
+                && entry
+                    .metadata()
+                    .is_ok_and(|m| m.len() > 0 && m.len() <= max_bytes)
             {
                 let _ = sender.send(entry.into_path());
             }
@@ -45,10 +48,11 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
     let mut candidates: Vec<PathBuf> = receiver.into_iter().collect();
     candidates.sort_unstable();
     // The text/binary check opens every file and is most of the cost, so it
-    // runs in parallel.
+    // runs in parallel. The size was checked above from the directory listing,
+    // which on Windows costs no extra system call.
     Ok(candidates
         .into_par_iter()
-        .filter(|path| is_indexable(path, max_bytes))
+        .filter(|path| reads_file_as_text(path))
         .collect())
 }
 
@@ -174,14 +178,7 @@ pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
     }
 }
 
-fn is_indexable(path: &Path, max_bytes: u64) -> bool {
-    let meta = match std::fs::metadata(path) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-    if meta.len() == 0 || meta.len() > max_bytes {
-        return false;
-    }
+fn reads_file_as_text(path: &Path) -> bool {
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return false,
