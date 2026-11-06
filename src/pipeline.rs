@@ -764,6 +764,7 @@ impl Searcher {
         let qv = self.embedder.get()?.embed_query(query)?;
         let terms = crate::lexical::query_terms(query);
         let names = crate::lexical::query_names(query);
+        let words = query_words(query);
         let wanted = k;
         let k = k.saturating_add(SPARE_HITS);
 
@@ -777,16 +778,22 @@ impl Searcher {
                 .map(|(record_idx, score)| crate::index::Hit { score, record_idx })
                 .collect();
             let hits = self.index.search_fused_with(&dense, &qv, &terms, &names, k);
-            return Ok(self.places(hits, &names, wanted));
+            return Ok(self.places(hits, &names, &words, wanted));
         }
 
         let hits = self.index.search_fused(&qv, &terms, &names, k, prefix);
-        Ok(self.places(hits, &names, wanted))
+        Ok(self.places(hits, &names, &words, wanted))
     }
 
     /// A hit reported as a whole declaration covers the records inside it
     /// that rank below, such as the rest of a long enum's variants.
-    fn places(&self, hits: Vec<crate::index::Hit>, names: &[TermHash], k: usize) -> Vec<SearchHit> {
+    fn places(
+        &self,
+        hits: Vec<crate::index::Hit>,
+        names: &[TermHash],
+        words: &[String],
+        k: usize,
+    ) -> Vec<SearchHit> {
         let mut out: Vec<SearchHit> = Vec::with_capacity(k.min(hits.len()));
         let mut wider: Vec<(String, usize, usize)> = Vec::new();
         for h in hits {
@@ -804,10 +811,12 @@ impl Searcher {
             if hit.end_line > record.end_line {
                 wider.push((hit.path.clone(), hit.start_line, hit.end_line));
             }
-            if out.len() < SHOWN_IN_FULL
-                && let Some(code) = self.code(record, &hit)
-            {
-                hit.snippet = code;
+            let shown = match out.len() < SHOWN_IN_FULL {
+                true => self.code(record, &hit),
+                false => self.near(record, &hit, words),
+            };
+            if let Some(shown) = shown {
+                hit.snippet = shown;
             }
             out.push(hit);
         }
@@ -825,6 +834,24 @@ impl Searcher {
             code.push_str("\n…");
         }
         Some(code)
+    }
+
+    /// A hit below the first few shows the start of its code, which for a
+    /// long chunk is often a signature and a doc comment. When the query's
+    /// words appear only further down, it shows the code from there.
+    fn near(&self, record: &Record, hit: &SearchHit, words: &[String]) -> Option<String> {
+        let head: Vec<&str> = hit.snippet.lines().collect();
+        if words.is_empty() || best_line(&head, words).is_some() {
+            return None;
+        }
+        let code = self.lines(record, hit.start_line, hit.end_line, usize::MAX)?;
+        let lines: Vec<&str> = code.lines().collect();
+        let from = best_line(&lines, words)?.saturating_sub(1);
+        let shown = truncate(&dedent(&lines[from..].join("\n")), SNIPPET_BYTES);
+        Some(match from {
+            0 => shown,
+            _ => format!("…\n{shown}"),
+        })
     }
 
     /// A record holding the declaration the query names is reported as that
@@ -993,6 +1020,35 @@ fn dedent(text: &str) -> String {
         .join("\n")
 }
 
+/// The words of a query a line of code is looked for by, lowercased. Short
+/// ones such as `a` or `of` would be found on almost any line.
+pub(crate) fn query_words(query: &str) -> Vec<String> {
+    let mut words: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() >= 3)
+        .map(str::to_lowercase)
+        .collect();
+    words.sort();
+    words.dedup();
+    words
+}
+
+/// The line naming most of `words`, the first of them on a tie, or `None`
+/// when no line names any.
+pub(crate) fn best_line(lines: &[&str], words: &[String]) -> Option<usize> {
+    let mut best = None;
+    let mut most = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let line = line.to_lowercase();
+        let n = words.iter().filter(|w| line.contains(w.as_str())).count();
+        if n > most {
+            best = Some(i);
+            most = n;
+        }
+    }
+    best
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -1124,6 +1180,69 @@ mod tests {
             searcher.lines(&record(&absolute, b"classified\n"), 1, 1, 100),
             None
         );
+    }
+
+    #[test]
+    fn query_words_drop_short_and_repeated_words() {
+        assert_eq!(
+            query_words("where is the Index, the index of a repo?"),
+            vec!["index", "repo", "the", "where"]
+        );
+    }
+
+    #[test]
+    fn a_lower_hit_shows_the_code_its_query_words_are_on() {
+        let dir = crate::testutil::TempDir::new();
+        let mut text = String::from("/// Draws the bar.\nfn draw() {\n");
+        for i in 0..30 {
+            text.push_str(&format!("    let step_{i} = {i};\n"));
+        }
+        text.push_str("    render_progress(total);\n}\n");
+        dir.write("draw.rs", &text);
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        let record = Record {
+            path: "draw.rs".into(),
+            start_line: 1,
+            end_line: 34,
+            snippet: truncate(&text, SNIPPET_BYTES),
+            file_hash: fingerprint::content_hash(text.as_bytes()),
+            text_hash: 0,
+            vector: crate::quant::quantize(&[]),
+            terms: Default::default(),
+            symbol: None,
+            declarations: Vec::new(),
+        };
+        let searcher = Searcher {
+            index: Index::new(0, Backend::Hash, config.model.clone()),
+            root: config.root.clone(),
+            embedder: Arc::new(LazyEmbedder::new(&config)),
+            index_path: config.index_path(),
+            index_mtime: None,
+            model: config.model.clone(),
+            #[cfg(feature = "hnsw")]
+            ann_map: None,
+        };
+        let hit = SearchHit {
+            path: record.path.clone(),
+            start_line: 1,
+            end_line: 34,
+            score: 0.5,
+            snippet: record.snippet.clone(),
+            symbol: None,
+        };
+        let shown = searcher
+            .near(&record, &hit, &query_words("render progress"))
+            .unwrap();
+        assert_eq!(
+            shown,
+            "…\n    let step_29 = 29;\n    render_progress(total);\n}"
+        );
+        assert_eq!(searcher.near(&record, &hit, &query_words("draws")), None);
+        assert_eq!(searcher.near(&record, &hit, &query_words("nowhere")), None);
+        assert_eq!(searcher.near(&record, &hit, &[]), None);
     }
 
     #[test]
