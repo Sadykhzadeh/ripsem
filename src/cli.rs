@@ -493,9 +493,43 @@ fn show_score(score: f32) -> String {
     }
 }
 
-/// The first `context` lines of a snippet for the human output.
-fn snippet_lines(snippet: &str, context: usize) -> Vec<&str> {
-    snippet.lines().take(context).collect()
+/// `context` lines of a snippet for the human output: its first ones, or,
+/// when the line naming most of the query's words comes later, the lines
+/// around that one.
+fn snippet_lines<'a>(snippet: &'a str, context: usize, words: &[String]) -> Vec<&'a str> {
+    let lines: Vec<&str> = snippet.lines().collect();
+    if context == 0 || lines.len() <= context {
+        return lines.into_iter().take(context).collect();
+    }
+    let found = |line: &str| {
+        let line = line.to_lowercase();
+        words.iter().filter(|w| line.contains(w.as_str())).count()
+    };
+    let mut best = (0, 0);
+    for (i, line) in lines.iter().enumerate() {
+        let n = found(line);
+        if n > best.1 {
+            best = (i, n);
+        }
+    }
+    let start = match best.0 < context {
+        true => 0,
+        false => (best.0 - (context - 1) / 2).min(lines.len() - context),
+    };
+    lines[start..start + context].to_vec()
+}
+
+/// The words of a query a snippet line is looked for by, lowercased. Short
+/// ones such as `a` or `of` would be found on almost any line.
+fn query_words(query: &str) -> Vec<String> {
+    let mut words: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() >= 3)
+        .map(str::to_lowercase)
+        .collect();
+    words.sort();
+    words.dedup();
+    words
 }
 
 /// Width a snippet line is broken at in the human output. A doc record is one
@@ -571,7 +605,7 @@ fn cmd_search(
     };
     let hits = pipeline::search_scoped(&config, query, limit, prefix.as_deref())?;
     let hits = apply_min_score(hits, min_score);
-    print_hits(&hits, as_json, context, count_by_file)?;
+    print_hits(&hits, as_json, context, &query_words(query), count_by_file)?;
     warn_about_backend(&config);
     Ok(())
 }
@@ -596,6 +630,7 @@ fn print_hits(
     hits: &[pipeline::SearchHit],
     as_json: bool,
     context: usize,
+    words: &[String],
     count_by_file: bool,
 ) -> Result<()> {
     if count_by_file {
@@ -657,7 +692,7 @@ fn print_hits(
                 show_score(h.score)
             ),
         }
-        for l in snippet_lines(&h.snippet, context) {
+        for l in snippet_lines(&h.snippet, context, words) {
             for piece in wrap(l) {
                 out!("    {piece}");
             }
@@ -929,11 +964,40 @@ mod tests {
     #[test]
     fn snippet_lines_respects_the_context_count() {
         let snippet = "one\ntwo\nthree\nfour";
-        assert_eq!(snippet_lines(snippet, 2), vec!["one", "two"]);
-        assert!(snippet_lines(snippet, 0).is_empty());
+        assert_eq!(snippet_lines(snippet, 2, &[]), vec!["one", "two"]);
+        assert!(snippet_lines(snippet, 0, &[]).is_empty());
         assert_eq!(
-            snippet_lines(snippet, 10),
+            snippet_lines(snippet, 10, &[]),
             vec!["one", "two", "three", "four"]
+        );
+    }
+
+    #[test]
+    fn snippet_lines_move_to_the_line_the_query_names() {
+        let snippet = "fn truncate() {}\n\nfn progress(len: u64) {\n    ProgressBar::new(len)\n}\n\nfn style() {}";
+        assert_eq!(
+            snippet_lines(snippet, 3, &query_words("progress bar")),
+            vec!["fn progress(len: u64) {", "    ProgressBar::new(len)", "}"]
+        );
+        assert_eq!(
+            snippet_lines(snippet, 3, &query_words("truncate")),
+            vec!["fn truncate() {}", "", "fn progress(len: u64) {"]
+        );
+        assert_eq!(
+            snippet_lines(snippet, 3, &query_words("nothing here")),
+            vec!["fn truncate() {}", "", "fn progress(len: u64) {"]
+        );
+        assert_eq!(
+            snippet_lines(snippet, 2, &query_words("style")),
+            vec!["", "fn style() {}"]
+        );
+    }
+
+    #[test]
+    fn query_words_drop_short_and_repeated_words() {
+        assert_eq!(
+            query_words("where is the Index, the index of a repo?"),
+            vec!["index", "repo", "the", "where"]
         );
     }
 
