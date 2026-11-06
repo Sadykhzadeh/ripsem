@@ -34,9 +34,9 @@ ranges.
 - **Answers are declarations.** A hit is a whole function or type, named after
   it, in 17 languages, so a definition reads apart from a call site. A search
   for a name lands on its declaration, with its own lines and label.
-- **Made for coding agents.** `ripsem install claude-code` or `ripsem install
-  cursor` adds an MCP server that keeps its index current while the agent edits,
-  and tells the agent when to use it.
+- **Made for coding agents.** `ripsem install claude-code`, `cursor` or
+  `vscode` adds an MCP server that keeps its index current while the agent
+  edits, and tells the agent when to use it.
 - **Offline.** No account, no API key, no service. The model downloads once and
   runs on your CPU, and the index is one file inside your repository.
 
@@ -70,8 +70,9 @@ ranges.
     ripsem search "strip the auth header when redirecting to another host"
     ```
 
-3. Hand the same search to your coding agent with `ripsem install claude-code` or
-   `ripsem install cursor` (see [below](#use-with-coding-agents)).
+3. Hand the same search to your coding agent with `ripsem install claude-code`,
+   `ripsem install cursor` or `ripsem install vscode` (see
+   [below](#use-with-coding-agents)).
 
 The first search in a git repository, or in a directory where `ripsem init`
 has run, builds the index: it downloads the model (~133 MB) once and embeds the
@@ -239,6 +240,7 @@ The model downloads once on first use, then everything is offline.
 ```
 ripsem install claude-code        # .mcp.json and a note in CLAUDE.md
 ripsem install cursor             # .cursor/mcp.json and a rule in .cursor/rules
+ripsem install vscode             # .vscode/mcp.json and .github/copilot-instructions.md
 ```
 
 `install` registers the server, writes `.ripsem/config.toml`, and adds a short
@@ -274,8 +276,9 @@ Without ripsem installed, the client can start it through npm with
 
 The server finds the index from the directory it starts in. To point it at a
 repository elsewhere, add `"--path", "/path/to/repo"` to `args`; `install
-cursor` writes `"--path", "${workspaceFolder}"`, which Cursor expands to the
-project. A client that shares its workspace roots, such as one that starts the
+cursor` and `install vscode` write `"--path", "${workspaceFolder}"`, which the
+editor expands to the project. VS Code lists its servers under `servers`
+rather than `mcpServers`. A client that shares its workspace roots, such as one that starts the
 server from the home directory, points it at the project itself, and `--path`
 overrides them.
 

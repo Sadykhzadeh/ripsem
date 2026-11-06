@@ -171,6 +171,8 @@ pub enum InstallCmd {
     ClaudeCode,
     /// Add ripsem to .cursor/mcp.json for Cursor.
     Cursor,
+    /// Add ripsem to .vscode/mcp.json for GitHub Copilot in VS Code.
+    Vscode,
 }
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -745,6 +747,7 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
     let name = match target {
         InstallCmd::ClaudeCode => "Claude Code",
         InstallCmd::Cursor => "Cursor",
+        InstallCmd::Vscode => "VS Code",
     };
     add_server(root, &target)?;
     add_note(root, &target)?;
@@ -764,6 +767,10 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
                 "---\ndescription: Finding code in this repository\nalwaysApply: true\n---\n\n{}\n",
                 mcp::INSTRUCTIONS
             ),
+        ),
+        InstallCmd::Vscode => (
+            root.join(".github/copilot-instructions.md"),
+            format!("## Code search\n\n{}\n", mcp::INSTRUCTIONS),
         ),
     };
     let existing = match std::fs::read_to_string(&path) {
@@ -791,9 +798,10 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
 }
 
 fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
-    let rel = match target {
-        InstallCmd::ClaudeCode => ".mcp.json",
-        InstallCmd::Cursor => ".cursor/mcp.json",
+    let (rel, key) = match target {
+        InstallCmd::ClaudeCode => (".mcp.json", "mcpServers"),
+        InstallCmd::Cursor => (".cursor/mcp.json", "mcpServers"),
+        InstallCmd::Vscode => (".vscode/mcp.json", "servers"),
     };
     let path = root.join(rel);
     if let Some(parent) = path.parent() {
@@ -826,10 +834,10 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
         );
     }
 
-    match doc.get("mcpServers") {
+    match doc.get(key) {
         None => {}
         Some(servers) if !servers.is_object() => anyhow::bail!(
-            "mcpServers in {} is not a JSON object; fix it and run this again",
+            "{key} in {} is not a JSON object; fix it and run this again",
             show_path(&path)
         ),
         // An entry already there may carry a --path or env the user added.
@@ -839,23 +847,30 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
         }
         Some(_) => {}
     }
-    // Claude Code starts a project's server in the project. Cursor does not
-    // say where it starts one, but expands `${workspaceFolder}`, which keeps
-    // the file free of this machine's paths.
-    let args = match target {
-        InstallCmd::ClaudeCode => json!(["mcp"]),
-        InstallCmd::Cursor => json!(["mcp", "--path", "${workspaceFolder}"]),
+    // Claude Code starts a project's server in the project. Cursor and VS Code
+    // do not say where they start one, but expand `${workspaceFolder}`, which
+    // keeps the file free of this machine's paths.
+    let entry = match target {
+        InstallCmd::ClaudeCode => json!({ "command": "ripsem", "args": ["mcp"] }),
+        InstallCmd::Cursor => json!({
+            "command": "ripsem",
+            "args": ["mcp", "--path", "${workspaceFolder}"],
+        }),
+        InstallCmd::Vscode => json!({
+            "type": "stdio",
+            "command": "ripsem",
+            "args": ["mcp", "--path", "${workspaceFolder}"],
+        }),
     };
-    let entry = json!({ "command": "ripsem", "args": args });
 
     let written = if text.trim().is_empty() {
-        serde_json::to_string_pretty(&json!({ "mcpServers": { "ripsem": entry } }))? + "\n"
+        serde_json::to_string_pretty(&json!({ key: { "ripsem": entry } }))? + "\n"
     } else {
         // Only text is added, so the other servers keep their order and layout.
         let top: HashMap<&str, &RawValue> = serde_json::from_str(text)?;
-        match top.get("mcpServers") {
+        match top.get(key) {
             Some(servers) => add_member(text, servers.get(), "ripsem", &entry),
-            None => add_member(text, text.trim(), "mcpServers", &json!({ "ripsem": entry })),
+            None => add_member(text, text.trim(), key, &json!({ "ripsem": entry })),
         }
     };
     std::fs::write(&path, written)?;
@@ -1197,6 +1212,30 @@ mod tests {
         let text = std::fs::read_to_string(&claude).unwrap();
         assert!(text.starts_with("# Project\n\nBuild with make.\n\n## Code search\n"));
         assert_eq!(text.matches("indexed by ripsem").count(), 1);
+    }
+
+    #[test]
+    fn install_vscode_lists_the_server_under_servers() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write(
+            ".vscode/mcp.json",
+            "{\n  \"servers\": {\n    \"other\": { \"command\": \"x\" }\n  }\n}\n",
+        );
+        cmd_install(dir.path(), InstallCmd::Vscode).unwrap();
+        let doc: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".vscode/mcp.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["servers"]["other"]["command"], "x");
+        assert_eq!(doc["servers"]["ripsem"]["type"], "stdio");
+        assert_eq!(
+            doc["servers"]["ripsem"]["args"],
+            json!(["mcp", "--path", "${workspaceFolder}"])
+        );
+        assert!(doc.get("mcpServers").is_none());
+        let note =
+            std::fs::read_to_string(dir.path().join(".github/copilot-instructions.md")).unwrap();
+        assert!(note.starts_with("## Code search\n") && note.contains("`search` tool"));
     }
 
     #[test]
