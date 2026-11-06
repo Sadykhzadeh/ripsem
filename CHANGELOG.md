@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- A hit printed in a terminal shows the lines that name the query's words
+  when they come after its first three lines. It always showed the first
+  three, often a signature or a doc comment above the code that matched.
+- A hit below the first three, whose snippet is 400 bytes of its code, starts
+  that snippet where the query's words are when they come later in the
+  chunk. A long function matched near its end showed only its start.
+
 ## 0.2.0 (2026-11-01)
 
 - A doc comment or attribute stays in the chunk of the declaration below it.
