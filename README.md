@@ -71,7 +71,7 @@ ranges.
     ```
 
 3. Hand the same search to your coding agent with `ripsem install claude-code`,
-   `ripsem install cursor` or `ripsem install vscode` (see
+   `ripsem install cursor`, `ripsem install vscode` or `ripsem install gemini` (see
    [below](#use-with-coding-agents)).
 
 The first search in a git repository, or in a directory where `ripsem init`
