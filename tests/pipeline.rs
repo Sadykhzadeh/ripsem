@@ -970,3 +970,43 @@ fn a_hit_deep_in_a_long_line_shows_that_part_of_it() {
         hits[0].snippet
     );
 }
+
+#[test]
+fn a_hit_in_a_long_line_shows_the_words_it_matched() {
+    let dir = TempDir::new();
+    let pad: String = (0..300).map(|n| format!("a{n},")).collect();
+    dir.write(
+        "bundle.js",
+        &format!("var t=[{pad}zebracrossing,{pad}];{pad}"),
+    );
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let hits = pipeline::search(&config, "zebracrossing", 3).unwrap();
+    assert_eq!(hits[0].path, "bundle.js");
+    assert!(
+        hits[0].snippet.contains("zebracrossing"),
+        "{}",
+        hits[0].snippet
+    );
+    assert!(hits[0].snippet.len() < 500, "{}", hits[0].snippet.len());
+}
+
+#[test]
+fn a_later_piece_of_a_long_line_shows_the_words_it_matched() {
+    let dir = TempDir::new();
+    let pad: String = (0..300).map(|n| format!("a{n},")).collect();
+    dir.write(
+        "bundle.js",
+        &format!("var t=[{pad}{pad}{pad}{pad}zebracrossing,{pad}];"),
+    );
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let hits = pipeline::search(&config, "zebracrossing", 3).unwrap();
+    assert!(
+        hits[0].snippet.contains("zebracrossing"),
+        "{}",
+        hits[0].snippet
+    );
+}

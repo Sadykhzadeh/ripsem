@@ -815,6 +815,7 @@ impl Searcher {
                 true => self.code(record, &hit),
                 false => self.near(record, &hit, words),
             };
+            let shown = shown.or_else(|| self.piece(h.record_idx, &hit, words));
             if let Some(shown) = shown {
                 hit.snippet = shown;
             }
@@ -852,6 +853,44 @@ impl Searcher {
             0 => shown,
             _ => format!("…\n{shown}"),
         })
+    }
+
+    /// A piece of a line too long for one chunk shows the stretch around the
+    /// query's words, when they lie beyond the start the index kept of it.
+    fn piece(&self, record_idx: usize, hit: &SearchHit, words: &[String]) -> Option<String> {
+        let record = &self.index.records[record_idx];
+        if words.is_empty()
+            || !record.snippet.ends_with('…')
+            || record.start_line != record.end_line
+            || (hit.start_line, hit.end_line) != (record.start_line, record.end_line)
+            || best_line(&[record.snippet.as_str()], words).is_some()
+        {
+            return None;
+        }
+        let bytes = std::fs::read(self.root.join(&record.path)).ok()?;
+        if fingerprint::content_hash(&bytes) != record.file_hash {
+            return None;
+        }
+        let text = walk::decode_text(&bytes);
+        let line = text.lines().nth(record.start_line.checked_sub(1)?)?;
+        if line.len() <= chunk::MAX_CHUNK_BYTES {
+            return None;
+        }
+        let before = self.index.records[..record_idx]
+            .iter()
+            .rev()
+            .take_while(|r| r.path == record.path && r.start_line == record.start_line)
+            .count();
+        let mut rest = line;
+        let mut pieces = Vec::new();
+        while !rest.is_empty() {
+            let (piece, tail) = rest.split_at(chunk::cut_at(rest));
+            if !chunk::is_blank(piece) {
+                pieces.push(piece);
+            }
+            rest = tail;
+        }
+        around(pieces.get(before)?, words, SNIPPET_BYTES)
     }
 
     /// A record holding the declaration the query names is reported as that
@@ -1047,6 +1086,38 @@ pub(crate) fn best_line(lines: &[&str], words: &[String]) -> Option<usize> {
         }
     }
     best
+}
+
+/// About `max` bytes of `text` around the place its window holds most of
+/// `words`, the first on a tie, cut on character boundaries and marked with
+/// an ellipsis where text was left out. `None` when no word is in it.
+fn around(text: &str, words: &[String], max: usize) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let back = max / 4;
+    let window = |at: usize| {
+        let mut from = at.saturating_sub(back);
+        while !text.is_char_boundary(from) {
+            from += 1;
+        }
+        let mut to = (from + max).min(text.len());
+        while !text.is_char_boundary(to) {
+            to -= 1;
+        }
+        (from, to)
+    };
+    let (from, to) = words
+        .iter()
+        .filter_map(|w| lower.find(w.as_str()))
+        .map(window)
+        .max_by_key(|&(from, to)| {
+            let named = words
+                .iter()
+                .filter(|w| lower[from..to].contains(w.as_str()));
+            (named.count(), std::cmp::Reverse(from))
+        })?;
+    let head = if from > 0 { "…" } else { "" };
+    let tail = if to < text.len() { "…" } else { "" };
+    Some(format!("{head}{}{tail}", &text[from..to]))
 }
 
 fn truncate(s: &str, max: usize) -> String {

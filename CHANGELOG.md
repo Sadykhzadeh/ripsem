@@ -14,6 +14,9 @@
 - A hit below the first three, whose snippet is 400 bytes of its code, starts
   that snippet where the query's words are when they come later in the
   chunk. A long function matched near its end showed only its start.
+- A hit in a piece of a line too long for one chunk, such as a minified
+  bundle, shows about 400 bytes around the query's words instead of the first
+  400 bytes of the piece.
 
 ## 0.2.0 (2026-11-01)
 

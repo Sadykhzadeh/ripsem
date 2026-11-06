@@ -127,7 +127,7 @@ fn split_long_lines(chunk: Chunk) -> Vec<Chunk> {
 /// Where to cut a line for a piece of at most [`MAX_CHUNK_BYTES`]: on a
 /// character boundary, after punctuation or a space when one is near, so a
 /// word is not split between two pieces.
-fn cut_at(line: &str) -> usize {
+pub(crate) fn cut_at(line: &str) -> usize {
     if line.len() <= MAX_CHUNK_BYTES {
         return line.len();
     }
