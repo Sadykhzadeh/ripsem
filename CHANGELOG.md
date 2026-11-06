@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `ripsem install gemini` adds the server to `.gemini/settings.json` for
+  Gemini CLI, keeping the other settings there, and the note on when to use
+  it to `GEMINI.md`.
+- `ripsem install vscode` adds the server to `.vscode/mcp.json` for GitHub
+  Copilot in VS Code and the note on when to use it to
+  `.github/copilot-instructions.md`.
 - A hit printed in a terminal shows the lines that name the query's words
   when they come after its first three lines. It always showed the first
   three, often a signature or a doc comment above the code that matched.
