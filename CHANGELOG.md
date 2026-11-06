@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `ripsem install gemini` adds the server to `.gemini/settings.json` for
+  Gemini CLI, keeping the other settings there, and the note on when to use
+  it to `GEMINI.md`.
 - `ripsem install vscode` adds the server to `.vscode/mcp.json` for GitHub
   Copilot in VS Code and the note on when to use it to
   `.github/copilot-instructions.md`.

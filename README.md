@@ -34,8 +34,8 @@ ranges.
 - **Answers are declarations.** A hit is a whole function or type, named after
   it, in 17 languages, so a definition reads apart from a call site. A search
   for a name lands on its declaration, with its own lines and label.
-- **Made for coding agents.** `ripsem install claude-code`, `cursor` or
-  `vscode` adds an MCP server that keeps its index current while the agent
+- **Made for coding agents.** `ripsem install claude-code`, `cursor`, `vscode`
+  or `gemini` adds an MCP server that keeps its index current while the agent
   edits, and tells the agent when to use it.
 - **Offline.** No account, no API key, no service. The model downloads once and
   runs on your CPU, and the index is one file inside your repository.
@@ -241,6 +241,7 @@ The model downloads once on first use, then everything is offline.
 ripsem install claude-code        # .mcp.json and a note in CLAUDE.md
 ripsem install cursor             # .cursor/mcp.json and a rule in .cursor/rules
 ripsem install vscode             # .vscode/mcp.json and .github/copilot-instructions.md
+ripsem install gemini             # .gemini/settings.json and a note in GEMINI.md
 ```
 
 `install` registers the server, writes `.ripsem/config.toml`, and adds a short

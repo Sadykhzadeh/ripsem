@@ -173,6 +173,8 @@ pub enum InstallCmd {
     Cursor,
     /// Add ripsem to .vscode/mcp.json for GitHub Copilot in VS Code.
     Vscode,
+    /// Add ripsem to .gemini/settings.json for Gemini CLI.
+    Gemini,
 }
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -748,6 +750,7 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
         InstallCmd::ClaudeCode => "Claude Code",
         InstallCmd::Cursor => "Cursor",
         InstallCmd::Vscode => "VS Code",
+        InstallCmd::Gemini => "Gemini CLI",
     };
     add_server(root, &target)?;
     add_note(root, &target)?;
@@ -770,6 +773,10 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
         ),
         InstallCmd::Vscode => (
             root.join(".github/copilot-instructions.md"),
+            format!("## Code search\n\n{}\n", mcp::INSTRUCTIONS),
+        ),
+        InstallCmd::Gemini => (
+            root.join("GEMINI.md"),
             format!("## Code search\n\n{}\n", mcp::INSTRUCTIONS),
         ),
     };
@@ -802,6 +809,7 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
         InstallCmd::ClaudeCode => (".mcp.json", "mcpServers"),
         InstallCmd::Cursor => (".cursor/mcp.json", "mcpServers"),
         InstallCmd::Vscode => (".vscode/mcp.json", "servers"),
+        InstallCmd::Gemini => (".gemini/settings.json", "mcpServers"),
     };
     let path = root.join(rel);
     if let Some(parent) = path.parent() {
@@ -847,11 +855,14 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
         }
         Some(_) => {}
     }
-    // Claude Code starts a project's server in the project. Cursor and VS Code
-    // do not say where they start one, but expand `${workspaceFolder}`, which
-    // keeps the file free of this machine's paths.
+    // Claude Code and Gemini CLI start a project's server in the directory
+    // they run in. Cursor and VS Code do not say where they start one, but
+    // expand `${workspaceFolder}`, which keeps the file free of this machine's
+    // paths.
     let entry = match target {
-        InstallCmd::ClaudeCode => json!({ "command": "ripsem", "args": ["mcp"] }),
+        InstallCmd::ClaudeCode | InstallCmd::Gemini => {
+            json!({ "command": "ripsem", "args": ["mcp"] })
+        }
         InstallCmd::Cursor => json!({
             "command": "ripsem",
             "args": ["mcp", "--path", "${workspaceFolder}"],
@@ -1235,6 +1246,24 @@ mod tests {
         assert!(doc.get("mcpServers").is_none());
         let note =
             std::fs::read_to_string(dir.path().join(".github/copilot-instructions.md")).unwrap();
+        assert!(note.starts_with("## Code search\n") && note.contains("`search` tool"));
+    }
+
+    #[test]
+    fn install_gemini_keeps_the_other_settings() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write(".gemini/settings.json", "{\n  \"theme\": \"Dracula\"\n}\n");
+        cmd_install(dir.path(), InstallCmd::Gemini).unwrap();
+        let doc: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".gemini/settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["theme"], "Dracula");
+        assert_eq!(
+            doc["mcpServers"]["ripsem"],
+            json!({ "command": "ripsem", "args": ["mcp"] })
+        );
+        let note = std::fs::read_to_string(dir.path().join("GEMINI.md")).unwrap();
         assert!(note.starts_with("## Code search\n") && note.contains("`search` tool"));
     }
 
