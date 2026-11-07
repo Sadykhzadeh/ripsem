@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `ripsem mcp` keeps watching for changes when the first index it builds
+  fails, such as when a virus scanner holds the index file open. It stopped
+  for the rest of the session, which went on answering from an index that was
+  missing or out of date. `ripsem watch` still exits on that error.
+- A file saved as UTF-32 with a byte order mark is read as text. It was
+  taken for UTF-16, so every character was followed by a NUL and nothing in
+  it could be found. Run `ripsem index --force` to read such a file again.
 - `ripsem install gemini` adds the server to `.gemini/settings.json` for
   Gemini CLI, keeping the other settings there, and the note on when to use
   it to `GEMINI.md`.

@@ -20,7 +20,7 @@ pub fn indexing() -> bool {
 }
 
 pub fn run(config: Config) -> Result<()> {
-    keep_current(config, |line| eprintln!("{line}"))
+    keep_current(config, true, |line| eprintln!("{line}"))
 }
 
 /// Keeps the index current from a thread of its own, for `ripsem mcp`: an
@@ -28,13 +28,16 @@ pub fn run(config: Config) -> Result<()> {
 /// answer from code that no longer exists.
 pub fn spawn(config: Config) {
     std::thread::spawn(move || {
-        if let Err(e) = keep_current(config, |line| tracing::info!("{line}")) {
+        if let Err(e) = keep_current(config, false, |line| tracing::info!("{line}")) {
             tracing::warn!("stopped keeping the index current: {e:#}");
         }
     });
 }
 
-fn keep_current(mut config: Config, report: impl Fn(String)) -> Result<()> {
+/// `strict` ends the watch when the first index fails, as a command run by hand
+/// should, where a server answering an agent keeps watching and retries on the
+/// next change, as it does after any later failure.
+fn keep_current(mut config: Config, strict: bool, report: impl Fn(String)) -> Result<()> {
     // Watching starts first, so an edit made while the first index is built
     // still reaches it.
     let (tx, rx) = channel();
@@ -43,12 +46,15 @@ fn keep_current(mut config: Config, report: impl Fn(String)) -> Result<()> {
     })?;
     watcher.watch(&config.root, RecursiveMode::Recursive)?;
 
-    let stats = index(&config)?;
-    report(format!(
-        "indexed {} ({}); watching for changes",
-        plural(stats.files, "file"),
-        plural(stats.chunks, "chunk")
-    ));
+    match index(&config) {
+        Ok(stats) => report(format!(
+            "indexed {} ({}); watching for changes",
+            plural(stats.files, "file"),
+            plural(stats.chunks, "chunk")
+        )),
+        Err(e) if strict => return Err(e),
+        Err(e) => report(format!("indexing failed, still watching: {e:#}")),
+    }
 
     while let Ok(first) = rx.recv() {
         let mut burst = Burst::default();
@@ -174,5 +180,37 @@ mod tests {
             Event::new(EventKind::Create(CreateKind::Folder)).add_path(src.clone())
         ));
         assert_eq!(burst.paths, [src]);
+    }
+
+    /// A scanner holding the index file open fails a save, and the server
+    /// that watches for an agent's edits must not stop watching for it.
+    #[test]
+    fn a_first_index_that_fails_does_not_end_the_watch() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("a.rs", "fn a() {}\n");
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            backend: crate::config::Backend::Hash,
+            ..Default::default()
+        };
+        config.create_data_dir().unwrap();
+        // A rename cannot replace a directory, so saving the index fails.
+        std::fs::create_dir(config.index_path()).unwrap();
+
+        let (tx, reports) = channel();
+        std::thread::spawn(move || {
+            let _ = keep_current(config, false, |line| {
+                let _ = tx.send(line);
+            });
+        });
+        let wait = Duration::from_secs(20);
+        let first = reports.recv_timeout(wait).expect("a report of the failure");
+        assert!(first.contains("failed"), "{first}");
+
+        std::fs::remove_dir(dir.path().join(".ripsem/index.bin")).unwrap();
+        dir.write("b.rs", "fn b() {}\n");
+        let next = reports.recv_timeout(wait).expect("a report of the reindex");
+        assert!(next.starts_with("reindexed"), "{next}");
+        assert!(dir.path().join(".ripsem/index.bin").is_file());
     }
 }
