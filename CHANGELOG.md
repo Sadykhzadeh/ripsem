@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A `ripsem index` that finds nothing to do, and the update every `ripsem
+  search` starts with, take about 600 ms instead of 1 050 ms on 13.8k files
+  (169 MB, 211k chunks) with the hashing backend. The size of a file comes
+  from the directory listing, each file is read once to check that it is text
+  and to hash it, the old index is decoded while the tree is walked, the
+  index is left to the exit instead of being freed, and the terms of a chunk
+  are lowered and split without allocating for plain ASCII. Indexes are
+  unchanged.
 - `ripsem mcp` keeps watching for changes when the first index it builds
   fails, such as when a virus scanner holds the index file open. It stopped
   for the rest of the session, which went on answering from an index that was
