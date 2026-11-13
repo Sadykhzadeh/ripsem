@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- A `ripsem index` that finds nothing to do, and the update every `ripsem
+  search` starts with, no longer read and hash every file. `index.bin` keeps
+  each file's size and modification time, and a file that still has both is
+  taken at the hash stored for it, the way git trusts its index. A binary or
+  blank file is remembered too. A no-op `index` takes about 465 ms instead of
+  520 ms and a `search` about 590 ms instead of 670 ms, on 17k files (169 MB,
+  260k chunks) with the hashing backend, and the 137 MB the check read is no
+  longer read. The trade-off: a tool that rewrites a file and keeps both its
+  size and its modification time is not noticed. Set `RIPSEM_HASH_ALL=1` for a
+  run, or run `ripsem index --force`, to hash every file. A file written in the
+  last two seconds before a run is hashed again on the next one. The first run
+  after the update hashes every file once to store them.
 - The index is read faster and takes less memory. A record no longer owns five
   allocations of its own: `index.bin` stores one column per field, and loading
   hands every record a range of a few shared buffers. Reading the index takes
