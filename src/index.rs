@@ -137,6 +137,9 @@ pub struct Index {
     pub noise_floor: Option<f32>,
     /// Chunks embedded since the noise floor was measured.
     pub embedded_since_floor: usize,
+    /// Read from a file in an earlier layout, which costs a conversion on
+    /// every load until the index is written again. Not stored.
+    pub outdated: bool,
 }
 
 /// An index file read as far as its layout: the records are not built yet.
@@ -205,6 +208,7 @@ impl Index {
             ann: None,
             noise_floor: None,
             embedded_since_floor: 0,
+            outdated: false,
         }
     }
 
@@ -221,6 +225,14 @@ impl Index {
     #[cfg(test)]
     fn decode(bytes: &[u8]) -> Result<Self> {
         Decoded::parse(bytes)?.into_index()
+    }
+
+    /// Writes the index the way the version before this one did.
+    #[cfg(test)]
+    pub(crate) fn save_in_previous_format(&self, path: &Path) {
+        let body = bitcode::encode(&legacy::Index::from(self));
+        let bytes = [MAGIC.as_slice(), &LEGACY_VERSION.to_le_bytes(), &body].concat();
+        std::fs::write(path, bytes).unwrap();
     }
 
     pub(crate) fn encode_body(&self) -> Result<Vec<u8>> {
@@ -1245,7 +1257,8 @@ mod tests {
     fn an_index_in_the_previous_format_still_loads() {
         let index = varied_index();
         let old = bitcode::encode(&legacy::Index::from(&index));
-        let loaded = Index::decode(&with_header(LEGACY_VERSION, &old)).unwrap();
+        let mut loaded = Index::decode(&with_header(LEGACY_VERSION, &old)).unwrap();
+        assert!(std::mem::take(&mut loaded.outdated));
         assert_same(&index, &loaded);
 
         let dir = TempDir::new();

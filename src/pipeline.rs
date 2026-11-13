@@ -157,7 +157,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     let mut embedder: Option<Box<dyn embed::Embedder>> = None;
     let dims = config.dims();
     // The walk waits on the disk and the decode on one core, so they overlap.
-    let (files, prev) = rayon::join(
+    let (files, mut prev) = rayon::join(
         || walk::collect_hashed(config),
         || match !force && config.index_path().exists() {
             true => Index::load(&config.index_path()).ok(),
@@ -166,7 +166,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     );
     let files = files?;
     let chunking = chunk::Chunking::of(config);
-    if let Some(index) = &prev
+    if let Some(index) = &mut prev
         && index.dims == dims
         && index.built_for(config.backend, &config.model)
         && index.chunking == chunking
@@ -175,6 +175,10 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
         && let Some(indexed) = nothing_changed(config, &files, index)
     {
         config.create_data_dir()?;
+        // Once, so the next load does not convert the old layout again.
+        if std::mem::take(&mut index.outdated) {
+            index.save(&config.index_path())?;
+        }
         let stats = IndexStats {
             files: indexed,
             embedded: 0,
@@ -1428,5 +1432,27 @@ mod tests {
         assert_eq!(relative(Path::new("a"), Path::new("a/b\\c")), "b/c");
         // Outside the root: returned as it is.
         assert_eq!(relative(root, Path::new("/other/x.rs")), "/other/x.rs");
+    }
+
+    #[test]
+    fn an_index_in_the_previous_format_is_written_again_once() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("a.rs", "alpha bravo charlie delta echo foxtrot");
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        index_repo(&config, false).unwrap();
+        let path = config.index_path();
+        Index::load(&path).unwrap().save_in_previous_format(&path);
+        assert!(Index::load(&path).unwrap().outdated);
+
+        let again = index_repo(&config, false).unwrap();
+        assert_eq!((again.reused, again.embedded), (1, 0));
+        let current = std::fs::read(&path).unwrap();
+        assert!(!Index::load(&path).unwrap().outdated);
+
+        index_repo(&config, false).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), current);
     }
 }

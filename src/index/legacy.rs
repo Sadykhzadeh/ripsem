@@ -60,6 +60,7 @@ impl From<Index> for Current {
             ann: old.ann,
             noise_floor: old.noise_floor,
             embedded_since_floor: old.embedded_since_floor,
+            outdated: true,
         }
     }
 }

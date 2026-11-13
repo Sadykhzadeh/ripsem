@@ -230,6 +230,7 @@ impl Stored {
             ann,
             noise_floor,
             embedded_since_floor,
+            outdated: false,
         })
     }
 }
