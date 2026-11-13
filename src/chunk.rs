@@ -17,7 +17,7 @@ pub struct Chunk {
 
 /// Changes whenever the same file and settings would give other chunks, so an
 /// index cut by an older ripsem is cut again. A test pins it to the output.
-const REVISION: u32 = 7;
+const REVISION: u32 = 8;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -56,6 +56,12 @@ pub fn chunk_source(path: &Path, text: &str, config: &Config) -> Vec<Chunk> {
 }
 
 fn cut(path: &Path, text: &str, config: &Config) -> Vec<Chunk> {
+    if crate::markdown::is_markdown(path)
+        && let Some(chunks) = crate::markdown::chunk(text, config.max_chunk_lines)
+        && !chunks.is_empty()
+    {
+        return chunks;
+    }
     #[cfg(feature = "treesitter")]
     if let Some(spec) = crate::lang::detect(path)
         && let Some(chunks) =
@@ -64,8 +70,6 @@ fn cut(path: &Path, text: &str, config: &Config) -> Vec<Chunk> {
     {
         return chunks;
     }
-    #[cfg(not(feature = "treesitter"))]
-    let _ = path;
     chunk_file(text, config.chunk_lines, config.chunk_overlap)
 }
 
@@ -222,8 +226,15 @@ mod tests {
         let python =
             "def load(path):\n    \"\"\"Read a file.\"\"\"\n    return open(path).read()\n";
         let text: String = (1..=90).map(|n| format!("note {n}\n")).collect();
+        let docs = "# Setup\n\n## Install\nrun it\nthen this\n\nSetext\n------\n\
+                    ```\n# kept\n```\nafter\nthe\nfence\n";
         let mut seen = String::new();
-        for (file, src) in [("a.rs", rust), ("b.py", python), ("c.txt", text.as_str())] {
+        for (file, src) in [
+            ("a.rs", rust),
+            ("b.py", python),
+            ("c.txt", text.as_str()),
+            ("d.md", docs),
+        ] {
             for c in chunk_source(Path::new(file), src, &config) {
                 let label = c.symbol.as_ref().map(Symbol::label).unwrap_or_default();
                 seen.push_str(&format!(
@@ -241,12 +252,12 @@ mod tests {
             }
         }
         let expected = match cfg!(feature = "treesitter") {
-            true => 0xa4a9_1e7c_13de_e71c,
-            false => 0x23ab_773d_1824_385f,
+            true => 0xb1ec_0f31_a3cb_5626,
+            false => 0x6725_02a7_559a_6bae,
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (7, expected),
+            (8, expected),
             "{seen}"
         );
     }
