@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ripsem::config::{Backend, Config};
 use ripsem::pipeline;
+use ripsem::scope::Scope;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -269,12 +270,76 @@ fn scoped_search_limits_results_to_a_subdirectory() {
     let searcher = pipeline::open(&config).unwrap();
 
     let hits = searcher
-        .query_scoped("verify password session token", 10, Some("src"))
+        .query_scoped(
+            "verify password session token",
+            10,
+            Some(&Scope::under("src")),
+        )
         .unwrap();
     assert!(!hits.is_empty());
     assert!(hits.iter().all(|h| h.path.starts_with("src/")));
 }
 
+fn scope(prefix: Option<&str>, langs: &[&str]) -> Scope {
+    let langs: Vec<String> = langs.iter().map(|l| l.to_string()).collect();
+    Scope::new(prefix, &langs).unwrap().unwrap()
+}
+
+/// Many files of two kinds that all fit the query, the one that ranks first
+/// written to fit it best.
+fn mixed_tree(dir: &TempDir) {
+    std::fs::create_dir_all(dir.path.join("src")).unwrap();
+    std::fs::create_dir_all(dir.path.join("docs")).unwrap();
+    for i in 0..6 {
+        dir.write(
+            &format!("docs/auth{i}.md"),
+            "verify password create session token",
+        );
+        dir.write(
+            &format!("src/auth{i}.rs"),
+            &format!("fn auth{i}() {{ verify password session }}"),
+        );
+    }
+    dir.write("src/notes.txt", "verify password create session token");
+}
+
+#[test]
+fn a_language_limits_results_and_k_counts_what_is_left() {
+    let dir = TempDir::new();
+    mixed_tree(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let query = "verify password create session token";
+
+    let open = pipeline::search_scoped(&config, query, 3, None).unwrap();
+    assert!(open.iter().all(|h| !h.path.ends_with(".rs")), "{open:?}");
+
+    let rust = scope(None, &["rust"]);
+    let hits = pipeline::search_scoped(&config, query, 3, Some(&rust)).unwrap();
+    assert_eq!(hits.len(), 3);
+    assert!(hits.iter().all(|h| h.path.ends_with(".rs")), "{hits:?}");
+
+    let several = scope(None, &["rs,txt"]);
+    let hits = pipeline::search_scoped(&config, query, 20, Some(&several)).unwrap();
+    assert!(hits.iter().any(|h| h.path.ends_with(".txt")));
+    assert!(hits.iter().all(|h| !h.path.ends_with(".md")), "{hits:?}");
+}
+
+#[test]
+fn a_language_that_matches_no_indexed_file_is_reported() {
+    let dir = TempDir::new();
+    mixed_tree(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let go = scope(Some("src"), &["go"]);
+    let err = pipeline::search_scoped(&config, "verify password", 5, Some(&go)).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("no indexed file matches path 'src' and lang go"),
+        "{err}"
+    );
+}
 #[test]
 fn a_searcher_answers_the_same_after_warming_the_model() {
     let dir = TempDir::new();
@@ -310,8 +375,13 @@ fn search_scoped_convenience_limits_results_to_a_prefix() {
     let config = config_for(&dir.path);
     pipeline::index_repo(&config, false).unwrap();
 
-    let scoped =
-        pipeline::search_scoped(&config, "verify password session token", 10, Some("src")).unwrap();
+    let scoped = pipeline::search_scoped(
+        &config,
+        "verify password session token",
+        10,
+        Some(&Scope::under("src")),
+    )
+    .unwrap();
     assert!(!scoped.is_empty());
     assert!(scoped.iter().all(|h| h.path.starts_with("src/")));
 
@@ -320,7 +390,8 @@ fn search_scoped_convenience_limits_results_to_a_prefix() {
     assert!(all.iter().any(|h| h.path.starts_with("docs/")));
 
     // A scope that matches no file is a mistake to report, not an empty answer.
-    let err = pipeline::search_scoped(&config, "verify password", 10, Some("srcc")).unwrap_err();
+    let err = pipeline::search_scoped(&config, "verify password", 10, Some(&Scope::under("srcc")))
+        .unwrap_err();
     assert!(
         err.to_string().contains("nothing is indexed under 'srcc'"),
         "{err}"

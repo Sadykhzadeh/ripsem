@@ -12,6 +12,7 @@ use crate::cli::show_path;
 use crate::config::Backend;
 use crate::lexical::{TermHash, TermVector, Weights};
 use crate::quant::{self, QuantizedVector};
+use crate::scope::Scope;
 use crate::symbol::{Declaration, Symbol};
 
 /// Changes whenever the bytes of an index would, including on a bitcode
@@ -210,9 +211,9 @@ impl Index {
             })
     }
 
-    /// Whether any indexed file lies under the repo-relative `prefix`.
-    pub fn covers(&self, prefix: &str) -> bool {
-        self.records.iter().any(|r| path_in_scope(&r.path, prefix))
+    /// Whether any indexed file is inside `scope`.
+    pub fn covers(&self, scope: &Scope) -> bool {
+        self.records.iter().any(|r| scope.admits(&r.path))
     }
 
     /// Keys are borrowed, so a file's path is not copied once per chunk.
@@ -239,8 +240,8 @@ impl Index {
         self.search_scoped(query, k, None)
     }
 
-    pub fn search_scoped(&self, query: &[f32], k: usize, prefix: Option<&str>) -> Vec<Hit> {
-        self.search_fused(query, &[], &[], k, prefix)
+    pub fn search_scoped(&self, query: &[f32], k: usize, scope: Option<&Scope>) -> Vec<Hit> {
+        self.search_fused(query, &[], &[], k, scope)
     }
 
     /// `names` are the query's [`crate::lexical::query_names`].
@@ -250,11 +251,11 @@ impl Index {
         terms: &[TermHash],
         names: &[TermHash],
         k: usize,
-        prefix: Option<&str>,
+        scope: Option<&Scope>,
     ) -> Vec<Hit> {
         let depth = candidate_depth(k);
-        let dense = self.dense_ranking(query, depth, prefix);
-        let lexical = self.lexical_ranking(terms, depth, prefix);
+        let dense = self.dense_ranking(query, depth, scope);
+        let lexical = self.lexical_ranking(terms, depth, scope);
         self.fuse(&dense, &lexical, query, names, k)
     }
 
@@ -273,12 +274,12 @@ impl Index {
         self.fuse(dense, &lexical, query, names, k)
     }
 
-    pub fn dense_ranking(&self, query: &[f32], depth: usize, prefix: Option<&str>) -> Vec<Hit> {
+    pub fn dense_ranking(&self, query: &[f32], depth: usize, scope: Option<&Scope>) -> Vec<Hit> {
         let mut ranked: Vec<Hit> = self
             .records
             .par_iter()
             .enumerate()
-            .filter(|(_, r)| prefix.is_none_or(|p| path_in_scope(&r.path, p)))
+            .filter(|(_, r)| scope.is_none_or(|s| s.admits(&r.path)))
             .map(|(i, r)| Hit {
                 score: quant::dot(&r.vector, query),
                 record_idx: i,
@@ -292,7 +293,7 @@ impl Index {
         &self,
         terms: &[TermHash],
         depth: usize,
-        prefix: Option<&str>,
+        scope: Option<&Scope>,
     ) -> LexicalRanking {
         if terms.is_empty() || self.records.is_empty() {
             return LexicalRanking::empty();
@@ -300,8 +301,8 @@ impl Index {
         let presence: Vec<u64> = self
             .records
             .par_iter()
-            .map(|r| match prefix {
-                Some(p) if !path_in_scope(&r.path, p) => 0,
+            .map(|r| match scope {
+                Some(s) if !s.admits(&r.path) => 0,
                 _ => r.terms.presence(terms),
             })
             .collect();
@@ -564,7 +565,7 @@ pub fn embedded_by(backend: Backend, model: &str) -> String {
     format!("{model} ({backend:?} backend)")
 }
 
-fn path_in_scope(path: &str, prefix: &str) -> bool {
+pub(crate) fn path_in_scope(path: &str, prefix: &str) -> bool {
     scope_matches(path, prefix, cfg!(windows))
 }
 
@@ -649,7 +650,7 @@ mod tests {
             .push(record("src/embed/b.rs", vec![1.0, 0.0, 0.0]));
         index.records.push(record("docs/c.md", vec![1.0, 0.0, 0.0]));
 
-        let hits = index.search_scoped(&[1.0, 0.0, 0.0], 10, Some("src"));
+        let hits = index.search_scoped(&[1.0, 0.0, 0.0], 10, Some(&Scope::under("src")));
         let paths: Vec<&str> = hits
             .iter()
             .map(|h| index.records[h.record_idx].path.as_str())

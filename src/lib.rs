@@ -6,13 +6,13 @@ pub mod config;
 pub mod embed;
 pub mod fingerprint;
 pub mod index;
-#[cfg(feature = "treesitter")]
 pub mod lang;
 pub mod lexical;
 pub mod mcp;
 pub mod model;
 pub mod pipeline;
 pub mod quant;
+pub mod scope;
 #[cfg(feature = "treesitter")]
 pub mod semantic;
 pub mod symbol;

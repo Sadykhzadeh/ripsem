@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use crate::config::{Backend, Config};
 use crate::index::{self, Index};
+use crate::scope::Scope;
 use crate::{embed, mcp, model, pipeline, walk, watch};
 
 /// Prints a line to stdout. A reader that has gone away, as `head` does once it
@@ -100,6 +101,11 @@ pub enum Command {
         /// error.
         #[arg(long = "in", value_name = "PREFIX")]
         within: Option<String>,
+        /// Keep only hits in files of this language, by name or extension:
+        /// `--lang rust`, `--lang py`, `--lang toml`. Repeat the flag or
+        /// separate values with commas for several.
+        #[arg(long, value_name = "LANG")]
+        lang: Vec<String>,
         /// Number of snippet lines to print per hit in the human output: 3 in
         /// a terminal, and the whole snippet when the output goes to another
         /// program, such as an agent's shell tool. `0` prints just the
@@ -202,6 +208,7 @@ pub fn run(cli: Cli) -> Result<()> {
             limit,
             json,
             within,
+            lang,
             context,
             min_score,
             count_by_file,
@@ -211,6 +218,7 @@ pub fn run(cli: Cli) -> Result<()> {
             limit,
             json,
             within.as_deref(),
+            &lang,
             context,
             min_score,
             count_by_file,
@@ -570,6 +578,7 @@ fn cmd_search(
     limit: usize,
     as_json: bool,
     within: Option<&str>,
+    langs: &[String],
     context: Option<usize>,
     min_score: Option<f32>,
     count_by_file: bool,
@@ -584,7 +593,8 @@ fn cmd_search(
         Some(raw) => mcp::scope_prefix(&from_here(raw, &config.root), &config.root)?,
         None => None,
     };
-    let hits = pipeline::search_scoped(&config, query, limit, prefix.as_deref())?;
+    let scope = Scope::new(prefix.as_deref(), langs)?;
+    let hits = pipeline::search_scoped(&config, query, limit, scope.as_ref())?;
     let hits = apply_min_score(hits, min_score);
     print_hits(
         &hits,

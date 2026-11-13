@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 use crate::config::Config;
 use crate::pipeline;
+use crate::scope::Scope;
 
 /// Protocol revisions this server speaks, newest first. Between them they
 /// change transports, authorization and client features, and add optional
@@ -409,20 +410,18 @@ fn handle_call(
         query,
         limit,
         min_score,
-        prefix,
+        scope,
     } = match parse_call(&args, &config.root) {
         Ok(call) => call,
         Err(e) => return failed(id, &e),
     };
 
     let result = match session {
-        Some(s) => s.query_scoped(query, limit, prefix.as_deref()),
+        Some(s) => s.query_scoped(query, limit, scope.as_ref()),
         None if crate::watch::indexing() => Err(anyhow!(
             "the index is being built in the background; search again shortly"
         )),
-        None => {
-            pipeline::open(config).and_then(|s| s.query_scoped(query, limit, prefix.as_deref()))
-        }
+        None => pipeline::open(config).and_then(|s| s.query_scoped(query, limit, scope.as_ref())),
     };
 
     match result {
@@ -442,7 +441,7 @@ struct Call<'a> {
     query: &'a str,
     limit: usize,
     min_score: Option<f32>,
-    prefix: Option<String>,
+    scope: Option<Scope>,
 }
 
 /// Arguments that do not fit the input schema are a tool error, which the
@@ -492,7 +491,7 @@ fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
         query,
         limit,
         min_score,
-        prefix,
+        scope: Scope::new(prefix.as_deref(), &[])?,
     })
 }
 
