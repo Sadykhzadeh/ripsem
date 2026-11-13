@@ -168,6 +168,16 @@ impl Config {
         Ok(cfg)
     }
 
+    /// [`Config::load`] again, for a process that keeps running: what it was
+    /// started with and the file does not hold, such as `hash_all`, carries
+    /// over from `running`.
+    pub fn load_again(root: &Path, running: &Config) -> Result<Self> {
+        Ok(Config {
+            hash_all: running.hash_all,
+            ..Self::load(root)?
+        })
+    }
+
     /// A size of 0 would not fail anywhere else: a file limit of 0 indexes
     /// nothing, and a window of 0 lines cuts a chunk for every line.
     fn check_sizes(&self) -> Result<()> {
@@ -193,6 +203,28 @@ impl Config {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn a_config_read_again_keeps_what_the_run_was_started_with() {
+        let dir = TempDir::new();
+        dir.write(
+            ".ripsem/config.toml",
+            "chunk_lines = 20
+",
+        );
+        let running = Config {
+            hash_all: true,
+            ..Config::load(dir.path()).unwrap()
+        };
+        dir.write(
+            ".ripsem/config.toml",
+            "chunk_lines = 30
+",
+        );
+        let again = Config::load_again(dir.path(), &running).unwrap();
+        assert_eq!((again.chunk_lines, again.hash_all), (30, true));
+        assert!(!Config::load(dir.path()).unwrap().hash_all);
+    }
 
     #[test]
     fn a_misspelt_key_is_an_error() {

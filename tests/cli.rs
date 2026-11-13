@@ -798,3 +798,79 @@ fn a_regex_that_does_not_parse_is_an_error_before_any_search() {
         assert_eq!(message.trim().lines().count(), 1, "{pattern}: {message}");
     }
 }
+
+fn ripsem_hashing(cwd: &Path, args: &[&str], value: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_ripsem"))
+        .args(args)
+        .current_dir(cwd)
+        .env("RIPSEM_HASH_ALL", value)
+        .output()
+        .unwrap()
+}
+
+/// A file rewritten with the size and the time it had is not seen by a run
+/// that trusts the stat the index stored. `RIPSEM_HASH_ALL=1` and `index
+/// --force` read every file, for `status` as for `index`.
+#[test]
+fn every_file_is_hashed_when_asked_and_not_otherwise() {
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+    let set_modified = |dir: &TempDir, name: &str| {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.path.join(name))
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+    };
+    let modified = |output: &Output| -> u64 {
+        let report: serde_json::Value = serde_json::from_str(&stdout(output)).unwrap();
+        report["index"]["drift"]["modified"].as_u64().unwrap()
+    };
+
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie");
+    dir.write("b.rs", "delta echo foxtrot");
+    set_modified(&dir, "a.rs");
+    set_modified(&dir, "b.rs");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    let first = stdout(&ripsem(&dir.path, &["index"]));
+    assert!(
+        first.starts_with("2 files: 2 changed, 0 unchanged"),
+        "{first}"
+    );
+
+    dir.write("a.rs", "omega bravo charlie");
+    set_modified(&dir, "a.rs");
+    assert_eq!(modified(&ripsem(&dir.path, &["status", "--json"])), 0);
+    for value in ["0", "true", ""] {
+        let status = ripsem_hashing(&dir.path, &["status", "--json"], value);
+        assert_eq!(modified(&status), 0, "RIPSEM_HASH_ALL={value}");
+    }
+    assert_eq!(
+        modified(&ripsem_hashing(&dir.path, &["status", "--json"], "1")),
+        1
+    );
+    let plain = stdout(&ripsem(&dir.path, &["index"]));
+    assert!(
+        plain.starts_with("2 files: 0 changed, 2 unchanged"),
+        "{plain}"
+    );
+
+    let hashed = stdout(&ripsem_hashing(&dir.path, &["index"], "1"));
+    assert!(
+        hashed.starts_with("2 files: 1 changed, 1 unchanged"),
+        "{hashed}"
+    );
+    assert_eq!(modified(&ripsem(&dir.path, &["status", "--json"])), 0);
+
+    dir.write("b.rs", "sigma echo foxtrot");
+    set_modified(&dir, "b.rs");
+    let forced = stdout(&ripsem(&dir.path, &["index", "--force"]));
+    assert!(
+        forced.starts_with("2 files: 2 changed, 0 unchanged"),
+        "{forced}"
+    );
+    let found = ripsem(&dir.path, &["search", "sigma echo", "--json", "-k", "1"]);
+    assert!(stdout(&found).contains("b.rs"), "{}", stdout(&found));
+}

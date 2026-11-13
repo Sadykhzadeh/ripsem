@@ -100,7 +100,7 @@ fn serve_on(
                         continue;
                     };
                     if dir != config.root
-                        && let Ok(fresh) = Config::load(&dir)
+                        && let Ok(fresh) = Config::load_again(&dir, &config)
                     {
                         config = fresh;
                         session = None;
@@ -274,7 +274,7 @@ fn hold_the_index(
         if searcher.refresh().is_ok() {
             return;
         }
-        match Config::load(&config.root) {
+        match Config::load_again(&config.root, config) {
             Ok(fresh) if fresh.backend != config.backend || fresh.model != config.model => {
                 *config = fresh;
                 *session = None;
@@ -289,7 +289,7 @@ fn hold_the_index(
         return;
     }
     *tried = Some(stamps);
-    if let Ok(fresh) = Config::load(&config.root) {
+    if let Ok(fresh) = Config::load_again(&config.root, config) {
         *config = fresh;
     }
     *session = pipeline::open(config).ok();
