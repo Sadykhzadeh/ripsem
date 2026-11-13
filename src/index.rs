@@ -86,7 +86,7 @@ impl Record {
     /// The declaration this record is one piece of, when it is too large for
     /// one chunk: the pieces carry its symbol without holding all of it.
     pub fn piece_of(&self) -> Option<&Symbol> {
-        let symbol = self.symbol.as_ref()?;
+        let symbol = self.symbol.as_ref().filter(|s| !s.is_heading())?;
         let whole = self.declarations.iter().any(|d| {
             d.symbol == *symbol && self.start_line <= d.start_line && d.end_line <= self.end_line
         });
@@ -349,7 +349,7 @@ impl Index {
                 Candidate {
                     record_idx,
                     agreement,
-                    declares_something: record.symbol.is_some(),
+                    declares_something: record.symbol.as_ref().is_some_and(|s| !s.is_heading()),
                     named: match record.declaration_named(names) {
                         None => Named::No,
                         Some(d) if d.is_extension() => Named::Extended,
@@ -986,6 +986,33 @@ mod tests {
         }
 
         assert_eq!(index.search(&[1.0, 0.0, 0.0], 3).len(), 3);
+    }
+
+    #[test]
+    fn a_heading_is_prose_for_ranking_and_never_one_piece_of_another() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        let mut docs = text_record("notes.md", "retry backoff", vec![1.0, 0.0, 0.0]);
+        docs.symbol = Some(Symbol::heading("Retry".into()));
+        let mut code = text_record("src/retry.rs", "retry backoff", vec![0.9, 0.1, 0.0]);
+        code.symbol = Some(Symbol {
+            kind: "fn".into(),
+            name: "retry".into(),
+        });
+        index.records.push(docs);
+        index.records.push(code);
+        let hits = index.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(paths(&index, &hits), ["src/retry.rs", "notes.md"]);
+
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        for i in 0..2 {
+            let mut piece =
+                text_record("notes.md", "retry backoff", vec![1.0 - i as f32, 0.0, 0.0]);
+            piece.symbol = Some(Symbol::heading("Retry".into()));
+            piece.start_line = i * 10 + 1;
+            piece.end_line = i * 10 + 5;
+            index.records.push(piece);
+        }
+        assert_eq!(index.search(&[1.0, 0.0, 0.0], 2).len(), 2);
     }
 
     #[test]

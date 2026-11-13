@@ -7,6 +7,18 @@ pub struct Symbol {
 }
 
 impl Symbol {
+    pub fn heading(name: String) -> Self {
+        Self {
+            kind: "heading".into(),
+            name,
+        }
+    }
+
+    /// A section of a document, not a declaration of code.
+    pub fn is_heading(&self) -> bool {
+        self.kind == "heading"
+    }
+
     pub fn label(&self) -> String {
         format!("{} {}", self.kind, self.name)
     }
