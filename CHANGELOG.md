@@ -17,6 +17,9 @@
 - A file saved as UTF-32 with a byte order mark is read as text. It was
   taken for UTF-16, so every character was followed by a NUL and nothing in
   it could be found. Run `ripsem index --force` to read such a file again.
+- `ripsem install opencode` adds the server to `opencode.json` for OpenCode,
+  keeping the other settings there, and the note on when to use it to
+  `AGENTS.md`.
 - `ripsem install gemini` adds the server to `.gemini/settings.json` for
   Gemini CLI, keeping the other settings there, and the note on when to use
   it to `GEMINI.md`.

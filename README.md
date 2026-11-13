@@ -34,8 +34,8 @@ ranges.
 - **Answers are declarations.** A hit is a whole function or type, named after
   it, in 17 languages, so a definition reads apart from a call site. A search
   for a name lands on its declaration, with its own lines and label.
-- **Made for coding agents.** `ripsem install claude-code`, `cursor`, `vscode`
-  or `gemini` adds an MCP server that keeps its index current while the agent
+- **Made for coding agents.** `ripsem install claude-code`, `cursor`, `vscode`,
+  `gemini` or `opencode` adds an MCP server that keeps its index current while the agent
   edits, and tells the agent when to use it.
 - **Offline.** No account, no API key, no service. The model downloads once and
   runs on your CPU, and the index is one file inside your repository.
@@ -71,7 +71,8 @@ ranges.
     ```
 
 3. Hand the same search to your coding agent with `ripsem install claude-code`,
-   `ripsem install cursor`, `ripsem install vscode` or `ripsem install gemini` (see
+   `ripsem install cursor`, `ripsem install vscode`, `ripsem install gemini` or
+   `ripsem install opencode` (see
    [below](#use-with-coding-agents)).
 
 The first search in a git repository, or in a directory where `ripsem init`
@@ -242,6 +243,7 @@ ripsem install claude-code        # .mcp.json and a note in CLAUDE.md
 ripsem install cursor             # .cursor/mcp.json and a rule in .cursor/rules
 ripsem install vscode             # .vscode/mcp.json and .github/copilot-instructions.md
 ripsem install gemini             # .gemini/settings.json and a note in GEMINI.md
+ripsem install opencode           # opencode.json and a note in AGENTS.md
 ```
 
 `install` registers the server, writes `.ripsem/config.toml`, and adds a short

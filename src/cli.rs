@@ -175,6 +175,8 @@ pub enum InstallCmd {
     Vscode,
     /// Add ripsem to .gemini/settings.json for Gemini CLI.
     Gemini,
+    /// Add ripsem to opencode.json for OpenCode.
+    OpenCode,
 }
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -751,6 +753,7 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
         InstallCmd::Cursor => "Cursor",
         InstallCmd::Vscode => "VS Code",
         InstallCmd::Gemini => "Gemini CLI",
+        InstallCmd::OpenCode => "OpenCode",
     };
     add_server(root, &target)?;
     add_note(root, &target)?;
@@ -777,6 +780,10 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
         ),
         InstallCmd::Gemini => (
             root.join("GEMINI.md"),
+            format!("## Code search\n\n{}\n", mcp::INSTRUCTIONS),
+        ),
+        InstallCmd::OpenCode => (
+            root.join("AGENTS.md"),
             format!("## Code search\n\n{}\n", mcp::INSTRUCTIONS),
         ),
     };
@@ -810,6 +817,7 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
         InstallCmd::Cursor => (".cursor/mcp.json", "mcpServers"),
         InstallCmd::Vscode => (".vscode/mcp.json", "servers"),
         InstallCmd::Gemini => (".gemini/settings.json", "mcpServers"),
+        InstallCmd::OpenCode => ("opencode.json", "mcp"),
     };
     let path = root.join(rel);
     if let Some(parent) = path.parent() {
@@ -855,14 +863,19 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
         }
         Some(_) => {}
     }
-    // Claude Code and Gemini CLI start a project's server in the directory
-    // they run in. Cursor and VS Code do not say where they start one, but
-    // expand `${workspaceFolder}`, which keeps the file free of this machine's
-    // paths.
+    // Claude Code, Gemini CLI and OpenCode start a project's server in the
+    // directory they run in. Cursor and VS Code do not say where they start
+    // one, but expand `${workspaceFolder}`, which keeps the file free of this
+    // machine's paths.
     let entry = match target {
         InstallCmd::ClaudeCode | InstallCmd::Gemini => {
             json!({ "command": "ripsem", "args": ["mcp"] })
         }
+        InstallCmd::OpenCode => json!({
+            "type": "local",
+            "command": ["ripsem", "mcp"],
+            "enabled": true,
+        }),
         InstallCmd::Cursor => json!({
             "command": "ripsem",
             "args": ["mcp", "--path", "${workspaceFolder}"],
@@ -1264,6 +1277,24 @@ mod tests {
             json!({ "command": "ripsem", "args": ["mcp"] })
         );
         let note = std::fs::read_to_string(dir.path().join("GEMINI.md")).unwrap();
+        assert!(note.starts_with("## Code search\n") && note.contains("`search` tool"));
+    }
+
+    #[test]
+    fn install_opencode_keeps_the_other_settings() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("opencode.json", "{\n  \"model\": \"x/y\"\n}\n");
+        cmd_install(dir.path(), InstallCmd::OpenCode).unwrap();
+        let doc: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("opencode.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["model"], "x/y");
+        assert_eq!(
+            doc["mcp"]["ripsem"],
+            json!({ "type": "local", "command": ["ripsem", "mcp"], "enabled": true })
+        );
+        let note = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
         assert!(note.starts_with("## Code search\n") && note.contains("`search` tool"));
     }
 
