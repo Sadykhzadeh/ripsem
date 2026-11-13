@@ -331,7 +331,9 @@ anyway.
 2. **Chunk.** tree-sitter cuts each file at function and type boundaries and
    names every chunk after its declaration. A doc comment or docstring becomes a
    second record for the same declaration, because an author describes code in
-   words the code itself rarely uses.
+   words the code itself rarely uses. Markdown is cut at its headings, so a hit
+   starts at the heading that says what the text is about and a code block in
+   it stays whole.
 3. **Embed and tokenise.** Each chunk gets a vector from the local model,
    stored as int8, and a set of terms in which identifiers are kept whole and
    also split at `snake_case` and `camelCase` boundaries. Every chunk also

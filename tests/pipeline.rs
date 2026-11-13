@@ -1010,3 +1010,64 @@ fn a_later_piece_of_a_long_line_shows_the_words_it_matched() {
         hits[0].snippet
     );
 }
+
+fn guide() -> String {
+    let filler = |what: &str| {
+        (1..=6)
+            .map(|n| format!("{what} step {n}\n"))
+            .collect::<String>()
+    };
+    format!(
+        "# Guide\n\nIntro text.\n\n## Install\n{}\n## Rotate credentials\n{}\n\
+         ```sh\n# quokka comment\nrotate --all\n```\n\n## Uninstall\n{}",
+        filler("install"),
+        filler("rotation"),
+        filler("removal")
+    )
+}
+
+#[test]
+fn a_markdown_section_is_found_by_its_heading_with_exact_lines() {
+    let dir = TempDir::new();
+    dir.write("guide.md", &guide());
+    dir.write("notes.md", "plain notes\nwithout any heading\n");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let hits = pipeline::search(&config, "rotate credentials", 3).unwrap();
+    assert_eq!(hits[0].path, "guide.md");
+    assert_eq!((hits[0].start_line, hits[0].end_line), (13, 24));
+    assert!(hits[0].snippet.starts_with("## Rotate credentials"));
+    let symbol = hits[0].symbol.as_ref().unwrap();
+    assert_eq!(
+        (symbol.kind.as_str(), symbol.name.as_str()),
+        ("heading", "Rotate credentials")
+    );
+}
+
+#[test]
+fn a_fenced_block_stays_in_one_chunk_and_its_hash_is_not_a_heading() {
+    let dir = TempDir::new();
+    dir.write("guide.md", &guide().replace('\n', "\r\n"));
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let hits = pipeline::search(&config, "quokka", 3).unwrap();
+    assert_eq!(hits[0].path, "guide.md");
+    assert_eq!((hits[0].start_line, hits[0].end_line), (13, 24));
+    assert!(
+        hits[0]
+            .snippet
+            .contains("# quokka comment\nrotate --all\n```")
+    );
+}
+
+#[test]
+fn markdown_without_headings_is_cut_into_line_windows() {
+    let dir = TempDir::new();
+    let text: String = (1..=100).map(|n| format!("note {n}\n")).collect();
+    dir.write("notes.md", &text);
+    let config = config_for(&dir.path);
+    let stats = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!(stats.chunks, 3);
+}
