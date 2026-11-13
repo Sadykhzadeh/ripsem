@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `ripsem search` takes `--lang` to keep only hits in files of a language,
+  by name or extension (`--lang rust`, `--lang toml`), and `-g`/`--glob` to
+  keep only hits whose path matches a glob, where a leading `!` leaves paths
+  out (`-g '!vendor/'`). The MCP `search` tool takes the same as `lang` and
+  `glob`. Both are applied before the ranking is cut, so `-k 10 --lang rust`
+  returns ten Rust hits when the index has them.
 - Markdown is cut at its headings instead of in 40-line windows. A section runs
   from its heading to the next one, so a hit starts at the heading that says
   what the text is about, a fenced code block is not cut in half, and a section

@@ -298,6 +298,150 @@ fn a_scope_is_read_from_the_current_directory() {
     assert!(paths.is_empty() && error.contains("outside"), "{error}");
 }
 
+/// The paths a search prints, sorted.
+fn found_paths(output: &std::process::Output) -> Vec<String> {
+    let mut paths: Vec<String> = stdout(output)
+        .lines()
+        .filter_map(|line| line.split(':').next())
+        .filter(|path| !path.is_empty() && !path.starts_with(' '))
+        .map(str::to_string)
+        .collect();
+    paths.sort();
+    paths
+}
+
+#[test]
+fn a_language_limits_a_search_to_its_files() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn login() { verify password }");
+    dir.write("src/auth.py", "def login(): verify password");
+    dir.write("Cargo.toml", "verify password");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+
+    let search = |lang: &[&str]| {
+        let mut args = vec!["search", "verify password", "--context", "0"];
+        args.extend_from_slice(lang);
+        found_paths(&ripsem(&dir.path, &args))
+    };
+    assert_eq!(search(&["--lang", "rust"]), ["src/auth.rs"]);
+    assert_eq!(search(&["--lang", "PY"]), ["src/auth.py"]);
+    assert_eq!(search(&["--lang", "toml"]), ["Cargo.toml"]);
+    assert_eq!(
+        search(&["--lang", "rs", "--lang", "py"]),
+        ["src/auth.py", "src/auth.rs"]
+    );
+    assert_eq!(
+        search(&["--lang", "rust,toml"]),
+        ["Cargo.toml", "src/auth.rs"]
+    );
+
+    let counts = stdout(&ripsem(
+        &dir.path,
+        &[
+            "search",
+            "verify password",
+            "--lang",
+            "rust",
+            "--count-by-file",
+        ],
+    ));
+    assert_eq!(counts.trim(), "1  src/auth.rs");
+}
+
+#[test]
+fn a_language_naming_nothing_is_an_error() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn login() { verify password }");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+
+    let empty = ripsem(&dir.path, &["search", "verify", "--lang", ""]);
+    assert!(!empty.status.success());
+    assert!(stderr(&empty).contains("''"), "{}", stderr(&empty));
+
+    let none = ripsem(&dir.path, &["search", "verify", "--lang", "go"]);
+    assert!(!none.status.success());
+    assert!(
+        stderr(&none).contains("no indexed file matches lang go"),
+        "{}",
+        stderr(&none)
+    );
+}
+
+#[test]
+fn a_glob_limits_a_search_to_matching_paths() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn login() { verify password }");
+    dir.write("src/auth_test.rs", "fn login_test() { verify password }");
+    dir.write("docs/auth.md", "verify password");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+
+    let search = |globs: &[&str]| {
+        let mut args = vec!["search", "verify password", "--context", "0"];
+        for glob in globs {
+            args.extend(["-g", glob]);
+        }
+        found_paths(&ripsem(&dir.path, &args))
+    };
+    assert_eq!(search(&["*.md"]), ["docs/auth.md"]);
+    assert_eq!(search(&["src/**"]), ["src/auth.rs", "src/auth_test.rs"]);
+    assert_eq!(search(&["*.rs", "!*_test.rs"]), ["src/auth.rs"],);
+    assert_eq!(search(&["!src/"]), ["docs/auth.md"]);
+
+    let both = ripsem(
+        &dir.path,
+        &[
+            "search",
+            "verify password",
+            "--context",
+            "0",
+            "--lang",
+            "rust",
+            "--glob",
+            "!*_test.rs",
+        ],
+    );
+    assert_eq!(found_paths(&both), ["src/auth.rs"]);
+
+    let json = stdout(&ripsem(
+        &dir.path,
+        &["search", "verify password", "-g", "*.md", "--json"],
+    ));
+    assert!(
+        json.contains("\"path\": \"docs/auth.md\"") && !json.contains("src/"),
+        "{json}"
+    );
+}
+
+#[test]
+fn a_bad_glob_is_an_error() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn login() { verify password }");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+
+    let bad = ripsem(&dir.path, &["search", "verify", "-g", "src/[a"]);
+    assert!(!bad.status.success());
+    assert!(
+        stderr(&bad).contains("invalid glob 'src/[a'"),
+        "{}",
+        stderr(&bad)
+    );
+
+    let none = ripsem(&dir.path, &["search", "verify", "--glob", "*.go"]);
+    assert!(!none.status.success());
+    assert!(
+        stderr(&none).contains("no indexed file matches glob *.go"),
+        "{}",
+        stderr(&none)
+    );
+}
 #[test]
 fn the_words_of_a_query_need_no_quotes() {
     let dir = TempDir::new();

@@ -10,6 +10,7 @@ use rayon::prelude::*;
 use crate::config::Config;
 use crate::index::{Index, Record};
 use crate::lexical::TermHash;
+use crate::scope::Scope;
 use crate::{chunk, embed, fingerprint, walk};
 
 #[derive(Debug)]
@@ -748,7 +749,7 @@ impl Searcher {
         &self,
         query: &str,
         k: usize,
-        prefix: Option<&str>,
+        scope: Option<&Scope>,
     ) -> Result<Vec<SearchHit>> {
         // Every record ties on an empty query, so any answer would be noise.
         if query.trim().is_empty() {
@@ -756,10 +757,10 @@ impl Searcher {
         }
         // A mistyped scope would otherwise answer "no matches", which reads as
         // the code not existing.
-        if let Some(prefix) = prefix
-            && !self.index.covers(prefix)
+        if let Some(scope) = scope
+            && !self.index.covers(scope)
         {
-            anyhow::bail!("nothing is indexed under '{prefix}'");
+            anyhow::bail!(scope.nothing_matches());
         }
         let qv = self.embedder.get()?.embed_query(query)?;
         let terms = crate::lexical::query_terms(query);
@@ -769,7 +770,7 @@ impl Searcher {
         let k = k.saturating_add(SPARE_HITS);
 
         #[cfg(feature = "hnsw")]
-        if prefix.is_none()
+        if scope.is_none()
             && let Some(map) = &self.ann_map
         {
             let depth = crate::index::candidate_depth(k);
@@ -781,7 +782,7 @@ impl Searcher {
             return Ok(self.places(hits, &names, &words, wanted));
         }
 
-        let hits = self.index.search_fused(&qv, &terms, &names, k, prefix);
+        let hits = self.index.search_fused(&qv, &terms, &names, k, scope);
         Ok(self.places(hits, &names, &words, wanted))
     }
 
@@ -963,14 +964,14 @@ pub fn search(config: &Config, query: &str, k: usize) -> Result<Vec<SearchHit>> 
     open(config)?.query(query, k)
 }
 
-/// Like [`search`], limited to a normalized repo-relative path prefix (see
+/// Like [`search`], limited to a [`Scope`] (its prefix a normalized path, see
 /// `mcp::scope_prefix`), after updating the index for files changed since it
 /// was built. `None` searches the whole index.
 pub fn search_scoped(
     config: &Config,
     query: &str,
     k: usize,
-    prefix: Option<&str>,
+    scope: Option<&Scope>,
 ) -> Result<Vec<SearchHit>> {
     if query.trim().is_empty() {
         anyhow::bail!("the query is empty; say what to look for");
@@ -1001,7 +1002,7 @@ pub fn search_scoped(
         None => open_with(config, Arc::clone(&embedder)),
     };
     let found = searcher.and_then(|searcher| {
-        let found = searcher.query_scoped(query, k, prefix);
+        let found = searcher.query_scoped(query, k, scope);
         leave_to_exit(searcher.index);
         found
     });
