@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- A `ripsem index` that finds nothing to do, the update every `ripsem search`
+  starts with, and `ripsem status` (which the MCP `index_status` tool shares)
+  no longer read and hash every file. `index.bin` keeps each file's size and
+  modification time, and a file that still has both is taken at the hash
+  stored for it, the way git trusts its index. A binary or blank file is
+  remembered too, until the chunk settings change. A no-op `index` takes
+  about 359 ms instead of 465 ms, a `search` 368 ms instead of 483 ms and
+  `status` 437 ms instead of 589 ms, on 19k files (86 MB, 141k chunks) with
+  the hashing backend (medians of 12 interleaved runs), and the 86 MB the
+  check read are no longer read. Results and scores are unchanged. The
+  trade-off: a file rewritten with different contents, the same size and the
+  same modification time is not seen as changed, by `search` or by `status`.
+  Set `RIPSEM_HASH_ALL=1` for a run, or run `ripsem index --force`, to read
+  every file. A file written in the last two seconds before a run, or dated in
+  the future, is read again on the next one. An index without these stats
+  reads every file once to store them.
 - The hashing backend ranks by the words of the query alone. Its vectors only
   record which words occur, so they ranked almost at random and still got half
   the vote, which put the merged ranking below its own lexical arm. The
