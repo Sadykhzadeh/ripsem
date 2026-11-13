@@ -93,6 +93,18 @@ jobs:
           tool: cargo-audit
       - run: cargo audit
 
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@375b74606b681357a78b6488a4828b3b84bdd155 # cargo-audit
+        with:
+          tool: cargo-deny
+      - run: cargo deny check
+
   # Paths are the part of this that is not portable: the index stores
   # forward-slash repo-relative paths, the walker judges them against the root,
   # the temp-file replace on save has to work, and status strips the verbatim
