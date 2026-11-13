@@ -85,6 +85,7 @@ impl From<Record> for CurrentRecord {
     }
 }
 
+#[cfg(test)]
 impl From<&Current> for Index {
     fn from(index: &Current) -> Self {
         Self {
@@ -100,6 +101,7 @@ impl From<&Current> for Index {
     }
 }
 
+#[cfg(test)]
 impl From<&CurrentRecord> for Record {
     fn from(record: &CurrentRecord) -> Self {
         Self {

@@ -1398,19 +1398,24 @@ mod tests {
             root: dir.path().to_path_buf(),
             ..hash_config()
         };
-        let on_disk = || Index::load(&config.index_path()).unwrap().encode_body();
+        let on_disk = || {
+            Index::load(&config.index_path())
+                .unwrap()
+                .encode_body()
+                .unwrap()
+        };
 
         let (_, built) = index_and_keep(&config, false).unwrap();
-        assert_eq!(built.unwrap().encode_body(), on_disk());
+        assert_eq!(built.unwrap().encode_body().unwrap(), on_disk());
 
         let (stats, kept) = index_and_keep(&config, false).unwrap();
         assert_eq!(stats.embedded, 0);
-        assert_eq!(kept.unwrap().encode_body(), on_disk());
+        assert_eq!(kept.unwrap().encode_body().unwrap(), on_disk());
 
         dir.write("b.rs", "fn beta() { gamma() }\n");
         let (stats, updated) = index_and_keep(&config, false).unwrap();
         assert_eq!(stats.embedded, 1);
-        assert_eq!(updated.unwrap().encode_body(), on_disk());
+        assert_eq!(updated.unwrap().encode_body().unwrap(), on_disk());
     }
 
     #[test]

@@ -16,10 +16,15 @@ use crate::shared::{Shared, SharedStr};
 use crate::symbol::{Declaration, Symbol};
 
 mod legacy;
+mod stored;
 
 /// Changes whenever the bytes of an index would, including on a bitcode
 /// upgrade: bitcode keeps its encoding only within one 0.x series.
-pub const FORMAT_VERSION: u32 = 11;
+pub const FORMAT_VERSION: u32 = 12;
+
+/// The last format that stored every record as a value of its own. It still
+/// loads, so a large repository is not embedded again for the new layout.
+const LEGACY_VERSION: u32 = 11;
 
 /// Every index file starts with these bytes and then [`FORMAT_VERSION`] as a
 /// little-endian u32, so a file from another ripsem is recognised before its
@@ -134,6 +139,55 @@ pub struct Index {
     pub embedded_since_floor: usize,
 }
 
+/// An index file read as far as its layout: the records are not built yet.
+enum Decoded {
+    Columns(Box<stored::Stored>),
+    Rows(legacy::Index),
+}
+
+fn corrupt(e: &dyn std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!("index is unreadable or corrupt: {e}; run `ripsem index --force` to rebuild")
+}
+
+impl Decoded {
+    fn parse(bytes: &[u8]) -> Result<Self> {
+        let (version, body) = match bytes.strip_prefix(MAGIC.as_slice()) {
+            Some(rest) => {
+                let (version, body) = rest
+                    .split_first_chunk::<4>()
+                    .ok_or_else(|| corrupt(&"the header is cut short"))?;
+                (u32::from_le_bytes(*version), body)
+            }
+            None => match bytes.first_chunk::<4>().map(|v| u32::from_le_bytes(*v)) {
+                Some(version) if HEADERLESS_VERSIONS.contains(&version) => (version, &[][..]),
+                _ => return Err(corrupt(&"no ripsem header")),
+            },
+        };
+        match version {
+            FORMAT_VERSION => bitcode::decode(body)
+                .map(|stored| Self::Columns(Box::new(stored)))
+                .map_err(|e| corrupt(&e)),
+            LEGACY_VERSION => bitcode::decode(body)
+                .map(Self::Rows)
+                .map_err(|e| corrupt(&e)),
+            ..LEGACY_VERSION => {
+                anyhow::bail!("index format is from an older ripsem; run `ripsem index --force`")
+            }
+            _ => anyhow::bail!(
+                "index format is from a newer ripsem; run `ripsem index --force` to rebuild it \
+                 for this one"
+            ),
+        }
+    }
+
+    fn into_index(self) -> Result<Index> {
+        match self {
+            Self::Columns(stored) => (*stored).into_index().map_err(|e| corrupt(&e)),
+            Self::Rows(old) => Ok(old.into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Hit {
     pub score: f32,
@@ -154,53 +208,30 @@ impl Index {
         }
     }
 
+    /// Frees the file's bytes before the records are built, so they and the
+    /// buffers the records point into are not in memory together.
     pub fn load(path: &Path) -> Result<Self> {
         let bytes =
             std::fs::read(path).with_context(|| format!("reading index {}", show_path(path)))?;
-        Self::decode(&bytes)
+        let decoded = Decoded::parse(&bytes)?;
+        drop(bytes);
+        decoded.into_index()
     }
 
+    #[cfg(test)]
     fn decode(bytes: &[u8]) -> Result<Self> {
-        let corrupt = |e: &dyn std::fmt::Display| {
-            anyhow::anyhow!(
-                "index is unreadable or corrupt: {e}; run `ripsem index --force` to rebuild"
-            )
-        };
-        let (version, body) = match bytes.strip_prefix(MAGIC.as_slice()) {
-            Some(rest) => {
-                let (version, body) = rest
-                    .split_first_chunk::<4>()
-                    .ok_or_else(|| corrupt(&"the header is cut short"))?;
-                (u32::from_le_bytes(*version), body)
-            }
-            None => match bytes.first_chunk::<4>().map(|v| u32::from_le_bytes(*v)) {
-                Some(version) if HEADERLESS_VERSIONS.contains(&version) => (version, &[][..]),
-                _ => return Err(corrupt(&"no ripsem header")),
-            },
-        };
-        match version.cmp(&FORMAT_VERSION) {
-            Ordering::Less => {
-                anyhow::bail!("index format is from an older ripsem; run `ripsem index --force`")
-            }
-            Ordering::Greater => anyhow::bail!(
-                "index format is from a newer ripsem; run `ripsem index --force` to rebuild it \
-                 for this one"
-            ),
-            Ordering::Equal => bitcode::decode::<legacy::Index>(body)
-                .map(Into::into)
-                .map_err(|e| corrupt(&e)),
-        }
+        Decoded::parse(bytes)?.into_index()
     }
 
-    pub(crate) fn encode_body(&self) -> Vec<u8> {
-        bitcode::encode(&legacy::Index::from(self))
+    pub(crate) fn encode_body(&self) -> Result<Vec<u8>> {
+        Ok(bitcode::encode(&stored::Stored::from_index(self)?))
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let body = self.encode_body();
+        let body = self.encode_body()?;
         let tmp = temp_sibling(path);
         std::fs::File::create(&tmp)
             .and_then(|mut file| {
@@ -1138,6 +1169,103 @@ mod tests {
         assert_eq!(loaded.records[1].path, "y.rs");
     }
 
+    /// Files in an order that is not the walk's, one path twice in separate
+    /// runs, text that is not ASCII, and records with and without symbols.
+    fn varied_index() -> Index {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        index.noise_floor = Some(0.25);
+        index.embedded_since_floor = 7;
+        index.ann = Some(vec![1, 2, 3]);
+        for (i, (path, text)) in [
+            ("src/a.rs", "fn caf\u{e9}() {}"),
+            ("src/a.rs", "fn second() {}"),
+            (
+                "docs/b.md",
+                "\u{43f}\u{440}\u{438}\u{432}\u{435}\u{442} world",
+            ),
+            ("src/a.rs", ""),
+            ("c.rs", "fn c() {}"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut record = placed(path, i + 1, i + 3, vec![1.0 - i as f32 / 5.0, 0.5, 0.25]);
+            record.snippet = text.into();
+            record.terms = TermVector::new(text, path, None);
+            record.file_hash = if i == 3 { 99 } else { path.len() as u64 };
+            record.text_hash = i as u64 * 31;
+            if i % 2 == 0 {
+                let symbol = Symbol {
+                    kind: "fn".into(),
+                    name: format!("item{i}"),
+                };
+                record.declarations = vec![Declaration {
+                    symbol: symbol.clone(),
+                    start_line: i + 1,
+                    end_line: i + 2,
+                }]
+                .into();
+                record.symbol = Some(symbol);
+            }
+            index.records.push(record);
+        }
+        index
+    }
+
+    fn assert_same(a: &Index, b: &Index) {
+        assert_eq!(format!("{a:?}"), format!("{b:?}"));
+        for (x, y) in a.records.iter().zip(&b.records) {
+            assert_eq!(x.terms.length(), y.terms.length());
+            assert_eq!(x.vector.scale, y.vector.scale);
+        }
+    }
+
+    #[test]
+    fn every_field_of_every_record_survives_the_columns() {
+        let dir = TempDir::new();
+        let path = dir.path().join("index.bin");
+        let index = varied_index();
+        index.save(&path).unwrap();
+        let loaded = Index::load(&path).unwrap();
+        assert_same(&index, &loaded);
+        assert_eq!(
+            loaded.records[2].snippet,
+            "\u{43f}\u{440}\u{438}\u{432}\u{435}\u{442} world"
+        );
+        assert_eq!(loaded.records[3].path, "src/a.rs");
+        assert_eq!(loaded.records[3].file_hash, 99);
+        let second = crate::lexical::query_terms("second");
+        assert_eq!(loaded.records[0].terms.presence(&second), 0);
+        assert_ne!(loaded.records[1].terms.presence(&second), 0);
+    }
+
+    /// An index built before the columns, which a large repository would take
+    /// minutes to embed again, keeps loading, and its next save is current.
+    #[test]
+    fn an_index_in_the_previous_format_still_loads() {
+        let index = varied_index();
+        let old = bitcode::encode(&legacy::Index::from(&index));
+        let loaded = Index::decode(&with_header(LEGACY_VERSION, &old)).unwrap();
+        assert_same(&index, &loaded);
+
+        let dir = TempDir::new();
+        let path = dir.path().join("index.bin");
+        loaded.save(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes[MAGIC.len()..][..4], FORMAT_VERSION.to_le_bytes());
+        assert_same(&index, &Index::load(&path).unwrap());
+    }
+
+    #[test]
+    fn a_vector_of_the_wrong_length_is_not_saved() {
+        let mut index = sample_index();
+        index.records[1].vector = quant::quantize(&[1.0, 0.0]);
+        let dir = TempDir::new();
+        let err = index.save(&dir.path().join("index.bin")).unwrap_err();
+        assert!(err.to_string().contains("vector values"), "got: {err}");
+        assert!(!dir.path().join("index.bin").exists());
+    }
+
     #[test]
     fn save_replaces_without_leaving_a_temp_file() {
         let dir = TempDir::new();
@@ -1171,13 +1299,13 @@ mod tests {
 
     #[test]
     fn a_version_other_than_this_one_says_which_side_it_is_on() {
-        let body = sample_index().encode_body();
+        let body = sample_index().encode_body().unwrap();
         let err = |version| {
             Index::decode(&with_header(version, &body))
                 .unwrap_err()
                 .to_string()
         };
-        assert!(err(FORMAT_VERSION - 1).contains("older ripsem"));
+        assert!(err(LEGACY_VERSION - 1).contains("older ripsem"));
         assert!(err(FORMAT_VERSION + 1).contains("newer ripsem"));
         assert!(Index::decode(&with_header(FORMAT_VERSION, &body)).is_ok());
     }
@@ -1218,10 +1346,10 @@ mod tests {
     /// does. Update both together.
     #[test]
     fn the_encoding_is_pinned_to_the_format_version() {
-        let bytes = sample_index().encode_body();
+        let bytes = sample_index().encode_body().unwrap();
         assert_eq!(
             (FORMAT_VERSION, crate::fingerprint::content_hash(&bytes)),
-            (11, 0x8aa4_2b7a_98ca_a8a0)
+            (12, 0xaf7f_009a_4760_6753)
         );
     }
 
