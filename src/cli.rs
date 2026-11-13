@@ -865,6 +865,13 @@ fn add_codex_server(path: &Path) -> Result<()> {
         written.push_str("\n\n");
     }
     written.push_str("[mcp_servers.ripsem]\ncommand = \"ripsem\"\nargs = [\"mcp\"]\n");
+    // A table header cannot add to `mcp_servers = { .. }` written on one line.
+    if toml::from_str::<toml::Table>(&written).is_err() {
+        anyhow::bail!(
+            "could not add a [mcp_servers.ripsem] table to {}; add it by hand",
+            show_path(path)
+        );
+    }
     std::fs::write(path, written)?;
     out!("added ripsem to {}", show_path(path));
     Ok(())
