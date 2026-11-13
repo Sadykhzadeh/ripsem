@@ -58,6 +58,10 @@ pub struct Config {
     pub exclude: Vec<String>,
     #[serde(skip)]
     pub root: PathBuf,
+    /// Hash every file instead of trusting the stat the index stored for it.
+    /// Set from `RIPSEM_HASH_ALL` by the command line.
+    #[serde(skip)]
+    pub hash_all: bool,
 }
 
 fn default_model() -> String {
@@ -91,6 +95,7 @@ impl Default for Config {
             skip_generated: enabled(),
             exclude: Vec::new(),
             root: PathBuf::from("."),
+            hash_all: false,
         }
     }
 }
