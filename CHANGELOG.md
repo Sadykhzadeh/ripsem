@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The index is read faster and takes less memory. A record no longer owns five
+  allocations of its own: `index.bin` stores one column per field, and loading
+  hands every record a range of a few shared buffers. Reading the index takes
+  about 210 ms instead of 310 ms, a `ripsem index` that finds nothing to do
+  about 620 ms instead of 770 ms and a `ripsem search` about 690 ms instead of
+  790 ms, and a search peaks at 617 MB instead of 776 MB, on 17k files
+  (169 MB, 260k chunks) with the hashing backend. The file is 3 % smaller.
+  Results and scores are unchanged. An index from the previous version is
+  read as it is and rewritten in the new layout by the next save, so nothing
+  is embedded again.
 - A `ripsem index` that finds nothing to do, and the update every `ripsem
   search` starts with, return the index as it was read instead of taking it
   apart by file and putting it back together: about 860 ms instead of

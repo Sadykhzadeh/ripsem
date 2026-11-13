@@ -16,6 +16,7 @@ pub mod quant;
 pub mod scope;
 #[cfg(feature = "treesitter")]
 pub mod semantic;
+pub mod shared;
 pub mod symbol;
 pub mod walk;
 pub mod watch;

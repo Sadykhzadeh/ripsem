@@ -238,7 +238,11 @@ fn a_file_with_nothing_in_it_does_not_hide_a_change() {
     pipeline::index_repo(&config, false).unwrap();
     let written = modified(&config.index_path());
     let paths = |index: Index| -> Vec<String> {
-        let mut paths: Vec<String> = index.records.into_iter().map(|r| r.path).collect();
+        let mut paths: Vec<String> = index
+            .records
+            .into_iter()
+            .map(|r| r.path.to_string())
+            .collect();
         paths.sort();
         paths.dedup();
         paths
