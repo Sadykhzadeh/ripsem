@@ -165,6 +165,25 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
         },
     );
     let files = files?;
+    let chunking = chunk::Chunking::of(config);
+    if let Some(index) = &prev
+        && index.dims == dims
+        && index.built_for(config.backend, &config.model)
+        && index.chunking == chunking
+        && index.ann.is_some() == wants_ann(index.records.len())
+        && (index.noise_floor.is_some() || index.records.is_empty())
+        && let Some(indexed) = nothing_changed(config, &files, index)
+    {
+        config.create_data_dir()?;
+        let stats = IndexStats {
+            files: indexed,
+            embedded: 0,
+            reused: indexed,
+            chunks: index.records.len(),
+            vectors: 0,
+        };
+        return Ok((stats, prev));
+    }
     let mut prev_chunks: HashMap<String, Vec<Record>> = HashMap::new();
     let mut prev_ann = None;
     let mut prev_floor = None;
@@ -172,7 +191,6 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     let mut reusable = false;
     let mut recut: Vec<Record> = Vec::new();
     let mut prev_order: Vec<String> = Vec::new();
-    let chunking = chunk::Chunking::of(config);
     if let Some(prev) = prev
         && prev.dims == dims
         && prev.built_for(config.backend, &config.model)
@@ -356,6 +374,53 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
 
     index.save(&config.index_path())?;
     Ok((stats, Some(index)))
+}
+
+/// How many files `index` holds, when the walk found exactly those files
+/// with the same contents and nothing else that has anything to index. The
+/// index is then right as it stands: taking it apart by file and putting it
+/// back together, which is most of the work of an update that changes
+/// nothing, can be left out.
+fn nothing_changed(
+    config: &Config,
+    files: &[(std::path::PathBuf, u64)],
+    index: &Index,
+) -> Option<usize> {
+    let mut held: HashMap<&str, u64> = HashMap::new();
+    let mut last = None;
+    for record in &index.records {
+        if last != Some(record.path.as_str()) {
+            last = Some(record.path.as_str());
+            // A file whose records lie in two places is put back in one.
+            if held
+                .insert(record.path.as_str(), record.file_hash)
+                .is_some()
+            {
+                return None;
+            }
+        }
+    }
+    let mut found = 0;
+    let mut others = Vec::new();
+    for (path, hash) in files {
+        match held.get(relative(&config.root, path).as_str()) {
+            Some(known) if known == hash => found += 1,
+            Some(_) => return None,
+            None => others.push(path),
+        }
+    }
+    if found != held.len() {
+        return None;
+    }
+    // A file the index does not hold is new, or one that had nothing in it
+    // last time either, such as a blank one.
+    others
+        .par_iter()
+        .all(|path| match std::fs::read(path) {
+            Ok(bytes) => chunk::chunk_source(path, &walk::decode_text(&bytes), config).is_empty(),
+            Err(_) => true,
+        })
+        .then_some(found)
 }
 
 /// Each file's path once, in the order its first record appears.

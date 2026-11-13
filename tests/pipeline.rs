@@ -227,6 +227,49 @@ fn an_unchanged_tree_leaves_the_index_file_alone() {
 }
 
 #[test]
+fn a_file_with_nothing_in_it_does_not_hide_a_change() {
+    use ripsem::index::Index;
+
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie delta echo foxtrot");
+    dir.write("blank.rs", "\n\n");
+    dir.write("c.rs", "golf hotel india juliet kilo lima");
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let written = modified(&config.index_path());
+    let paths = |index: Index| -> Vec<String> {
+        let mut paths: Vec<String> = index.records.into_iter().map(|r| r.path).collect();
+        paths.sort();
+        paths.dedup();
+        paths
+    };
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let again = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!((again.reused, again.embedded, again.chunks), (2, 0, 2));
+    assert_eq!(modified(&config.index_path()), written);
+
+    dir.write("blank.rs", "mike november oscar papa quebec romeo");
+    let filled = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!((filled.reused, filled.embedded, filled.chunks), (2, 1, 3));
+    let on_disk = Index::load(&config.index_path()).unwrap();
+    assert_eq!(paths(on_disk), ["a.rs", "blank.rs", "c.rs"]);
+
+    dir.write("c.rs", "sierra tango uniform victor whiskey xray");
+    let edited = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!((edited.reused, edited.embedded), (2, 1));
+
+    dir.write("b.rs", "yankee zulu alpha bravo charlie delta");
+    let added = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!((added.reused, added.embedded, added.chunks), (3, 1, 4));
+    let on_disk = Index::load(&config.index_path()).unwrap();
+    assert_eq!(paths(on_disk), ["a.rs", "b.rs", "blank.rs", "c.rs"]);
+
+    let settled = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!((settled.reused, settled.embedded), (4, 0));
+}
+
+#[test]
 fn a_reindex_with_nothing_to_do_still_writes_the_data_gitignore() {
     let dir = TempDir::new();
     dir.write("a.rs", "alpha bravo charlie delta echo foxtrot");

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A `ripsem index` that finds nothing to do, and the update every `ripsem
+  search` starts with, return the index as it was read instead of taking it
+  apart by file and putting it back together: about 860 ms instead of
+  1 020 ms for `index` and 935 ms instead of 1 060 ms for `search` on 17k
+  files (169 MB, 250k chunks) with the hashing backend.
 - `ripsem search` takes `--lang` to keep only hits in files of a language,
   by name or extension (`--lang rust`, `--lang toml`), and `-g`/`--glob` to
   keep only hits whose path matches a glob, where a leading `!` leaves paths
