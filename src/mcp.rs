@@ -372,6 +372,8 @@ fn tool_schema() -> Value {
             "properties": {
                 "query": { "type": "string", "description": "What you are looking for: an identifier, an error message, or a description of the behaviour." },
                 "path": { "type": "string", "description": "Optional subdirectory (relative to the repo) to limit results to, e.g. 'src/embed'." },
+                "lang": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only files of these languages or extensions, e.g. 'rust' or ['py', 'ts']." },
+                "glob": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only paths matching these globs; a leading ! excludes, e.g. ['*.rs', '!*_test.rs']." },
                 "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "description": format!("Maximum number of results (default {DEFAULT_LIMIT}, at most {MAX_LIMIT}).") },
                 "min_score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Drop hits scoring below this (0–1). 0 is no closer than unrelated text in this repository, 1 is every query term found literally; scores fall with rank, so this keeps the top results. Default: no filter." }
             },
@@ -433,7 +435,7 @@ fn handle_call(
     }
 }
 
-const ARGUMENTS: [&str; 4] = ["query", "path", "limit", "min_score"];
+const ARGUMENTS: [&str; 6] = ["query", "path", "lang", "glob", "limit", "min_score"];
 const DEFAULT_LIMIT: usize = 5;
 const MAX_LIMIT: usize = 50;
 
@@ -452,7 +454,9 @@ fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
         .as_object()
         .ok_or_else(|| anyhow!("the arguments must be an object with a 'query'"))?;
     if let Some(name) = args.keys().find(|k| !ARGUMENTS.contains(&k.as_str())) {
-        bail!("unknown argument '{name}'; the arguments are query, path, limit and min_score");
+        bail!(
+            "unknown argument '{name}'; the arguments are query, path, lang, glob, limit and min_score"
+        );
     }
     let given = |name: &str| args.get(name).filter(|v| !v.is_null());
 
@@ -487,12 +491,30 @@ fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
         Some(Value::String(raw)) => scope_prefix(raw, root)?,
         Some(other) => bail!("'path' must be a string, not {other}"),
     };
+    let langs = strings("lang", given("lang"))?;
+    let globs = strings("glob", given("glob"))?;
     Ok(Call {
         query,
         limit,
         min_score,
-        scope: Scope::new(prefix.as_deref(), &[], &[])?,
+        scope: Scope::new(prefix.as_deref(), &langs, &globs)?,
     })
+}
+
+/// A value the schema allows to be one string or a list of them.
+fn strings(name: &str, value: Option<&Value>) -> Result<Vec<String>> {
+    match value {
+        None => Ok(Vec::new()),
+        Some(Value::String(one)) => Ok(vec![one.clone()]),
+        Some(Value::Array(many)) => many
+            .iter()
+            .map(|v| match v {
+                Value::String(s) => Ok(s.clone()),
+                other => bail!("'{name}' must hold strings, not {other}"),
+            })
+            .collect(),
+        Some(other) => bail!("'{name}' must be a string or an array of strings, not {other}"),
+    }
 }
 
 fn failed(id: Value, e: &anyhow::Error) -> Value {
@@ -829,6 +851,41 @@ mod tests {
         assert!(text.contains("'path' must be a string"), "got: {text}");
         let text = tool_error(json!("find the parser"));
         assert!(text.contains("must be an object"), "got: {text}");
+    }
+
+    #[test]
+    fn lang_and_glob_take_a_string_or_an_array() {
+        let root = Path::new("/repo");
+        let scope = |args: Value| parse_call(&args, root).unwrap().scope.unwrap();
+
+        let one = scope(json!({ "query": "x", "lang": "rust" }));
+        assert!(one.admits("src/a.rs") && !one.admits("src/a.py"));
+        let many = scope(json!({ "query": "x", "lang": ["py", "toml"] }));
+        assert!(many.admits("a.py") && many.admits("Cargo.toml") && !many.admits("a.rs"));
+
+        let one = scope(json!({ "query": "x", "glob": "*.rs" }));
+        assert!(one.admits("src/a.rs") && !one.admits("src/a.md"));
+        let many = scope(json!({ "query": "x", "glob": ["*.rs", "!*_test.rs"] }));
+        assert!(many.admits("a.rs") && !many.admits("a_test.rs"));
+
+        let all = scope(json!({ "query": "x", "path": "src", "lang": "rs", "glob": "!gen/" }));
+        assert!(all.admits("src/a.rs") && !all.admits("src/gen/a.rs") && !all.admits("lib/a.rs"));
+        let args = json!({ "query": "x", "lang": null, "glob": [] });
+        assert!(parse_call(&args, root).unwrap().scope.is_none());
+    }
+
+    #[test]
+    fn a_lang_or_glob_of_the_wrong_shape_is_a_tool_error() {
+        for name in ["lang", "glob"] {
+            for bad in [json!(7), json!(true), json!({ "a": 1 }), json!(["rust", 1])] {
+                let text = tool_error(json!({ "query": "x", name: bad }));
+                assert!(text.contains(&format!("'{name}' must")), "{bad}: {text}");
+            }
+        }
+        let text = tool_error(json!({ "query": "x", "lang": "" }));
+        assert!(text.contains("names no language"), "{text}");
+        let text = tool_error(json!({ "query": "x", "glob": ["*.rs", "src/[a"] }));
+        assert!(text.contains("invalid glob 'src/[a'"), "{text}");
     }
 
     /// An argument the schema does not name would otherwise be dropped, and
