@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Markdown is cut at its headings instead of in 40-line windows. A section runs
+  from its heading to the next one, so a hit starts at the heading that says
+  what the text is about, a fenced code block is not cut in half, and a section
+  too long for one chunk is cut at blank lines. Each chunk is named after its
+  heading, as `heading Install`. Files with no heading are cut in windows as
+  before. An index built by an earlier version is cut again on the next
+  `ripsem index`.
 - A `ripsem index` that finds nothing to do, and the update every `ripsem
   search` starts with, take about 600 ms instead of 1 050 ms on 13.8k files
   (169 MB, 211k chunks) with the hashing backend. The size of a file comes
