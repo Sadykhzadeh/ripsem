@@ -491,7 +491,7 @@ fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
         query,
         limit,
         min_score,
-        scope: Scope::new(prefix.as_deref(), &[])?,
+        scope: Scope::new(prefix.as_deref(), &[], &[])?,
     })
 }
 
