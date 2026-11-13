@@ -8,6 +8,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use crate::config::Config;
+use crate::fingerprint::FileStat;
 use crate::index::{Index, Record};
 use crate::lexical::TermHash;
 use crate::scope::Scope;
@@ -156,33 +157,44 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     // nothing changed, or only files removed, never needs the model.
     let mut embedder: Option<Box<dyn embed::Embedder>> = None;
     let dims = config.dims();
+    let started = fingerprint::now();
     // The walk waits on the disk and the decode on one core, so they overlap.
-    let (files, mut prev) = rayon::join(
-        || walk::collect_hashed(config),
+    let (listed, mut prev) = rayon::join(
+        || walk::list(config),
         || match !force && config.index_path().exists() {
             true => Index::load(&config.index_path()).ok(),
             false => None,
         },
     );
-    let files = files?;
     let chunking = chunk::Chunking::of(config);
+    let Walked { files, mut empties } = scan(config, listed?, prev.as_ref(), started);
     if let Some(index) = &mut prev
         && index.dims == dims
         && index.built_for(config.backend, &config.model)
         && index.chunking == chunking
         && index.ann.is_some() == wants_ann(index.records.len())
         && (index.noise_floor.is_some() || index.records.is_empty())
-        && let Some(indexed) = nothing_changed(config, &files, index)
+        && let Some(settled) = nothing_changed(config, &files, index)
     {
         config.create_data_dir()?;
+        empties.extend(settled.blank);
+        empties.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        // The same time as before makes no difference to a search, but a file
+        // whose time moved or that has aged out of the racy margin is read
+        // every run until the index says so.
+        let moved = settled.stale || empties != index.empties;
+        if settled.stale {
+            refresh_stats(config, &files, index);
+        }
+        index.empties = empties;
         // Once, so the next load does not convert the old layout again.
-        if std::mem::take(&mut index.outdated) {
+        if std::mem::take(&mut index.outdated) || moved {
             index.save(&config.index_path())?;
         }
         let stats = IndexStats {
-            files: indexed,
+            files: settled.files,
             embedded: 0,
-            reused: indexed,
+            reused: settled.files,
             chunks: index.records.len(),
             vectors: 0,
         };
@@ -195,6 +207,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     let mut reusable = false;
     let mut recut: Vec<Record> = Vec::new();
     let mut prev_order: Vec<String> = Vec::new();
+    let mut prev_empties = Vec::new();
     if let Some(prev) = prev
         && prev.dims == dims
         && prev.built_for(config.backend, &config.model)
@@ -204,6 +217,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
         if prev.chunking == chunking {
             reusable = true;
             prev_ann = prev.ann;
+            prev_empties = prev.empties;
             prev_order = file_order(&prev.records);
             // Looked up by `&str`, so a path is copied once per file rather
             // than once per record.
@@ -227,7 +241,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     let scanned: Vec<(usize, u64, bool)> = files
         .par_iter()
         .enumerate()
-        .map(|(i, (path, hash))| {
+        .map(|(i, (path, hash, _))| {
             let rel = relative(&config.root, path);
             let changed = prev_hash.get(rel.as_str()) != Some(hash);
             (i, *hash, changed)
@@ -252,16 +266,17 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     let mut embedded = 0;
     let mut reused = 0;
     let mut queue = Queue::default();
+    let mut stat_moved = false;
 
     let pb = progress(scanned.len() as u64);
     for batch in scanned.chunks(PREPARE_BATCH) {
         let prepared: Vec<Prepared> = batch
             .par_iter()
             .map(|&(i, hash, changed)| {
-                let path = &files[i].0;
+                let (path, _, stat) = &files[i];
                 let rel = relative(&config.root, path);
                 if !changed && prev_chunks.contains_key(&rel) {
-                    return Prepared::Unchanged(rel);
+                    return Prepared::Unchanged(rel, *stat);
                 }
                 let Ok(bytes) = std::fs::read(path) else {
                     return Prepared::Skipped;
@@ -269,7 +284,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
                 let text = walk::decode_text(&bytes);
                 let chunks = chunk::chunk_source(path, &text, config);
                 if chunks.is_empty() {
-                    return Prepared::Skipped;
+                    return Prepared::Empty(rel, hash, *stat);
                 }
                 let pending = chunks
                     .into_iter()
@@ -281,6 +296,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
                             end_line: c.end_line,
                             snippet: truncate(&dedent(&c.text), SNIPPET_BYTES),
                             file_hash: hash,
+                            stat: *stat,
                             terms: crate::lexical::TermVector::new(
                                 &c.text,
                                 &rel,
@@ -301,12 +317,21 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
         for file in prepared {
             pb.inc(1);
             match file {
-                Prepared::Unchanged(rel) => {
+                Prepared::Unchanged(rel, stat) => {
                     if let Some(records) = prev_chunks.get_mut(&rel) {
+                        // A file touched without a change, or past the racy
+                        // margin now, takes the stat it has today.
+                        if records.first().is_some_and(|r| r.stat != stat) {
+                            stat_moved = true;
+                            for record in records.iter_mut() {
+                                record.stat = stat;
+                            }
+                        }
                         index.records.append(records);
                     }
                     reused += 1;
                 }
+                Prepared::Empty(rel, hash, stat) => empties.push((rel, hash, stat)),
                 Prepared::Skipped => {}
                 Prepared::Cut(chunks) => {
                     embedded += 1;
@@ -322,6 +347,8 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     }
     queue.flush(config, &mut embedder, &mut index, &pb)?;
     pb.finish_and_clear();
+    empties.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    index.empties = empties;
 
     let stats = IndexStats {
         files: embedded + reused,
@@ -338,6 +365,8 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     // running server reload it.
     let unchanged = reusable
         && embedded == 0
+        && !stat_moved
+        && index.empties == prev_empties
         && prev_chunks.values().all(Vec::is_empty)
         && prev_ann.is_some() == wants_ann(index.records.len())
         && (prev_floor.is_some() || index.records.is_empty());
@@ -380,24 +409,111 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
     Ok((stats, Some(index)))
 }
 
-/// How many files `index` holds, when the walk found exactly those files
-/// with the same contents and nothing else that has anything to index. The
-/// index is then right as it stands: taking it apart by file and putting it
-/// back together, which is most of the work of an update that changes
-/// nothing, can be left out.
-fn nothing_changed(
+/// A file with nothing to index: its path, content hash and stat.
+type Empty = (String, u64, FileStat);
+
+/// A file with text: its path, content hash and the stat to store for it.
+type Hashed = (std::path::PathBuf, u64, FileStat);
+
+/// What a walk found: the files holding text with their hash and the stat to
+/// store for them, and the files that hold nothing to index.
+struct Walked {
+    files: Vec<Hashed>,
+    empties: Vec<Empty>,
+}
+
+/// Hashes the listed files, except those the previous index already knows at
+/// the stat they have now: those take the hash it stored and are not opened.
+/// `started` is when the walk began, which decides what stat is safe to store.
+fn scan(
     config: &Config,
-    files: &[(std::path::PathBuf, u64)],
-    index: &Index,
-) -> Option<usize> {
-    let mut held: HashMap<&str, u64> = HashMap::new();
+    listed: Vec<(std::path::PathBuf, FileStat)>,
+    prev: Option<&Index>,
+    started: i64,
+) -> Walked {
+    let chunking = chunk::Chunking::of(config);
+    let usable = prev.filter(|index| {
+        !config.hash_all
+            && index.dims == config.dims()
+            && index.built_for(config.backend, &config.model)
+    });
+    let mut known: HashMap<&str, (u64, FileStat)> = HashMap::new();
+    let mut last = None;
+    for record in usable.map_or(&[][..], |index| &index.records[..]) {
+        if last != Some(record.path.as_str()) {
+            last = Some(record.path.as_str());
+            known
+                .entry(record.path.as_str())
+                .or_insert((record.file_hash, record.stat));
+        }
+    }
+    // Whether a file holds anything to index depends on how it is cut, so
+    // these are trusted only under the chunking they were found with.
+    let barren: HashMap<&str, (u64, FileStat)> = usable
+        .filter(|index| index.chunking == chunking)
+        .into_iter()
+        .flat_map(|index| &index.empties)
+        .map(|(path, hash, stat)| (path.as_str(), (*hash, *stat)))
+        .collect();
+
+    let scanned: Vec<Option<Result<Hashed, Empty>>> = listed
+        .into_par_iter()
+        .map_init(Vec::new, |buffer, (path, stat)| {
+            let rel = relative(&config.root, &path);
+            if let Some(&(hash, stored)) = known.get(rel.as_str())
+                && stored.trusts(&stat)
+            {
+                return Some(Ok((path, hash, stored)));
+            }
+            if let Some(&(hash, stored)) = barren.get(rel.as_str())
+                && stored.trusts(&stat)
+            {
+                return Some(Err((rel, hash, stored)));
+            }
+            match walk::read_hashed(&path, buffer) {
+                walk::Sniffed::Text(hash) => Some(Ok((path, hash, stat.settled(started)))),
+                walk::Sniffed::Binary => Some(Err((rel, 0, stat.settled(started)))),
+                walk::Sniffed::Unreadable => None,
+            }
+        })
+        .collect();
+    let mut walked = Walked {
+        files: Vec::with_capacity(scanned.len()),
+        empties: Vec::new(),
+    };
+    for found in scanned.into_iter().flatten() {
+        match found {
+            Ok(file) => walked.files.push(file),
+            Err(empty) => walked.empties.push(empty),
+        }
+    }
+    walked
+}
+
+/// What [`nothing_changed`] found out.
+struct Settled {
+    /// Files the index holds.
+    files: usize,
+    /// A file the index holds has a stat other than the one it stores.
+    stale: bool,
+    /// Files the index does not hold that have nothing to index.
+    blank: Vec<Empty>,
+}
+
+/// What `index` holds, when the walk found exactly those files with the same
+/// contents and nothing else that has anything to index. The index is then
+/// right as it stands: taking it apart by file and putting it back together,
+/// which is most of the work of an update that changes nothing, can be left
+/// out.
+fn nothing_changed(config: &Config, files: &[Hashed], index: &Index) -> Option<Settled> {
+    let mut held: HashMap<&str, (u64, FileStat)> = HashMap::new();
     let mut last = None;
     for record in &index.records {
         if last != Some(record.path.as_str()) {
             last = Some(record.path.as_str());
             // A file whose records lie in two places is put back in one.
             if held
-                .insert(record.path.as_str(), record.file_hash)
+                .insert(record.path.as_str(), (record.file_hash, record.stat))
                 .is_some()
             {
                 return None;
@@ -405,26 +521,50 @@ fn nothing_changed(
         }
     }
     let mut found = 0;
+    let mut stale = false;
     let mut others = Vec::new();
-    for (path, hash) in files {
+    for (path, hash, stat) in files {
         match held.get(relative(&config.root, path).as_str()) {
-            Some(known) if known == hash => found += 1,
+            Some((known, stored)) if known == hash => {
+                found += 1;
+                stale |= stored != stat;
+            }
             Some(_) => return None,
-            None => others.push(path),
+            None => others.push((path, *hash, *stat)),
         }
     }
     if found != held.len() {
         return None;
     }
     // A file the index does not hold is new, or one that had nothing in it
-    // last time either, such as a blank one.
-    others
+    // last time either, such as a blank one that has been touched.
+    let blank: Option<Vec<Option<Empty>>> = others
         .par_iter()
-        .all(|path| match std::fs::read(path) {
-            Ok(bytes) => chunk::chunk_source(path, &walk::decode_text(&bytes), config).is_empty(),
-            Err(_) => true,
+        .map(|&(path, hash, stat)| match std::fs::read(path) {
+            Ok(bytes) => chunk::chunk_source(path, &walk::decode_text(&bytes), config)
+                .is_empty()
+                .then(|| Some((relative(&config.root, path), hash, stat))),
+            Err(_) => Some(None),
         })
-        .then_some(found)
+        .collect();
+    Some(Settled {
+        files: found,
+        stale,
+        blank: blank?.into_iter().flatten().collect(),
+    })
+}
+
+/// Gives every record the stat its file has in `files`.
+fn refresh_stats(config: &Config, files: &[Hashed], index: &mut Index) {
+    let current: HashMap<String, FileStat> = files
+        .iter()
+        .map(|(path, _, stat)| (relative(&config.root, path), *stat))
+        .collect();
+    for file in index.records.chunk_by_mut(|a, b| a.path == b.path) {
+        if let Some(&stat) = current.get(file[0].path.as_str()) {
+            file.iter_mut().for_each(|record| record.stat = stat);
+        }
+    }
 }
 
 /// Each file's path once, in the order its first record appears.
@@ -489,8 +629,11 @@ const PREPARE_BATCH: usize = 256;
 
 /// What one scanned file contributes to the index.
 enum Prepared {
-    Unchanged(String),
+    Unchanged(String, FileStat),
     Cut(Vec<(Pending, String)>),
+    /// Nothing to index: it cuts into no chunks.
+    Empty(String, u64, FileStat),
+    /// Could not be read.
     Skipped,
 }
 
@@ -500,6 +643,7 @@ struct Pending {
     end_line: usize,
     snippet: String,
     file_hash: u64,
+    stat: FileStat,
     terms: crate::lexical::TermVector,
     symbol: Option<crate::symbol::Symbol>,
     declarations: Vec<crate::symbol::Declaration>,
@@ -586,6 +730,7 @@ impl Queue {
                 end_line: p.end_line,
                 snippet: p.snippet.into(),
                 file_hash: p.file_hash,
+                stat: p.stat,
                 vector: p.vector.unwrap_or_else(|| crate::quant::quantize(&vector)),
                 terms: p.terms,
                 symbol: p.symbol,
@@ -1300,6 +1445,7 @@ mod tests {
             end_line: 1,
             snippet: String::new().into(),
             file_hash: fingerprint::content_hash(bytes),
+            stat: FileStat::UNKNOWN,
             text_hash: 0,
             vector: crate::quant::quantize(&[]),
             terms: Default::default(),
@@ -1357,6 +1503,7 @@ mod tests {
             end_line: 34,
             snippet: truncate(&text, SNIPPET_BYTES).into(),
             file_hash: fingerprint::content_hash(text.as_bytes()),
+            stat: FileStat::UNKNOWN,
             text_hash: 0,
             vector: crate::quant::quantize(&[]),
             terms: Default::default(),
@@ -1454,5 +1601,44 @@ mod tests {
 
         index_repo(&config, false).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), current);
+    }
+
+    /// The previous format kept no stat, so no file can be trusted on the
+    /// first run, which hashes every file and stores what it saw.
+    #[test]
+    fn an_index_in_the_previous_format_gets_its_stats_after_one_run() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("a.rs", "alpha bravo charlie delta echo foxtrot");
+        let file = dir.path().join("a.rs");
+        let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        index_repo(&config, false).unwrap();
+        let path = config.index_path();
+        Index::load(&path).unwrap().save_in_previous_format(&path);
+        let old = Index::load(&path).unwrap();
+        assert!(old.records.iter().all(|r| r.stat == FileStat::UNKNOWN));
+
+        // Same size and time, other text: a stored stat would trust it.
+        std::fs::write(&file, "omega bravo charlie delta echo foxtrot").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+        let upgraded = index_repo(&config, false).unwrap();
+        assert_eq!((upgraded.embedded, upgraded.reused), (1, 0));
+        let current = Index::load(&path).unwrap();
+        assert!(!current.outdated);
+        assert!(current.records.iter().all(|r| r.stat != FileStat::UNKNOWN));
     }
 }

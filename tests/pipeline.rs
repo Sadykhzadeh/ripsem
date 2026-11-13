@@ -1248,3 +1248,305 @@ fn markdown_without_headings_is_cut_into_line_windows() {
     let stats = pipeline::index_repo(&config, false).unwrap();
     assert_eq!(stats.chunks, 3);
 }
+
+mod stat_cache {
+    use std::time::{Duration, SystemTime};
+
+    use ripsem::fingerprint::FileStat;
+    use ripsem::index::Index;
+
+    use super::*;
+
+    fn set_modified(path: &Path, time: SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+    }
+
+    fn modified(path: &Path) -> SystemTime {
+        std::fs::metadata(path).unwrap().modified().unwrap()
+    }
+
+    fn ago(seconds: u64) -> SystemTime {
+        SystemTime::now() - Duration::from_secs(seconds)
+    }
+
+    /// Written, then dated well before any walk's racy margin.
+    fn old_file(dir: &TempDir, name: &str, contents: &str) {
+        dir.write(name, contents);
+        set_modified(&dir.path.join(name), ago(100));
+    }
+
+    fn held(config: &Config) -> Index {
+        Index::load(&config.index_path()).unwrap()
+    }
+
+    fn stat_of(config: &Config, path: &str) -> FileStat {
+        held(config)
+            .records
+            .iter()
+            .find(|r| r.path.as_str() == path)
+            .unwrap()
+            .stat
+    }
+
+    fn counts(stats: &pipeline::IndexStats) -> (usize, usize, usize, usize) {
+        (stats.files, stats.embedded, stats.reused, stats.chunks)
+    }
+
+    /// `a.rs` is indexed, then rewritten with other text of the same length and
+    /// the modification time it had.
+    fn rewritten_in_place() -> (TempDir, Config) {
+        let dir = TempDir::new();
+        old_file(&dir, "a.rs", "alpha bravo charlie");
+        old_file(&dir, "b.rs", "delta echo foxtrot");
+        let config = config_for(&dir.path);
+        pipeline::index_repo(&config, false).unwrap();
+
+        let path = dir.path.join("a.rs");
+        let before = modified(&path);
+        dir.write("a.rs", "omega bravo charlie");
+        set_modified(&path, before);
+        (dir, config)
+    }
+
+    #[test]
+    fn a_run_that_finds_nothing_changed_leaves_the_index_file_alone() {
+        let dir = TempDir::new();
+        old_file(&dir, "a.rs", "alpha bravo charlie");
+        old_file(&dir, "b.rs", "delta echo foxtrot");
+        let config = config_for(&dir.path);
+        let first = pipeline::index_repo(&config, false).unwrap();
+        let written = std::fs::read(config.index_path()).unwrap();
+
+        let second = pipeline::index_repo(&config, false).unwrap();
+        assert_eq!(counts(&first), (2, 2, 0, 2));
+        assert_eq!(counts(&second), (2, 0, 2, 2));
+        assert_eq!(std::fs::read(config.index_path()).unwrap(), written);
+    }
+
+    #[test]
+    fn an_edit_that_changes_the_size_is_picked_up() {
+        let dir = TempDir::new();
+        old_file(&dir, "a.rs", "alpha bravo charlie");
+        old_file(&dir, "b.rs", "delta echo foxtrot");
+        let config = config_for(&dir.path);
+        pipeline::index_repo(&config, false).unwrap();
+
+        dir.write("a.rs", "alpha bravo charlie golf");
+        let stats = pipeline::index_repo(&config, false).unwrap();
+        assert_eq!((stats.embedded, stats.reused), (1, 1));
+    }
+
+    #[test]
+    fn an_edit_that_keeps_the_size_but_not_the_time_is_picked_up() {
+        let dir = TempDir::new();
+        old_file(&dir, "a.rs", "alpha bravo charlie");
+        let config = config_for(&dir.path);
+        pipeline::index_repo(&config, false).unwrap();
+
+        dir.write("a.rs", "omega bravo charlie");
+        set_modified(&dir.path.join("a.rs"), ago(50));
+        let stats = pipeline::index_repo(&config, false).unwrap();
+        assert_eq!((stats.embedded, stats.reused), (1, 0));
+    }
+
+    /// The trade-off of trusting a stat: a rewrite that restores the size and
+    /// the time is not seen, until the file is hashed on request.
+    #[test]
+    fn a_rewrite_with_the_same_size_and_time_is_missed_unless_asked_for() {
+        let (_dir, config) = rewritten_in_place();
+        let plain = pipeline::index_repo(&config, false).unwrap();
+        assert_eq!((plain.embedded, plain.reused), (0, 2));
+
+        let hashed = Config {
+            hash_all: true,
+            ..config_for(&config.root)
+        };
+        let stats = pipeline::index_repo(&hashed, false).unwrap();
+        assert_eq!((stats.embedded, stats.reused), (1, 1));
+    }
+
+    #[test]
+    fn a_rewrite_with_the_same_size_and_time_is_seen_by_a_forced_index() {
+        let (_dir, config) = rewritten_in_place();
+        let stats = pipeline::index_repo(&config, true).unwrap();
+        assert_eq!((stats.embedded, stats.reused), (2, 0));
+    }
+
+    #[test]
+    fn blank_and_binary_files_are_remembered_and_not_rewritten() {
+        let dir = TempDir::new();
+        old_file(&dir, "keep.rs", "alpha bravo charlie");
+        old_file(&dir, "blank.txt", "   \n\n");
+        old_file(&dir, "blob.bin", "head\0\0\0\u{1}\u{2}tail");
+        let config = config_for(&dir.path);
+        let first = pipeline::index_repo(&config, false).unwrap();
+        let written = std::fs::read(config.index_path()).unwrap();
+        let empties = held(&config).empties;
+        let names: Vec<&str> = empties.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(names, ["blank.txt", "blob.bin"]);
+        assert!(empties.iter().all(|e| e.2 != FileStat::UNKNOWN));
+
+        let second = pipeline::index_repo(&config, false).unwrap();
+        assert_eq!(counts(&first), (1, 1, 0, 1));
+        assert_eq!(counts(&second), (1, 0, 1, 1));
+        assert_eq!(std::fs::read(config.index_path()).unwrap(), written);
+    }
+
+    #[test]
+    fn a_blank_file_that_gets_content_is_indexed() {
+        let dir = TempDir::new();
+        old_file(&dir, "keep.rs", "alpha bravo charlie");
+        old_file(&dir, "blank.txt", "   \n\n");
+        let config = config_for(&dir.path);
+        pipeline::index_repo(&config, false).unwrap();
+        assert_eq!(held(&config).empties.len(), 1);
+
+        dir.write("blank.txt", "delta echo foxtrot");
+        let stats = pipeline::index_repo(&config, false).unwrap();
+        assert_eq!((stats.files, stats.embedded, stats.reused), (2, 1, 1));
+        assert!(held(&config).empties.is_empty());
+    }
+
+    #[test]
+    fn a_touched_blank_file_is_remembered_at_its_new_time() {
+        let dir = TempDir::new();
+        old_file(&dir, "keep.rs", "alpha bravo charlie");
+        old_file(&dir, "blank.txt", "   \n\n");
+        let config = config_for(&dir.path);
+        pipeline::index_repo(&config, false).unwrap();
+        let before = held(&config).empties[0].2;
+
+        set_modified(&dir.path.join("blank.txt"), ago(50));
+        pipeline::index_repo(&config, false).unwrap();
+        assert_ne!(held(&config).empties[0].2, before);
+        let written = std::fs::read(config.index_path()).unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+        assert_eq!(std::fs::read(config.index_path()).unwrap(), written);
+    }
+
+    #[test]
+    fn a_file_touched_without_a_change_is_kept_and_remembered_at_its_new_time() {
+        let dir = TempDir::new();
+        old_file(&dir, "a.rs", "alpha bravo charlie");
+        old_file(&dir, "b.rs", "delta echo foxtrot");
+        let config = config_for(&dir.path);
+        pipeline::index_repo(&config, false).unwrap();
+        let before = stat_of(&config, "a.rs");
+
+        // Nothing else changed.
+        set_modified(&dir.path.join("a.rs"), ago(50));
+        let touched = pipeline::index_repo(&config, false).unwrap();
+        assert_eq!((touched.embedded, touched.reused), (0, 2));
+        let after = stat_of(&config, "a.rs");
+        assert_ne!(after, before);
+
+        // Another file changed too, so the index is put together again.
+        set_modified(&dir.path.join("a.rs"), ago(40));
+        dir.write("b.rs", "delta echo foxtrot golf");
+        let mixed = pipeline::index_repo(&config, false).unwrap();
+        assert_eq!((mixed.embedded, mixed.reused), (1, 1));
+        assert_ne!(stat_of(&config, "a.rs"), after);
+    }
+
+    #[test]
+    fn a_deleted_file_is_dropped() {
+        let dir = TempDir::new();
+        old_file(&dir, "a.rs", "alpha bravo charlie");
+        old_file(&dir, "b.rs", "delta echo foxtrot");
+        old_file(&dir, "blob.bin", "head\0\0\0tail");
+        let config = config_for(&dir.path);
+        pipeline::index_repo(&config, false).unwrap();
+
+        std::fs::remove_file(dir.path.join("b.rs")).unwrap();
+        std::fs::remove_file(dir.path.join("blob.bin")).unwrap();
+        let stats = pipeline::index_repo(&config, false).unwrap();
+        assert_eq!((stats.files, stats.reused), (1, 1));
+        let index = held(&config);
+        assert!(index.records.iter().all(|r| r.path.as_str() == "a.rs"));
+        assert!(index.empties.is_empty());
+    }
+
+    /// A file written within the racy margin of a walk is stored with a stat
+    /// that matches nothing, so the next run hashes it again, and only once it
+    /// has aged is its stat stored and trusted.
+    #[test]
+    fn a_fresh_file_is_hashed_again_and_trusted_once_it_has_aged() {
+        let dir = TempDir::new();
+        dir.write("a.rs", "alpha bravo charlie");
+        let path = dir.path.join("a.rs");
+        let config = config_for(&dir.path);
+        pipeline::index_repo(&config, false).unwrap();
+        assert_eq!(stat_of(&config, "a.rs"), FileStat::UNKNOWN);
+
+        let written = std::fs::read(config.index_path()).unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+        assert_eq!(std::fs::read(config.index_path()).unwrap(), written);
+
+        set_modified(&path, ago(100));
+        let aged = pipeline::index_repo(&config, false).unwrap();
+        assert_eq!((aged.embedded, aged.reused), (0, 1));
+        assert_ne!(stat_of(&config, "a.rs"), FileStat::UNKNOWN);
+
+        let before = modified(&path);
+        dir.write("a.rs", "omega bravo charlie");
+        set_modified(&path, before);
+        let trusted = pipeline::index_repo(&config, false).unwrap();
+        assert_eq!((trusted.embedded, trusted.reused), (0, 1));
+    }
+
+    #[test]
+    fn a_file_dated_in_the_future_is_never_trusted() {
+        let dir = TempDir::new();
+        dir.write("a.rs", "alpha bravo charlie");
+        let path = dir.path.join("a.rs");
+        set_modified(&path, SystemTime::now() + Duration::from_secs(3600));
+        let config = config_for(&dir.path);
+        pipeline::index_repo(&config, false).unwrap();
+        assert_eq!(stat_of(&config, "a.rs"), FileStat::UNKNOWN);
+
+        let before = modified(&path);
+        dir.write("a.rs", "omega bravo charlie");
+        set_modified(&path, before);
+        let stats = pipeline::index_repo(&config, false).unwrap();
+        assert_eq!((stats.embedded, stats.reused), (1, 0));
+    }
+
+    /// What the walk keeps is decided on every run; only a file's content is
+    /// taken from the index.
+    #[test]
+    fn a_changed_limit_or_exclude_applies_to_files_the_index_remembers() {
+        let dir = TempDir::new();
+        old_file(&dir, "keep.rs", "alpha bravo charlie");
+        old_file(&dir, "big.txt", &"delta echo foxtrot\n".repeat(150));
+        old_file(&dir, "Cargo.lock", "golf hotel india");
+        old_file(&dir, "blob.bin", "head\0\0\0tail");
+        let narrow = Config {
+            max_file_kb: 1,
+            ..config_for(&dir.path)
+        };
+        let first = pipeline::index_repo(&narrow, false).unwrap();
+        assert_eq!(first.files, 1);
+
+        let wide = Config {
+            max_file_kb: 4,
+            skip_generated: false,
+            ..config_for(&dir.path)
+        };
+        let second = pipeline::index_repo(&wide, false).unwrap();
+        assert_eq!((second.files, second.embedded, second.reused), (3, 2, 1));
+
+        let back = pipeline::index_repo(&narrow, false).unwrap();
+        assert_eq!(back.files, 1);
+        assert!(
+            held(&narrow)
+                .records
+                .iter()
+                .all(|r| r.path.as_str() == "keep.rs")
+        );
+    }
+}

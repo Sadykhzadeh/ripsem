@@ -371,6 +371,11 @@ the index takes in. A file is left out when `.gitignore`, `.ripsemignore` or
 running MCP server keeps it current; `ripsem status` shows how far it has
 drifted.
 
+**An edited file is not picked up.** A file whose size and modification time
+are what they were when it was indexed is not read again, so a tool that
+rewrites a file and keeps both leaves the change unseen. Set `RIPSEM_HASH_ALL=1`
+to hash every file on that run, or run `ripsem index --force`.
+
 **Search says the index was built with another model.** The config names a
 different model or backend than the index. `ripsem index` rebuilds it for the
 config.

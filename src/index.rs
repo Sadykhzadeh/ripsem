@@ -9,6 +9,7 @@ use rayon::prelude::*;
 use crate::chunk::Chunking;
 use crate::cli::show_path;
 use crate::config::Backend;
+use crate::fingerprint::FileStat;
 use crate::lexical::{TermHash, TermVector, Weights};
 use crate::quant::{self, QuantizedVector};
 use crate::scope::Scope;
@@ -46,6 +47,8 @@ pub struct Record {
     pub end_line: usize,
     pub snippet: SharedStr,
     pub file_hash: u64,
+    /// The file's stat when it was hashed; every record of a file shares it.
+    pub stat: FileStat,
     /// The chunk's own text, so an edit elsewhere in its file does not embed
     /// it again.
     pub text_hash: u64,
@@ -130,6 +133,11 @@ pub struct Index {
     pub model: String,
     pub chunking: Chunking,
     pub records: Vec<Record>,
+    /// Files the walk reached that hold nothing to index (blank, binary, or
+    /// cut into no chunks), as path, content hash and stat. Remembered so a run
+    /// does not read them again; the hash of a binary file is 0, as it is not
+    /// taken.
+    pub empties: Vec<(String, u64, FileStat)>,
     pub ann: Option<Vec<u8>>,
     /// How similar text about something else entirely scores against this
     /// index: a cosine is reported as how far it rises above this. `None`
@@ -205,6 +213,7 @@ impl Index {
             model,
             chunking: Chunking::default(),
             records: Vec::new(),
+            empties: Vec::new(),
             ann: None,
             noise_floor: None,
             embedded_since_floor: 0,
@@ -666,6 +675,7 @@ mod tests {
             end_line: 1,
             snippet: text.into(),
             file_hash: 0,
+            stat: FileStat::UNKNOWN,
             text_hash: 0,
             vector: quant::quantize(&vector),
             terms: TermVector::new(text, path, None),
@@ -1362,7 +1372,7 @@ mod tests {
         let bytes = sample_index().encode_body().unwrap();
         assert_eq!(
             (FORMAT_VERSION, crate::fingerprint::content_hash(&bytes)),
-            (12, 0xaf7f_009a_4760_6753)
+            (12, 0xbaf5_6623_858a_ea1c)
         );
     }
 

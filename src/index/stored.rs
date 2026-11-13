@@ -11,6 +11,7 @@ use bitcode::{Decode, Encode};
 use super::{Index, Record};
 use crate::chunk::Chunking;
 use crate::config::Backend;
+use crate::fingerprint::FileStat;
 use crate::lexical::TermVector;
 use crate::quant::QuantizedVector;
 use crate::shared::{Shared, SharedStr};
@@ -27,6 +28,8 @@ pub(super) struct Stored {
     embedded_since_floor: usize,
     /// Runs of records that share a path, in record order.
     files: Vec<StoredFile>,
+    /// See [`Index::empties`].
+    empties: Vec<(String, u64, FileStat)>,
     start_lines: Vec<u32>,
     end_lines: Vec<u32>,
     text_hashes: Vec<u64>,
@@ -50,6 +53,7 @@ pub(super) struct Stored {
 struct StoredFile {
     path: String,
     file_hash: u64,
+    stat: FileStat,
     records: u32,
 }
 
@@ -79,6 +83,7 @@ impl Stored {
             noise_floor: index.noise_floor,
             embedded_since_floor: index.embedded_since_floor,
             files: Vec::new(),
+            empties: index.empties.clone(),
             start_lines: Vec::with_capacity(count),
             end_lines: Vec::with_capacity(count),
             text_hashes: Vec::with_capacity(count),
@@ -96,12 +101,17 @@ impl Stored {
         };
         for r in &index.records {
             match stored.files.last_mut() {
-                Some(file) if file.path == r.path.as_str() && file.file_hash == r.file_hash => {
+                Some(file)
+                    if file.path == r.path.as_str()
+                        && file.file_hash == r.file_hash
+                        && file.stat == r.stat =>
+                {
                     file.records += 1;
                 }
                 _ => stored.files.push(StoredFile {
                     path: r.path.to_string(),
                     file_hash: r.file_hash,
+                    stat: r.stat,
                     records: 1,
                 }),
             }
@@ -147,6 +157,7 @@ impl Stored {
             noise_floor,
             embedded_since_floor,
             files,
+            empties,
             start_lines,
             end_lines,
             text_hashes,
@@ -204,6 +215,7 @@ impl Stored {
                     snippet: SharedStr::slice_of(&snippets, span(&snippet_ends, i))
                         .ok_or_else(outside)?,
                     file_hash: file.file_hash,
+                    stat: file.stat,
                     text_hash: text_hashes[i],
                     vector: QuantizedVector {
                         scale: scales[i],
@@ -227,6 +239,7 @@ impl Stored {
             model,
             chunking,
             records,
+            empties,
             ann,
             noise_floor,
             embedded_since_floor,
@@ -248,6 +261,7 @@ mod tests {
                 end_line: 2,
                 snippet: snippet.into(),
                 file_hash: 5,
+                stat: FileStat::UNKNOWN,
                 text_hash: 6,
                 vector: crate::quant::quantize(&[1.0, 0.5]),
                 terms: TermVector::new(snippet, path, None),

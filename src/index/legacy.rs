@@ -7,6 +7,7 @@ use bitcode::Decode;
 use super::{Index as Current, Record as CurrentRecord};
 use crate::chunk::Chunking;
 use crate::config::Backend;
+use crate::fingerprint::FileStat;
 use crate::lexical::TermVector as CurrentTerms;
 use crate::quant::QuantizedVector as CurrentVector;
 use crate::symbol::{Declaration, Symbol};
@@ -57,6 +58,7 @@ impl From<Index> for Current {
             model: old.model,
             chunking: old.chunking,
             records: old.records.into_iter().map(Into::into).collect(),
+            empties: Vec::new(),
             ann: old.ann,
             noise_floor: old.noise_floor,
             embedded_since_floor: old.embedded_since_floor,
@@ -74,6 +76,8 @@ impl From<Record> for CurrentRecord {
             end_line: old.end_line,
             snippet: old.snippet.into(),
             file_hash: old.file_hash,
+            // This format kept no stat, so the first run hashes every file.
+            stat: FileStat::UNKNOWN,
             text_hash: old.text_hash,
             vector: CurrentVector {
                 scale: old.vector.scale,
