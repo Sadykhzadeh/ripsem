@@ -17,6 +17,13 @@
 - A file saved as UTF-32 with a byte order mark is read as text. It was
   taken for UTF-16, so every character was followed by a NUL and nothing in
   it could be found. Run `ripsem index --force` to read such a file again.
+- `ripsem install codex` adds the server to `.codex/config.toml` for Codex CLI,
+  keeping the rest of that file, and the note on when to use it to
+  `AGENTS.md`. Codex reads a project's config only when the project is
+  trusted.
+- `ripsem install opencode` adds the server to `opencode.json` for OpenCode,
+  keeping the other settings there, and the note on when to use it to
+  `AGENTS.md`.
 - `ripsem install gemini` adds the server to `.gemini/settings.json` for
   Gemini CLI, keeping the other settings there, and the note on when to use
   it to `GEMINI.md`.
