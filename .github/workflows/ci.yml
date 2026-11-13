@@ -93,6 +93,18 @@ jobs:
           tool: cargo-audit
       - run: cargo audit
 
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@375b74606b681357a78b6488a4828b3b84bdd155 # cargo-audit
+        with:
+          tool: cargo-deny
+      - run: cargo deny check
+
   # Paths are the part of this that is not portable: the index stores
   # forward-slash repo-relative paths, the walker judges them against the root,
   # the temp-file replace on save has to work, and status strips the verbatim
@@ -108,3 +120,19 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Test pure-Rust features
         run: cargo test --no-default-features --features treesitter,hnsw --all-targets
+
+  # The release builds this target with the ONNX Runtime and the link step that
+  # goes with it. A bump of the runtime once broke that link, and nothing here
+  # built on macOS, so the failure surfaced only when a tag was pushed.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Build
+        run: cargo build --locked
+      - name: Test
+        run: cargo test --locked
