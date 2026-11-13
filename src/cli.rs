@@ -177,6 +177,8 @@ pub enum InstallCmd {
     Gemini,
     /// Add ripsem to opencode.json for OpenCode.
     OpenCode,
+    /// Add ripsem to .codex/config.toml for Codex CLI.
+    Codex,
 }
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -754,6 +756,7 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
         InstallCmd::Vscode => "VS Code",
         InstallCmd::Gemini => "Gemini CLI",
         InstallCmd::OpenCode => "OpenCode",
+        InstallCmd::Codex => "Codex CLI",
     };
     add_server(root, &target)?;
     add_note(root, &target)?;
@@ -782,7 +785,7 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
             root.join("GEMINI.md"),
             format!("## Code search\n\n{}\n", mcp::INSTRUCTIONS),
         ),
-        InstallCmd::OpenCode => (
+        InstallCmd::OpenCode | InstallCmd::Codex => (
             root.join("AGENTS.md"),
             format!("## Code search\n\n{}\n", mcp::INSTRUCTIONS),
         ),
@@ -811,6 +814,43 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
     Ok(())
 }
 
+/// Codex keeps its servers in TOML, so the table is appended as text and the
+/// rest of the file stays as it is.
+fn add_codex_server(path: &Path) -> Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", show_path(path))),
+    };
+    let doc: toml::Table =
+        toml::from_str(text.trim_start_matches('\u{feff}')).with_context(|| {
+            format!(
+                "{} is not valid TOML; fix it and run this again",
+                show_path(path)
+            )
+        })?;
+    match doc.get("mcp_servers") {
+        None => {}
+        Some(toml::Value::Table(servers)) if servers.contains_key("ripsem") => {
+            out!("ripsem is already in {}; left as it is", show_path(path));
+            return Ok(());
+        }
+        Some(toml::Value::Table(_)) => {}
+        Some(_) => anyhow::bail!(
+            "mcp_servers in {} is not a table; fix it and run this again",
+            show_path(path)
+        ),
+    }
+    let mut written = text.trim_end().to_string();
+    if !written.is_empty() {
+        written.push_str("\n\n");
+    }
+    written.push_str("[mcp_servers.ripsem]\ncommand = \"ripsem\"\nargs = [\"mcp\"]\n");
+    std::fs::write(path, written)?;
+    out!("added ripsem to {}", show_path(path));
+    Ok(())
+}
+
 fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
     let (rel, key) = match target {
         InstallCmd::ClaudeCode => (".mcp.json", "mcpServers"),
@@ -818,10 +858,14 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
         InstallCmd::Vscode => (".vscode/mcp.json", "servers"),
         InstallCmd::Gemini => (".gemini/settings.json", "mcpServers"),
         InstallCmd::OpenCode => ("opencode.json", "mcp"),
+        InstallCmd::Codex => (".codex/config.toml", "mcp_servers"),
     };
     let path = root.join(rel);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+    }
+    if let InstallCmd::Codex = target {
+        return add_codex_server(&path);
     }
 
     // The file usually lists other servers. If it is not a readable JSON object
@@ -876,6 +920,7 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
             "command": ["ripsem", "mcp"],
             "enabled": true,
         }),
+        InstallCmd::Codex => unreachable!("Codex is written as TOML above"),
         InstallCmd::Cursor => json!({
             "command": "ripsem",
             "args": ["mcp", "--path", "${workspaceFolder}"],
@@ -1293,6 +1338,32 @@ mod tests {
         assert_eq!(
             doc["mcp"]["ripsem"],
             json!({ "type": "local", "command": ["ripsem", "mcp"], "enabled": true })
+        );
+        let note = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert!(note.starts_with("## Code search\n") && note.contains("`search` tool"));
+    }
+
+    #[test]
+    fn install_codex_keeps_the_other_settings() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write(
+            ".codex/config.toml",
+            "model = \"gpt-5\"\n\n[mcp_servers.other]\ncommand = \"x\"\n",
+        );
+        cmd_install(dir.path(), InstallCmd::Codex).unwrap();
+        let doc: toml::Table = toml::from_str(
+            &std::fs::read_to_string(dir.path().join(".codex/config.toml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["model"].as_str(), Some("gpt-5"));
+        assert_eq!(doc["mcp_servers"]["other"]["command"].as_str(), Some("x"));
+        assert_eq!(
+            doc["mcp_servers"]["ripsem"]["command"].as_str(),
+            Some("ripsem")
+        );
+        assert_eq!(
+            doc["mcp_servers"]["ripsem"]["args"],
+            toml::Value::from(vec!["mcp"])
         );
         let note = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
         assert!(note.starts_with("## Code search\n") && note.contains("`search` tool"));
