@@ -1,4 +1,4 @@
-use bitcode::{Decode, Encode};
+use crate::shared::Shared;
 use xxhash_rust::xxh3::xxh3_64;
 
 pub const MAX_QUERY_TERMS: usize = 64;
@@ -155,9 +155,12 @@ fn starts_new_piece(bytes: &[u8], i: usize) -> bool {
     false
 }
 
-#[derive(Debug, Clone, Default, Encode, Decode)]
+/// The distinct terms of a chunk in ascending hash order, and how often each
+/// occurs, in two parallel slices.
+#[derive(Debug, Clone, Default)]
 pub struct TermVector {
-    terms: Vec<(TermHash, u8)>,
+    hashes: Shared<TermHash>,
+    counts: Shared<u8>,
     length: u32,
 }
 
@@ -173,18 +176,43 @@ impl TermVector {
         }
         let length = hashes.len() as u32;
         hashes.sort_unstable();
-        let mut terms: Vec<(TermHash, u8)> = Vec::with_capacity(hashes.len());
+        let mut distinct: Vec<TermHash> = Vec::with_capacity(hashes.len());
+        let mut counts: Vec<u8> = Vec::with_capacity(hashes.len());
         for hash in hashes {
-            match terms.last_mut() {
-                Some(last) if last.0 == hash => last.1 = last.1.saturating_add(1),
-                _ => terms.push((hash, 1)),
+            match distinct.last() {
+                Some(&last) if last == hash => {
+                    let count = counts.last_mut().expect("one count per hash");
+                    *count = count.saturating_add(1);
+                }
+                _ => {
+                    distinct.push(hash);
+                    counts.push(1);
+                }
             }
         }
-        terms.shrink_to_fit();
         Self {
-            terms,
+            hashes: distinct.into(),
+            counts: counts.into(),
             length: length.max(1),
         }
+    }
+
+    /// Terms read back from an index: `hashes` ascending, one count each.
+    pub fn from_columns(hashes: Shared<TermHash>, counts: Shared<u8>, length: u32) -> Self {
+        debug_assert_eq!(hashes.len(), counts.len());
+        Self {
+            hashes,
+            counts,
+            length,
+        }
+    }
+
+    pub fn hashes(&self) -> &Shared<TermHash> {
+        &self.hashes
+    }
+
+    pub fn counts(&self) -> &Shared<u8> {
+        &self.counts
     }
 
     pub fn length(&self) -> u32 {
@@ -192,14 +220,14 @@ impl TermVector {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.terms.is_empty()
+        self.hashes.is_empty()
     }
 
     pub fn frequency(&self, term: TermHash) -> Option<u8> {
-        self.terms
-            .binary_search_by_key(&term, |&(hash, _)| hash)
+        self.hashes
+            .binary_search(&term)
             .ok()
-            .map(|i| self.terms[i].1)
+            .map(|i| self.counts[i])
     }
 
     pub fn presence(&self, terms: &[TermHash]) -> u64 {

@@ -4,7 +4,6 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use bitcode::{Decode, Encode};
 use rayon::prelude::*;
 
 use crate::chunk::Chunking;
@@ -13,7 +12,10 @@ use crate::config::Backend;
 use crate::lexical::{TermHash, TermVector, Weights};
 use crate::quant::{self, QuantizedVector};
 use crate::scope::Scope;
+use crate::shared::{Shared, SharedStr};
 use crate::symbol::{Declaration, Symbol};
+
+mod legacy;
 
 /// Changes whenever the bytes of an index would, including on a bitcode
 /// upgrade: bitcode keeps its encoding only within one 0.x series.
@@ -32,12 +34,12 @@ const RRF_DAMPING: f32 = 60.0;
 const CANDIDATES_PER_RESULT: usize = 8;
 const MIN_CANDIDATES: usize = 64;
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone)]
 pub struct Record {
-    pub path: String,
+    pub path: SharedStr,
     pub start_line: usize,
     pub end_line: usize,
-    pub snippet: String,
+    pub snippet: SharedStr,
     pub file_hash: u64,
     /// The chunk's own text, so an edit elsewhere in its file does not embed
     /// it again.
@@ -45,7 +47,7 @@ pub struct Record {
     pub vector: QuantizedVector,
     pub terms: TermVector,
     pub symbol: Option<Symbol>,
-    pub declarations: Vec<Declaration>,
+    pub declarations: Shared<Declaration>,
 }
 
 impl Record {
@@ -116,7 +118,7 @@ impl Record {
     }
 }
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug)]
 pub struct Index {
     pub dims: usize,
     pub backend: Backend,
@@ -184,15 +186,21 @@ impl Index {
                 "index format is from a newer ripsem; run `ripsem index --force` to rebuild it \
                  for this one"
             ),
-            Ordering::Equal => bitcode::decode(body).map_err(|e| corrupt(&e)),
+            Ordering::Equal => bitcode::decode::<legacy::Index>(body)
+                .map(Into::into)
+                .map_err(|e| corrupt(&e)),
         }
+    }
+
+    pub(crate) fn encode_body(&self) -> Vec<u8> {
+        bitcode::encode(&legacy::Index::from(self))
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let body = bitcode::encode(self);
+        let body = self.encode_body();
         let tmp = temp_sibling(path);
         std::fs::File::create(&tmp)
             .and_then(|mut file| {
@@ -619,7 +627,7 @@ mod tests {
             vector: quant::quantize(&vector),
             terms: TermVector::new(text, path, None),
             symbol: None,
-            declarations: Vec::new(),
+            declarations: Shared::default(),
         }
     }
 
@@ -629,7 +637,7 @@ mod tests {
 
     fn paths(index: &Index, hits: &[Hit]) -> Vec<String> {
         hits.iter()
-            .map(|h| index.records[h.record_idx].path.clone())
+            .map(|h| index.records[h.record_idx].path.to_string())
             .collect()
     }
 
@@ -793,7 +801,7 @@ mod tests {
             end_line: 1,
         };
         defining.symbol = Some(declare("preview").symbol);
-        defining.declarations = vec![declare("preview"), declare("quote_cost")];
+        defining.declarations = vec![declare("preview"), declare("quote_cost")].into();
         index.records.push(defining);
 
         let query = "quote_cost";
@@ -935,7 +943,8 @@ mod tests {
                 symbol: symbol.clone(),
                 start_line: start,
                 end_line: start + 10,
-            }];
+            }]
+            .into();
             record.symbol = Some(symbol);
             index.records.push(record);
         }
@@ -1162,7 +1171,7 @@ mod tests {
 
     #[test]
     fn a_version_other_than_this_one_says_which_side_it_is_on() {
-        let body = bitcode::encode(&sample_index());
+        let body = sample_index().encode_body();
         let err = |version| {
             Index::decode(&with_header(version, &body))
                 .unwrap_err()
@@ -1209,7 +1218,7 @@ mod tests {
     /// does. Update both together.
     #[test]
     fn the_encoding_is_pinned_to_the_format_version() {
-        let bytes = bitcode::encode(&sample_index());
+        let bytes = sample_index().encode_body();
         assert_eq!(
             (FORMAT_VERSION, crate::fingerprint::content_hash(&bytes)),
             (11, 0x8aa4_2b7a_98ca_a8a0)

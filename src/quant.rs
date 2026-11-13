@@ -1,9 +1,9 @@
-use bitcode::{Decode, Encode};
+use crate::shared::Shared;
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone)]
 pub struct QuantizedVector {
     pub scale: f32,
-    pub data: Vec<i8>,
+    pub data: Shared<i8>,
 }
 
 impl QuantizedVector {
@@ -21,15 +21,18 @@ pub fn quantize(vector: &[f32]) -> QuantizedVector {
     if max == 0.0 {
         return QuantizedVector {
             scale: 0.0,
-            data: vec![0; vector.len()],
+            data: vec![0; vector.len()].into(),
         };
     }
     let scale = max / 127.0;
-    let data = vector
+    let data: Vec<i8> = vector
         .iter()
         .map(|x| (x / scale).round().clamp(-127.0, 127.0) as i8)
         .collect();
-    QuantizedVector { scale, data }
+    QuantizedVector {
+        scale,
+        data: data.into(),
+    }
 }
 
 pub fn dequantize(stored: &QuantizedVector) -> Vec<f32> {
@@ -141,7 +144,8 @@ mod tests {
     fn stores_roughly_a_quarter_of_the_f32_size() {
         let v: Vec<f32> = (0..384).map(|i| (i as f32).sin()).collect();
         let f32_bytes = bitcode::encode(&v).len();
-        let q_bytes = bitcode::encode(&quantize(&v)).len();
+        let q = quantize(&v);
+        let q_bytes = bitcode::encode(&(q.scale, q.data.to_vec())).len();
         assert!(q_bytes * 3 < f32_bytes);
     }
 

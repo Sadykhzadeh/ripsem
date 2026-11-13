@@ -178,6 +178,18 @@ impl PartialEq<String> for SharedStr {
     }
 }
 
+impl PartialEq<SharedStr> for String {
+    fn eq(&self, other: &SharedStr) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl PartialEq<SharedStr> for &str {
+    fn eq(&self, other: &SharedStr) -> bool {
+        *self == other.as_str()
+    }
+}
+
 impl Hash for SharedStr {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.as_str().hash(state);

@@ -594,7 +594,7 @@ impl Cost {
             .map(|h| index.records[h.record_idx].snippet.len() as u64)
             .sum::<u64>();
         let answer = &index.records[hits[rank - 1].record_idx].path;
-        self.whole_files += std::fs::metadata(root.join(answer))
+        self.whole_files += std::fs::metadata(root.join(answer.as_str()))
             .map(|m| m.len())
             .unwrap_or(0);
     }
@@ -885,7 +885,7 @@ fn measure(config: &Config, queries: &[Query], generated: &HashSet<String>) -> O
         outcome.total_results += hits.len();
         outcome.wasted_results += hits
             .iter()
-            .filter(|h| generated.contains(&index.records[h.record_idx].path))
+            .filter(|h| generated.contains(index.records[h.record_idx].path.as_str()))
             .count();
     }
     outcome

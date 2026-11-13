@@ -207,7 +207,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
                 match prev_chunks.get_mut(record.path.as_str()) {
                     Some(records) => records.push(record),
                     None => {
-                        prev_chunks.insert(record.path.clone(), vec![record]);
+                        prev_chunks.insert(record.path.to_string(), vec![record]);
                     }
                 }
             }
@@ -427,8 +427,8 @@ fn nothing_changed(
 fn file_order(records: &[Record]) -> Vec<String> {
     let mut order: Vec<String> = Vec::new();
     for r in records {
-        if order.last() != Some(&r.path) {
-            order.push(r.path.clone());
+        if order.last().map(String::as_str) != Some(r.path.as_str()) {
+            order.push(r.path.to_string());
         }
     }
     order
@@ -571,16 +571,21 @@ impl Queue {
             self.embed(&mut order, &mut vectors, config, embedder, index.dims, pb)?;
         }
         for (p, vector) in self.pending.drain(..).zip(vectors) {
+            // Chunks of one file arrive together and share its path.
+            let path = match index.records.last() {
+                Some(last) if last.path == p.path => last.path.clone(),
+                _ => p.path.into(),
+            };
             index.records.push(Record {
-                path: p.path,
+                path,
                 start_line: p.start_line,
                 end_line: p.end_line,
-                snippet: p.snippet,
+                snippet: p.snippet.into(),
                 file_hash: p.file_hash,
                 vector: p.vector.unwrap_or_else(|| crate::quant::quantize(&vector)),
                 terms: p.terms,
                 symbol: p.symbol,
-                declarations: p.declarations,
+                declarations: p.declarations.into(),
                 text_hash: p.text_hash,
             });
         }
@@ -868,7 +873,9 @@ impl Searcher {
             }
             let record = &self.index.records[h.record_idx];
             let covered = wider.iter().any(|(path, start, end)| {
-                *path == record.path && *start <= record.start_line && record.end_line <= *end
+                path.as_str() == record.path.as_str()
+                    && *start <= record.start_line
+                    && record.end_line <= *end
             });
             if covered {
                 continue;
@@ -933,7 +940,7 @@ impl Searcher {
         {
             return None;
         }
-        let bytes = std::fs::read(self.root.join(&record.path)).ok()?;
+        let bytes = std::fs::read(self.root.join(record.path.as_str())).ok()?;
         if fingerprint::content_hash(&bytes) != record.file_hash {
             return None;
         }
@@ -966,11 +973,11 @@ impl Searcher {
     fn hit(&self, record_idx: usize, score: f32, names: &[TermHash]) -> SearchHit {
         let r = &self.index.records[record_idx];
         let whole = || SearchHit {
-            path: r.path.clone(),
+            path: r.path.to_string(),
             start_line: r.start_line,
             end_line: r.end_line,
             score,
-            snippet: r.snippet.clone(),
+            snippet: r.snippet.to_string(),
             symbol: r.symbol.clone(),
         };
         let Some(declaration) = r.declaration_named(names) else {
@@ -983,12 +990,12 @@ impl Searcher {
         }
         .max(start_line);
         let snippet = match (start_line, end_line) == (r.start_line, r.end_line) {
-            true => Some(r.snippet.clone()),
+            true => Some(r.snippet.to_string()),
             false => self.lines(r, start_line, end_line, SNIPPET_BYTES),
         };
         match snippet {
             Some(snippet) => SearchHit {
-                path: r.path.clone(),
+                path: r.path.to_string(),
                 start_line,
                 end_line,
                 score,
@@ -1004,13 +1011,13 @@ impl Searcher {
     fn lines(&self, record: &Record, start: usize, end: usize, budget: usize) -> Option<String> {
         // The index is data on disk, and a repository can ship one: a path that
         // leaves the root is not a file this index could have been built from.
-        let inside = Path::new(&record.path)
+        let inside = Path::new(record.path.as_str())
             .components()
             .all(|c| matches!(c, std::path::Component::Normal(_)));
         if !inside || start == 0 || end < start {
             return None;
         }
-        let bytes = std::fs::read(self.root.join(&record.path)).ok()?;
+        let bytes = std::fs::read(self.root.join(record.path.as_str())).ok()?;
         if fingerprint::content_hash(&bytes) != record.file_hash {
             return None;
         }
@@ -1287,13 +1294,13 @@ mod tests {
             path: path.into(),
             start_line: 1,
             end_line: 1,
-            snippet: String::new(),
+            snippet: String::new().into(),
             file_hash: fingerprint::content_hash(bytes),
             text_hash: 0,
             vector: crate::quant::quantize(&[]),
             terms: Default::default(),
             symbol: None,
-            declarations: Vec::new(),
+            declarations: Default::default(),
         };
         let searcher = Searcher {
             index: Index::new(0, Backend::Hash, config.model.clone()),
@@ -1344,13 +1351,13 @@ mod tests {
             path: "draw.rs".into(),
             start_line: 1,
             end_line: 34,
-            snippet: truncate(&text, SNIPPET_BYTES),
+            snippet: truncate(&text, SNIPPET_BYTES).into(),
             file_hash: fingerprint::content_hash(text.as_bytes()),
             text_hash: 0,
             vector: crate::quant::quantize(&[]),
             terms: Default::default(),
             symbol: None,
-            declarations: Vec::new(),
+            declarations: Default::default(),
         };
         let searcher = Searcher {
             index: Index::new(0, Backend::Hash, config.model.clone()),
@@ -1363,11 +1370,11 @@ mod tests {
             ann_map: None,
         };
         let hit = SearchHit {
-            path: record.path.clone(),
+            path: record.path.to_string(),
             start_line: 1,
             end_line: 34,
             score: 0.5,
-            snippet: record.snippet.clone(),
+            snippet: record.snippet.to_string(),
             symbol: None,
         };
         let shown = searcher
@@ -1391,19 +1398,19 @@ mod tests {
             root: dir.path().to_path_buf(),
             ..hash_config()
         };
-        let on_disk = || bitcode::encode(&Index::load(&config.index_path()).unwrap());
+        let on_disk = || Index::load(&config.index_path()).unwrap().encode_body();
 
         let (_, built) = index_and_keep(&config, false).unwrap();
-        assert_eq!(bitcode::encode(&built.unwrap()), on_disk());
+        assert_eq!(built.unwrap().encode_body(), on_disk());
 
         let (stats, kept) = index_and_keep(&config, false).unwrap();
         assert_eq!(stats.embedded, 0);
-        assert_eq!(bitcode::encode(&kept.unwrap()), on_disk());
+        assert_eq!(kept.unwrap().encode_body(), on_disk());
 
         dir.write("b.rs", "fn beta() { gamma() }\n");
         let (stats, updated) = index_and_keep(&config, false).unwrap();
         assert_eq!(stats.embedded, 1);
-        assert_eq!(bitcode::encode(&updated.unwrap()), on_disk());
+        assert_eq!(updated.unwrap().encode_body(), on_disk());
     }
 
     #[test]
