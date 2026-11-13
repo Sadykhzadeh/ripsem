@@ -235,9 +235,9 @@ pub fn run(cli: Cli) -> Result<()> {
             min_score,
             count_by_file,
         ),
-        Command::Watch => watch::run(Config::load(&root)?),
+        Command::Watch => watch::run(load_config(&root)?),
         Command::Status { json } => cmd_status(&root, json),
-        Command::Mcp => mcp::serve(Config::load(&root)?, cli.path.is_some()),
+        Command::Mcp => mcp::serve(load_config(&root)?, cli.path.is_some()),
         Command::Model { action } => cmd_model(&root, action),
         Command::Install { target } => cmd_install(&root, target),
         Command::Completions { shell } => {
@@ -472,8 +472,15 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
+/// [`Config::load`], with the settings the environment can turn on.
+fn load_config(root: &Path) -> Result<Config> {
+    let mut config = Config::load(root)?;
+    config.hash_all = std::env::var_os("RIPSEM_HASH_ALL").is_some_and(|v| v == "1");
+    Ok(config)
+}
+
 fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
-    let config = Config::load(root)?;
+    let config = load_config(root)?;
     if dry_run {
         let files = indexable(&config)?;
         for path in &files {
@@ -600,7 +607,7 @@ fn cmd_search(
         true => 3,
         false => usize::MAX,
     });
-    let config = Config::load(root)?;
+    let config = load_config(root)?;
     // Same normalisation as the MCP `search` tool.
     let prefix = match within {
         Some(raw) => mcp::scope_prefix(&from_here(raw, &config.root), &config.root)?,
