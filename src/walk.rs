@@ -8,7 +8,7 @@ use ignore::{WalkBuilder, WalkState};
 use rayon::prelude::*;
 
 use crate::config::Config;
-use crate::fingerprint::content_hash;
+use crate::fingerprint::{FileStat, content_hash};
 
 /// Machine-written files that are committed on purpose, so `.gitignore` does not
 /// cover them. A lock file can outweigh all the hand-written source in a repo.
@@ -26,33 +26,56 @@ const GENERATED: &[&str] = &[
 pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
     // The text/binary check opens every file and is most of the cost, so it
     // runs in parallel.
-    Ok(candidates(config)?
+    Ok(list(config)?
         .into_par_iter()
+        .map(|(path, _)| path)
         .filter(|path| reads_file_as_text(path))
         .collect())
 }
 
-/// [`collect`], with each file's [`content_hash`]. The file is read once for
-/// both the text check and the hash, where checking first and hashing after
-/// would open it twice.
+/// [`collect`], with each file's [`content_hash`].
 pub fn collect_hashed(config: &Config) -> Result<Vec<(PathBuf, u64)>> {
-    Ok(candidates(config)?
+    Ok(list(config)?
         .into_par_iter()
-        .map_init(Vec::new, |buffer, path| {
-            buffer.clear();
-            std::fs::File::open(&path)
-                .and_then(|mut file| file.read_to_end(buffer))
-                .ok()?;
-            let sniffed = &buffer[..buffer.len().min(SNIFF_BYTES as usize)];
-            reads_as_text(sniffed).then(|| (path, content_hash(buffer)))
+        .map_init(Vec::new, |buffer, (path, _)| {
+            match read_hashed(&path, buffer) {
+                Sniffed::Text(hash) => Some((path, hash)),
+                _ => None,
+            }
         })
         .flatten()
         .collect())
 }
 
-/// Every file the walk reaches within the size limit, in path order. The size
-/// comes from the directory listing, which on Windows costs no system call.
-fn candidates(config: &Config) -> Result<Vec<PathBuf>> {
+/// What reading a file for the index found.
+pub enum Sniffed {
+    Text(u64),
+    Binary,
+    Unreadable,
+}
+
+/// Reads a file once for both the text check and the hash, where checking
+/// first and hashing after would open it twice. `buffer` is reused between
+/// calls.
+pub fn read_hashed(path: &Path, buffer: &mut Vec<u8>) -> Sniffed {
+    buffer.clear();
+    if std::fs::File::open(path)
+        .and_then(|mut file| file.read_to_end(buffer))
+        .is_err()
+    {
+        return Sniffed::Unreadable;
+    }
+    let sniffed = &buffer[..buffer.len().min(SNIFF_BYTES as usize)];
+    match reads_as_text(sniffed) {
+        true => Sniffed::Text(content_hash(buffer)),
+        false => Sniffed::Binary,
+    }
+}
+
+/// Every file the walk reaches within the size limit, in path order, with its
+/// [`FileStat`]. Nothing is read: the size and time come from the directory
+/// listing, which on Windows costs no system call.
+pub fn list(config: &Config) -> Result<Vec<(PathBuf, FileStat)>> {
     let max_bytes = config.max_file_kb.saturating_mul(1024);
     let mut builder = builder(config)?;
     // Pruned during the walk so it never descends into `.git`.
@@ -64,19 +87,19 @@ fn candidates(config: &Config) -> Result<Vec<PathBuf>> {
         Box::new(move |result| {
             if let Ok(entry) = result
                 && entry.file_type().is_some_and(|t| t.is_file())
-                && entry
-                    .metadata()
-                    .is_ok_and(|m| m.len() > 0 && m.len() <= max_bytes)
+                && let Ok(meta) = entry.metadata()
+                && meta.len() > 0
+                && meta.len() <= max_bytes
             {
-                let _ = sender.send(entry.into_path());
+                let _ = sender.send((entry.into_path(), FileStat::of(&meta)));
             }
             WalkState::Continue
         })
     });
     drop(sender);
     // Threads finish in any order; the index lists files in one.
-    let mut candidates: Vec<PathBuf> = receiver.into_iter().collect();
-    candidates.sort_unstable();
+    let mut candidates: Vec<(PathBuf, FileStat)> = receiver.into_iter().collect();
+    candidates.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     Ok(candidates)
 }
 
