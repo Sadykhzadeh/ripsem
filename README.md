@@ -204,6 +204,13 @@ asks the same as `ripsem search "where is auth set up"`.
   from the current directory, as in the shell: in `src`, `--in auth` means
   `src/auth` and `--in .` means `src`. An absolute path into the repository
   works too.
+- `--lang <LANG>` keeps only hits in files of that language, by name or by
+  extension: `--lang rust`, `--lang py`, `--lang toml`. Repeat the flag or
+  separate values with commas for several: `--lang rust,toml`.
+- `-g, --glob <GLOB>` keeps only hits whose path matches, as ripgrep's `-g`
+  does, and a leading `!` leaves matching paths out: `-g '*.rs' -g
+  '!*_test.rs'`. A directory counts for the files inside it, so
+  `-g '!vendor/'` skips all of `vendor`. Repeat for several.
 - `--context <N>` sets how many snippet lines print per hit (3 in a terminal,
   the whole snippet when the output goes to another program; `0` prints just
   the locations).
@@ -254,7 +261,8 @@ learns that `search` exists, and when to use it, from the instructions and the
 note in `CLAUDE.md`.
 
 `ripsem mcp` speaks MCP over stdio and exposes a single `search` tool: a
-`query`, and optionally a `path` to stay inside, a `limit` (default 5, at most
+`query`, and optionally a `path` to stay inside, a `lang` and a `glob` (each one
+string or a list, as `--lang` and `--glob`), a `limit` (default 5, at most
 50) and a `min_score`. An argument outside the schema comes back as a tool
 error that names what is expected, so the agent can correct the call. In a
 directory with a `.ripsem` directory the server keeps the index current by

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `ripsem search` takes `--lang` to keep only hits in files of a language,
+  by name or extension (`--lang rust`, `--lang toml`), and `-g`/`--glob` to
+  keep only hits whose path matches a glob, where a leading `!` leaves paths
+  out (`-g '!vendor/'`). The MCP `search` tool takes the same as `lang` and
+  `glob`. Both are applied before the ranking is cut, so `-k 10 --lang rust`
+  returns ten Rust hits when the index has them.
 - A `ripsem index` that finds nothing to do, and the update every `ripsem
   search` starts with, take about 600 ms instead of 1 050 ms on 13.8k files
   (169 MB, 211k chunks) with the hashing backend. The size of a file comes
