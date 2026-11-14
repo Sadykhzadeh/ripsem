@@ -133,7 +133,8 @@ Leaving out the `git checkout` builds `master`.
 
 The `fastembed` feature, on by default, pulls in the local embedding runtime.
 Built with `--no-default-features`, ripsem runs on a lightweight hashing backend
-that matches words instead of meaning, which is what the test suite uses.
+that matches words instead of meaning, which is what the test suite uses. It
+ranks by the words of the query alone, as the lexical arm does.
 
 The `treesitter` feature, also on by default, chunks code on function and type
 boundaries instead of fixed line windows, and names each chunk after the
@@ -379,7 +380,9 @@ anyway.
    also split at `snake_case` and `camelCase` boundaries. Every chunk also
    lists the declarations it holds, with their lines.
 4. **Search.** The query runs through both arms and their rankings are merged
-   by reciprocal rank fusion. A chunk holding every informative term of the
+   by reciprocal rank fusion. With the hashing backend the vectors do not
+   vote, since they only record which words occur: the lexical arm ranks, and
+   the vectors place whatever no word matched. A chunk holding every informative term of the
    query comes first, which is what makes identifiers and error messages
    reliable. A query that names a declaration, typed as code or spelled out in
    words, puts the chunk declaring it above the chunks that only use it, and

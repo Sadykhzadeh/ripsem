@@ -7,6 +7,7 @@
   bench.py run        run every system over every query
   bench.py report     print the tables
   bench.py failures   classify the misses of one system
+  bench.py ranks      where each query's answer sits in each arm and in the merge
 
 Python standard library only.
 """
@@ -661,11 +662,70 @@ def cmd_failures(ctx):
     print(f"{len(out)} misses written to {path}")
 
 
+# --- ranks -----------------------------------------------------------------
+
+RANK_DEPTH = 200
+
+
+def cmd_ranks(ctx):
+    """Where the answer of every query sits in each arm and in the merge.
+
+    Writes results/ranks-<backend>-<set>.json: per query the best position of a
+    record that overlaps the answer in the vector ranking, the lexical ranking
+    and the merged ranking, each down to RANK_DEPTH (null beyond), and prints
+    how the queries the merge misses are spread over those positions.
+    """
+    backend, qset = SYSTEMS[ctx.args.system][1], ctx.args.set
+    rows = []
+    for c in ctx.repos:
+        name = c["name"]
+        tree = ctx.tree(name, SETS[qset], backend)
+        queries = read_jsonl(ctx.queries(name, qset))
+        records = arms_records(ctx, tree)
+        ranked = arms_rank(ctx, tree, queries, RANK_DEPTH)
+        for q in queries:
+            t = q["targets"][0]
+            mine = {n for n, rec in enumerate(records)
+                    if rec[0] == t["path"] and rec[1] <= t["end"] and rec[2] >= t["start"]}
+            row = {"id": q["id"], "repo": name}
+            for arm in ("dense", "lexical", "fused"):
+                places_seen, position = set(), None
+                for n in ranked[q["id"]][arm]:
+                    key = tuple(records[n][:3])
+                    if key in places_seen:
+                        continue
+                    places_seen.add(key)
+                    if n in mine:
+                        position = len(places_seen)
+                        break
+                row[arm] = position
+            rows.append(row)
+    write_json(ctx.work / "results" / f"ranks-{backend}-{qset}.json", rows)
+    buckets = {"merged 1-10": 0, "merged 11-50": 0, "merged 51+ or absent": 0}
+    one_arm = 0
+    for r in rows:
+        f = r["fused"]
+        if f and f <= 10:
+            buckets["merged 1-10"] += 1
+            continue
+        if f and f <= 50:
+            buckets["merged 11-50"] += 1
+        else:
+            buckets["merged 51+ or absent"] += 1
+        in_top3 = [bool(r[arm] and r[arm] <= 3) for arm in ("dense", "lexical")]
+        if in_top3[0] != in_top3[1]:
+            one_arm += 1
+    print(f"{backend} {qset}: {len(rows)} queries")
+    for k, v in buckets.items():
+        print(f"  {k}: {v}")
+    print(f"  missed by the merge while exactly one arm has the answer in its top 3: {one_arm}")
+
+
 # --- main ---------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["fetch", "prepare", "validate", "index", "run", "report", "failures"])
+    ap.add_argument("command", choices=["fetch", "prepare", "validate", "index", "run", "report", "failures", "ranks"])
     ap.add_argument("--work", default=os.environ.get("RIPSEM_EVAL_DIR", str(Path.home() / "ripsem-eval")),
                     help="directory for corpora, indexes and results (default: ~/ripsem-eval)")
     ap.add_argument("--ripsem", help="the ripsem binary (default: ripsem on PATH, else target/release)")

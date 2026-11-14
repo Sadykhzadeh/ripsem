@@ -305,9 +305,24 @@ impl Index {
         scope: Option<&Scope>,
     ) -> Vec<Hit> {
         let depth = candidate_depth(k);
-        let dense = self.dense_ranking(query, depth, scope);
         let lexical = self.lexical_ranking(terms, depth, scope);
+        let dense = match self.needs_vectors(&lexical, depth) {
+            true => self.dense_ranking(query, depth, scope),
+            false => Vec::new(),
+        };
         self.fuse(&dense, &lexical, query, names, k)
+    }
+
+    /// The hash backend's vectors only record which words occur, so they
+    /// rank almost at random next to the words themselves. It is ranked by
+    /// the lexical arm alone, and its vectors only place the records no word
+    /// matched, below all that one did, when the words fill less than `depth`.
+    fn ranks_by_words(&self) -> bool {
+        self.backend == Backend::Hash
+    }
+
+    fn needs_vectors(&self, lexical: &LexicalRanking, depth: usize) -> bool {
+        !self.ranks_by_words() || lexical.ranked.len() < depth
     }
 
     /// Fuses a dense ranking from the nearest-neighbour graph with a full
@@ -321,7 +336,12 @@ impl Index {
         names: &[TermHash],
         k: usize,
     ) -> Vec<Hit> {
-        let lexical = self.lexical_ranking(terms, candidate_depth(k), None);
+        let depth = candidate_depth(k);
+        let lexical = self.lexical_ranking(terms, depth, None);
+        let dense = match self.needs_vectors(&lexical, depth) {
+            true => dense,
+            false => &[],
+        };
         self.fuse(dense, &lexical, query, names, k)
     }
 
@@ -384,11 +404,14 @@ impl Index {
         k: usize,
     ) -> Vec<Hit> {
         let mut agreement: HashMap<usize, f32> = HashMap::new();
-        for ranking in [dense, &lexical.ranked] {
+        for (ranking, votes) in [(dense, !self.ranks_by_words()), (&lexical.ranked, true)] {
             for (position, hit) in ranking.iter().enumerate() {
                 if hit.record_idx < self.records.len() {
-                    *agreement.entry(hit.record_idx).or_insert(0.0) +=
-                        1.0 / (RRF_DAMPING + position as f32 + 1.0);
+                    let vote = match votes {
+                        true => 1.0 / (RRF_DAMPING + position as f32 + 1.0),
+                        false => 0.0,
+                    };
+                    *agreement.entry(hit.record_idx).or_insert(0.0) += vote;
                 }
             }
         }
@@ -783,6 +806,73 @@ mod tests {
             "the lexical arm must carry the literal match to the top"
         );
         assert_eq!(fused[0].score, 1.0, "full term coverage reports as certain");
+    }
+
+    /// Records that hold "needle" a different number of times, each with a
+    /// vector that points the other way from its lexical rank, so that any
+    /// vote the vectors cast shows in the order.
+    fn needles(backend: Backend) -> Index {
+        let mut index = Index::new(3, backend, "test".into());
+        for (i, count) in [1, 4, 2, 3, 5].into_iter().enumerate() {
+            let text = format!("{}{}", "needle ".repeat(count), "pad ".repeat(5 - count));
+            let vector = vec![1.0 - i as f32 * 0.2, i as f32 * 0.2, 0.0];
+            index
+                .records
+                .push(text_record(&format!("src/n{i}.rs"), &text, vector));
+        }
+        index
+    }
+
+    #[test]
+    fn the_hash_backend_ranks_as_its_lexical_side() {
+        let index = needles(Backend::Hash);
+        let query = [1.0, 0.0, 0.0];
+        let words = terms("needle");
+
+        let by_words: Vec<usize> = index
+            .lexical_ranking(&words, 5, None)
+            .hits()
+            .iter()
+            .map(|h| h.record_idx)
+            .collect();
+        let found: Vec<usize> = index
+            .search_fused(&query, &words, &[], 5, None)
+            .iter()
+            .map(|h| h.record_idx)
+            .collect();
+        assert_eq!(found, by_words);
+
+        let with_a_model: Vec<usize> = needles(Backend::Fastembed)
+            .search_fused(&query, &words, &[], 5, None)
+            .iter()
+            .map(|h| h.record_idx)
+            .collect();
+        assert_ne!(
+            with_a_model, by_words,
+            "the vectors must be able to move a model's ranking"
+        );
+    }
+
+    /// The words may match fewer records than were asked for. The vectors
+    /// then fill the rest, below every record that matched.
+    #[test]
+    fn the_hash_backend_fills_what_its_words_leave_short() {
+        let mut index = Index::new(3, Backend::Hash, "test".into());
+        index
+            .records
+            .push(text_record("src/far.rs", "needle", vec![0.0, 0.0, 1.0]));
+        index
+            .records
+            .push(text_record("src/near.rs", "other", vec![1.0, 0.0, 0.0]));
+        index
+            .records
+            .push(text_record("src/mid.rs", "another", vec![0.6, 0.8, 0.0]));
+
+        let hits = index.search_fused(&[1.0, 0.0, 0.0], &terms("needle"), &[], 3, None);
+        assert_eq!(
+            paths(&index, &hits),
+            ["src/far.rs", "src/near.rs", "src/mid.rs"]
+        );
     }
 
     fn placed(path: &str, start: usize, end: usize, vector: Vec<f32>) -> Record {
