@@ -17,7 +17,7 @@ pub struct Chunk {
 
 /// Changes whenever the same file and settings would give other chunks, so an
 /// index cut by an older ripsem is cut again. A test pins it to the output.
-const REVISION: u32 = 11;
+const REVISION: u32 = 12;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -257,7 +257,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (11, expected),
+            (12, expected),
             "{seen}"
         );
     }
@@ -403,8 +403,16 @@ mod cutting {
         let src = "trait Shape {\n    fn area(&self) -> f64;\n\n    fn describe(&self) -> String {\n\
                    \x20       format!(\"{}\", self.area())\n    }\n}\n";
         let cut = cut_code("a.rs", src);
-        assert!(has(&cut, 1, 2, "trait Shape"), "{cut:?}");
-        assert!(has(&cut, 4, 6, "fn Shape::describe"), "{cut:?}");
+        assert!(
+            has(&cut, 1, 6, "fn Shape::describe"),
+            "a header of two lines opens the first member: {cut:?}"
+        );
+        let src = "trait Shape {\n    fn area(&self) -> f64;\n    fn name(&self) -> String;\n\
+                   \x20   fn id(&self) -> u8;\n\n    fn describe(&self) -> String {\n\
+                   \x20       format!(\"{}\", self.area())\n    }\n}\n";
+        let cut = cut_code("a.rs", src);
+        assert!(has(&cut, 1, 4, "trait Shape"), "{cut:?}");
+        assert!(has(&cut, 6, 8, "fn Shape::describe"), "{cut:?}");
     }
 
     #[test]
@@ -415,11 +423,16 @@ mod cutting {
                    \x20       self.items[key] = value\n";
         let cut = cut_code("a.py", src);
         assert!(has(&cut, 5, 6, "fn load"), "{cut:?}");
-        assert!(has(&cut, 8, 9, "class Store"), "{cut:?}");
-        assert!(has(&cut, 11, 12, "fn Store::get"), "{cut:?}");
+        assert!(has(&cut, 8, 12, "fn Store::get"), "{cut:?}");
         assert!(has(&cut, 14, 15, "fn Store::put"), "{cut:?}");
         assert!(spans(&cut, 1, 3), "{cut:?}");
         assert_apart(&cut);
+
+        let src = "class Store:\n    \"\"\"Keeps things.\n\n    Nothing else.\n    \"\"\"\n\n\
+                   \x20   def get(self, key):\n        return self.items[key]\n";
+        let cut = cut_code("a.py", src);
+        assert!(has(&cut, 1, 5, "class Store"), "{cut:?}");
+        assert!(has(&cut, 7, 8, "fn Store::get"), "{cut:?}");
     }
 
     #[test]
@@ -434,16 +447,19 @@ mod cutting {
     fn typescript_functions_methods_and_bound_functions_are_records() {
         let src = "import { a } from './a';\n\nexport interface Options {\n  limit: number;\n}\n\n\
                    export function parse(text: string): number {\n  return text.length;\n}\n\n\
-                   export class Reader {\n  private n = 0;\n\n  read(): number {\n\
-                   \x20   return this.n++;\n  }\n\n  reset(): void {\n    this.n = 0;\n  }\n}\n\n\
+                   export class Reader {\n  private a = 0;\n  private b = 1;\n  private c = 2;\n\n  read(): number {\n\
+                   \x20   return this.a++;\n  }\n\n  reset(): void {\n    this.a = 0;\n  }\n}\n\n\
                    export const double = (x: number) => x * 2;\n";
         let cut = cut_code("a.ts", src);
-        assert!(has(&cut, 3, 5, "interface Options"), "{cut:?}");
+        assert!(
+            has(&cut, 1, 5, "interface Options"),
+            "the import line joins the interface below it: {cut:?}"
+        );
         assert!(has(&cut, 7, 9, "fn parse"), "{cut:?}");
-        assert!(has(&cut, 11, 12, "class Reader"), "{cut:?}");
-        assert!(has(&cut, 14, 16, "fn Reader::read"), "{cut:?}");
-        assert!(has(&cut, 18, 20, "fn Reader::reset"), "{cut:?}");
-        assert!(has(&cut, 23, 23, "fn double"), "{cut:?}");
+        assert!(has(&cut, 11, 14, "class Reader"), "{cut:?}");
+        assert!(has(&cut, 16, 18, "fn Reader::read"), "{cut:?}");
+        assert!(has(&cut, 20, 22, "fn Reader::reset"), "{cut:?}");
+        assert!(has(&cut, 25, 25, "fn double"), "{cut:?}");
         assert_apart(&cut);
     }
 
@@ -478,5 +494,63 @@ mod cutting {
     fn a_file_without_declarations_to_cut_out_is_one_record() {
         let src = "use a::b;\nuse a::c;\nconst X: u8 = 1;\n";
         assert_eq!(cut_code("a.rs", src).len(), 1);
+    }
+
+    #[test]
+    fn a_long_run_of_comment_lines_is_cut_by_size_not_line_by_line() {
+        let mut src: String = (0..120).map(|n| format!("/// line {n}\n")).collect();
+        src.push_str("pub struct S(u8);\n\nfn a() {\n    1;\n}\n");
+        let cut = cut_code("a.rs", &src);
+        assert!(cut.iter().all(|(s, e, _)| e - s + 1 >= 3), "{cut:?}");
+        assert!(cut.len() <= 4, "{cut:?}");
+    }
+
+    #[test]
+    fn a_few_lines_before_a_block_too_long_for_one_record_open_its_first_piece() {
+        let mut src = String::from("describe('suite', () => {\n");
+        for n in 0..60 {
+            src.push_str(&format!(
+                "  it('case {n}', () => {{\n    run({n});\n  }});\n"
+            ));
+        }
+        src.push_str("});\n");
+        let chunks = chunk_source(Path::new("a.test.js"), &src, &Config::default());
+        assert!(
+            chunks.iter().all(|c| c.end_line - c.start_line >= 2),
+            "{chunks:?}"
+        );
+        assert!(chunks[0].text.starts_with("describe('suite'"));
+    }
+
+    #[test]
+    fn a_function_too_long_for_one_record_has_no_fragment_among_its_pieces() {
+        let mut src = String::from("fn long(a: u8) -> u8 {\n");
+        for n in 0..105 {
+            src.push_str(&format!("    let v{n} = a + {n};\n"));
+        }
+        src.push_str("    a\n}\n");
+        let cut = cut_code("a.rs", &src);
+        assert!(cut.iter().all(|(s, e, _)| e - s + 1 >= 3), "{cut:?}");
+        assert!(cut.iter().all(|(_, _, l)| l == "fn long"), "{cut:?}");
+    }
+
+    #[test]
+    fn a_comment_cut_off_by_a_blank_line_stays_with_the_function_above() {
+        let src = "fn first() {\n    1;\n}\n// about the file\n\nfn second() {\n    2;\n}\n";
+        let cut = cut_code("a.rs", src);
+        assert!(has(&cut, 1, 4, "fn first"), "{cut:?}");
+        assert!(has(&cut, 6, 8, "fn second"), "{cut:?}");
+    }
+
+    #[test]
+    fn a_small_declaration_that_is_not_a_function_has_no_prose_record() {
+        let src = "/// Where it starts.\nconst START: u8 = 1;\n\n\
+                   /// Doubles a byte.\nfn double(x: u8) -> u8 { x * 2 }\n";
+        let prose: Vec<String> = chunk_source(Path::new("a.rs"), src, &Config::default())
+            .into_iter()
+            .map(|c| c.text)
+            .filter(|t| t.ends_with("byte.") || t.ends_with("starts."))
+            .collect();
+        assert_eq!(prose, ["Doubles a byte."]);
     }
 }

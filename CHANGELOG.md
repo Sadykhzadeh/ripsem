@@ -57,6 +57,32 @@
   differ from the index's, and the first search or `ripsem index` embeds every
   chunk again, as it does for a new chunking revision: about as long as a
   first index of that repository.
+- Fewer records of one or two lines that are not answers. On the four projects
+  of the benchmark in `eval/` the previous change left 912 of the 11,430
+  top-ten places of the doc-comment and hand-written queries (8.0%, default
+  model) to records of one or two lines, 29 of them the right place. By kind,
+  of 10,231 such records: 5,234 were the doc-comment record of a declaration
+  (an enum variant, a field, a constant), 2,551 were a single comment line,
+  because a long comment above a declaration was cut line by line, 1,025 the
+  few lines that open a block too long for one chunk (`describe('suite', () =>
+  {`, a signature) or close one, 481 a constant, alias or type on one line, 359
+  the tail of a split function, and 90 an import or `mod` line. A comment line
+  is no longer taken for the lead of the comment below it, so a long comment is
+  cut by size; the opening lines of a block too long for one chunk go into its
+  first piece, and the closing lines into its last; a fragment of two lines or
+  fewer between two declarations joins the one that follows it, or the one
+  before it when only a comment cut off by a blank line is left; and a
+  declaration of under three lines that is not a function no longer gets a
+  record for its doc comment. A function of one or two lines keeps its record.
+  Together with the previous change the projects hold 40,853 records instead of
+  35,382 (+15%; the previous change alone gave 50,527), and their indexes are
+  46.6 MB against 39.9 (51.7 without this change). Records of one or two lines
+  fill 673 top-ten places (5.9%), 28 of them the right place. Region-level
+  MRR@10 with the default model is 0.423 and 0.374 (0.423 and 0.388 before;
+  the second difference is -0.015, 95% interval -0.040 to +0.007 over 100
+  queries), and on the hashing backend 0.349 and 0.326 (0.352 and 0.320), so
+  this is no gain in ranking, and the saving is the reason for it. The chunk
+  revision goes to 12.
 - A function or method is now a record of its own however small it is, where
   its neighbours used to share one chunk of up to 50 lines. A class, `impl`,
   trait or module is cut into its members: one record per member, and the lines

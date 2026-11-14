@@ -140,7 +140,8 @@ The `treesitter` feature, also on by default, chunks code on function and type
 boundaries instead of fixed line windows, and names each chunk after the
 declaration it belongs to. A function or method is a chunk of its own however
 small; a class or `impl` is cut into its members; other small declarations and
-the lines between declarations are grouped. Results look like
+the lines between declarations are grouped, and a fragment of a line or two
+joins its neighbour. Results look like
 `src/auth/session.rs:40-72 fn Session::refresh`, so a caller can tell a
 definition from a call site without opening the file. A function too large for
 one chunk passes its name to every piece. It covers Rust, Python, JavaScript,

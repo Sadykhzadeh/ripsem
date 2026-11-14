@@ -16,6 +16,8 @@ pub fn chunk(text: &str, spec: &LangSpec, max_lines: usize, overlap: usize) -> O
         max_lines: max_lines.max(1),
         overlap,
         out: Vec::new(),
+        last: None,
+        prefix: None,
     };
     emitter.walk(tree.root_node(), None);
     emitter.documentation(tree.root_node(), None);
@@ -78,6 +80,11 @@ struct Emitter<'a> {
     max_lines: usize,
     overlap: usize,
     out: Vec<Chunk>,
+    /// Where the text of the last record cut from nodes starts, and the row
+    /// it ends on.
+    last: Option<(usize, usize)>,
+    /// The start of a few lines that open the next record.
+    prefix: Option<(usize, usize)>,
 }
 
 /// A declaration that can be a record of its own, with the node that declares
@@ -244,14 +251,38 @@ impl Emitter<'_> {
                     {
                         group.pop();
                     }
-                    let opens = opening.as_ref().is_some_and(|o| {
-                        begin.start_position().row - o.start.start_position().row <= FRAGMENT_LINES
-                    });
-                    let joined = match !carves && group.is_empty() && opens {
-                        true => opening.take(),
+                    let begin_row = begin.start_position().row;
+                    let joins = !carves
+                        && match (group.first().zip(group.last()), opening.as_ref()) {
+                            (Some((first, last)), open) => {
+                                let from = open.map_or(first, |o| &o.start).start_position().row;
+                                let end = last_row(last, self.text);
+                                end - from < FRAGMENT_LINES && begin_row - end <= FRAGMENT_LINES
+                            }
+                            (None, Some(open)) => {
+                                begin_row - open.start.start_position().row <= FRAGMENT_LINES
+                            }
+                            (None, None) => false,
+                        };
+                    let detached = joins
+                        && opening.is_none()
+                        && group.iter().all(is_lead)
+                        && group
+                            .last()
+                            .is_some_and(|l| begin_row - last_row(l, self.text) > 1)
+                        && self.extend_last(&group);
+                    if detached {
+                        group.clear();
+                    }
+                    let (start, joined) = match joins && !detached {
+                        true => {
+                            let start = group.first().copied().unwrap_or(begin);
+                            group.clear();
+                            (start, opening.take())
+                        }
                         false => {
                             self.flush(&mut group, &mut opening, scope, Some(&begin));
-                            None
+                            (begin, None)
                         }
                     };
                     lines = 0;
@@ -263,13 +294,21 @@ impl Emitter<'_> {
                     } else {
                         let symbol = Some(unit.symbol.clone());
                         let open = joined.as_ref().map(|o| (o, true));
-                        self.push(&begin, &child, scope, open, symbol);
+                        self.push(&start, &child, scope, open, symbol);
                     }
                     continue;
                 }
             }
             if child_lines > self.max_lines {
-                self.flush(&mut group, &mut opening, scope, Some(&child));
+                match self.is_fragment(&group) && opening.is_none() {
+                    true => {
+                        self.prefix = self.prefix.or(group
+                            .first()
+                            .map(|n| (n.start_byte(), n.start_position().row)));
+                        group.clear();
+                    }
+                    false => self.flush(&mut group, &mut opening, scope, Some(&child)),
+                }
                 lines = 0;
                 self.walk(child, scope);
             } else if lines + child_lines > self.max_lines {
@@ -299,8 +338,19 @@ impl Emitter<'_> {
         self.flush(&mut group, &mut opening, scope, None);
     }
 
+    /// Whether the nodes grouped so far are too few lines to be a record.
+    fn is_fragment(&self, group: &[Node]) -> bool {
+        group
+            .first()
+            .zip(group.last())
+            .is_some_and(|(first, last)| {
+                last_row(last, self.text) - first.start_position().row < FRAGMENT_LINES
+            })
+    }
+
     /// The nodes grouped so far become one record, and so does the opening of a
-    /// container when nothing was grouped after it, up to `next`.
+    /// container when nothing was grouped after it, up to `next`. A few lines
+    /// left over at the end of a block join the record before them.
     fn flush(
         &mut self,
         group: &mut Vec<Node>,
@@ -309,6 +359,10 @@ impl Emitter<'_> {
         next: Option<&Node>,
     ) {
         let open = opening.take();
+        if next.is_none() && open.is_none() && self.is_fragment(group) && self.extend_last(group) {
+            group.clear();
+            return;
+        }
         match (group.first().zip(group.last()), open) {
             (Some((first, last)), open) => {
                 self.push(first, last, scope, open.as_ref().map(|o| (o, false)), None);
@@ -335,6 +389,34 @@ impl Emitter<'_> {
         group.clear();
     }
 
+    /// Adds `group` to the record cut just before it, when that ends within a
+    /// line or two of it.
+    fn extend_last(&mut self, group: &[Node]) -> bool {
+        let (Some(first), Some(last)) = (group.first(), group.last()) else {
+            return false;
+        };
+        let Some((from, row)) = self.last else {
+            return false;
+        };
+        if first.start_byte() < from || first.start_position().row > row + FRAGMENT_LINES + 1 {
+            return false;
+        }
+        let mut declarations = Vec::new();
+        for node in group {
+            self.declarations_within(*node, None, &mut declarations);
+        }
+        let text = self.text[from..last.end_byte()].to_string();
+        let end_line = last_row(last, self.text) + 1;
+        let Some(chunk) = self.out.last_mut() else {
+            return false;
+        };
+        chunk.text = text;
+        chunk.end_line = end_line;
+        chunk.declarations.append(&mut declarations);
+        self.last = Some((from, end_line - 1));
+        true
+    }
+
     fn whole(&self, unit: &Unit) -> Declaration {
         Declaration {
             symbol: unit.symbol.clone(),
@@ -349,6 +431,9 @@ impl Emitter<'_> {
     /// the end of the chunk before. One after code on the same line, or with a
     /// blank line below it, is about something else.
     fn lead_in<'t>(&self, start: &Node<'t>, next: &Node<'t>) -> Option<Node<'t>> {
+        if is_lead(next) {
+            return None;
+        }
         let end = last_row(next, self.text);
         let mut first = None;
         let mut below = *next;
@@ -386,10 +471,15 @@ impl Emitter<'_> {
         named: Option<Symbol>,
     ) {
         let from = opening.map_or(*start, |(o, _)| o.start);
-        let body = &self.text[line_start(self.text, from.start_byte())..end.end_byte()];
+        let (from_byte, from_row) = match self.prefix.take() {
+            Some(prefix) if opening.is_none() => prefix,
+            _ => (from.start_byte(), from.start_position().row),
+        };
+        let body = &self.text[line_start(self.text, from_byte)..end.end_byte()];
         if body.trim().is_empty() {
             return;
         }
+        self.last = Some((line_start(self.text, from_byte), last_row(end, self.text)));
         let mut declarations = Vec::new();
         if let Some((open, _)) = opening {
             declarations.push(self.whole(&open.unit));
@@ -404,7 +494,7 @@ impl Emitter<'_> {
             _ => named.or_else(|| self.first_declaration(start, end, enclosing)),
         };
         self.out.push(Chunk {
-            start_line: from.start_position().row + 1,
+            start_line: from_row + 1,
             end_line: last_row(end, self.text) + 1,
             text: body.to_string(),
             symbol: named.or_else(|| enclosing.cloned()),
@@ -473,6 +563,7 @@ impl Emitter<'_> {
     fn documentation(&mut self, node: Node, enclosing: Option<&Symbol>) {
         let declared = symbol::declaration(&node, self.text, enclosing);
         if let Some(symbol) = &declared
+            && (symbol.kind == "fn" || node_lines(&node, self.text) >= STANDALONE_FLOOR)
             && let Some(prose) = self.prose_for(&node)
         {
             let start_line = node.start_position().row + 1;
@@ -504,8 +595,11 @@ impl Emitter<'_> {
     }
 
     fn push_windows(&mut self, node: &Node, enclosing: Option<&Symbol>) {
-        let base = node.start_position().row;
-        let slice = &self.text[line_start(self.text, node.start_byte())..node.end_byte()];
+        let (from, base) = self
+            .prefix
+            .take()
+            .unwrap_or((node.start_byte(), node.start_position().row));
+        let slice = &self.text[line_start(self.text, from)..node.end_byte()];
         for c in chunk_file(slice, self.max_lines, self.overlap) {
             self.out.push(Chunk {
                 start_line: base + c.start_line,
