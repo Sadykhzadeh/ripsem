@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The MCP `search` tool states its default `limit` (5) in the input schema as
+  `default`, where a client that fills in a form from the schema reads it,
+  as well as in the description.
 - The index is read faster and takes less memory. A record no longer owns five
   allocations of its own: `index.bin` stores one column per field, and loading
   hands every record a range of a few shared buffers. Reading the index takes

@@ -374,7 +374,7 @@ fn tool_schema() -> Value {
                 "path": { "type": "string", "description": "Optional subdirectory (relative to the repo) to limit results to, e.g. 'src/embed'." },
                 "lang": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only files of these languages or extensions, e.g. 'rust' or ['py', 'ts']." },
                 "glob": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only paths matching these globs; a leading ! excludes, e.g. ['*.rs', '!*_test.rs']." },
-                "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "description": format!("Maximum number of results (default {DEFAULT_LIMIT}, at most {MAX_LIMIT}).") },
+                "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "default": DEFAULT_LIMIT, "description": format!("Maximum number of results (default {DEFAULT_LIMIT}, at most {MAX_LIMIT}).") },
                 "min_score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Drop hits scoring below this (0–1). 0 is no closer than unrelated text in this repository, 1 is every query term found literally; scores fall with rank, so this keeps the top results. Default: no filter." }
             },
             "required": ["query"],
@@ -901,6 +901,13 @@ mod tests {
         let schema = &tool_schema()["inputSchema"];
         assert_eq!(schema["properties"]["limit"]["minimum"], 1);
         assert_eq!(schema["properties"]["limit"]["maximum"], MAX_LIMIT);
+        let default = schema["properties"]["limit"]["default"].clone();
+        assert_eq!(default, DEFAULT_LIMIT);
+        let args = json!({ "query": "x" });
+        assert_eq!(
+            parse_call(&args, Path::new("/repo")).unwrap().limit,
+            DEFAULT_LIMIT
+        );
         assert_eq!(schema["properties"]["min_score"]["minimum"], 0);
         assert_eq!(schema["properties"]["min_score"]["maximum"], 1);
         assert_eq!(schema["additionalProperties"], false);
