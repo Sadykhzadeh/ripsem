@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow, bail};
 use ignore::overrides::{Override, OverrideBuilder};
 
 use crate::index::path_in_scope;
+use crate::walk::slashed;
 
 /// What a search is limited to: a path prefix, the languages of the files and
 /// globs on the path, all of which a hit's file must satisfy. Built once per
@@ -45,7 +46,7 @@ impl Globs {
                 bail!("'{glob}' is not a glob");
             }
             set.0
-                .add(pattern)
+                .add(&slashed(pattern))
                 .map_err(|e| anyhow!("invalid glob '{glob}': {e}"))?;
             set.1 = true;
         }
@@ -239,6 +240,18 @@ mod tests {
         assert!(only.admits("src/deep/a.rs"));
         assert!(!only.admits("src/gen.rs"));
         assert!(!only.admits("docs/a.rs"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_glob_written_with_backslashes_matches_as_with_slashes() {
+        let skip = scope(None, &[], &[r"!vendor\"]);
+        assert!(!skip.admits("vendor/a.rs"));
+        assert!(skip.admits("src/a.rs"));
+
+        let inside = scope(None, &[], &[r"src\*.rs"]);
+        assert!(inside.admits("src/a.rs"));
+        assert!(!inside.admits("tests/a.rs"));
     }
 
     #[test]

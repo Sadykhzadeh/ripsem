@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- On Windows, a glob written with backslashes in `-g`/`--glob` or the MCP
+  `glob` argument, such as `-g '!vendor\'`, matches as it does with slashes.
+  The backslash was read as an escape, so `vendor\` was refused as an invalid
+  glob and `src\*.rs` matched nothing.
 - The index is read faster and takes less memory. A record no longer owns five
   allocations of its own: `index.bin` stores one column per field, and loading
   hands every record a range of a few shared buffers. Reading the index takes
