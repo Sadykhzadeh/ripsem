@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The hashing backend ranks by the words of the query alone. Its vectors only
+  record which words occur, so they ranked almost at random and still got half
+  the vote, which put the merged ranking below its own lexical arm. The
+  lexical arm now decides, and the vectors only place records no word of the
+  query matched, below all that one did. Scores keep their meaning, and
+  nothing in an existing index changes. In the benchmark in `eval/` the region
+  MRR@10 of `backend = "hash"`, averaged over the four projects, goes from
+  0.152 to 0.322 on the hand-written queries (the lexical arm alone: 0.269)
+  and from 0.271 to 0.369 on the automatic ones (lexical alone: 0.337). The
+  model backend is not affected.
 - `ripsem search` takes `-e`/`--regex` and the MCP `search` tool a `regex`
   argument, to keep only the hits whose code matches a regular expression:
   the place that does one thing and also mentions a name. The pattern is
