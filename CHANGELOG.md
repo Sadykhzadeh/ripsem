@@ -12,6 +12,11 @@
   yet, answers a search that comes in before the first index is built with
   "the index is being built in the background" instead of telling the agent
   to run `ripsem index`, which the server is already doing.
+- The MCP server has an `index_status` tool, which takes no arguments and
+  returns what `ripsem status --json` prints, plus `updating` for whether the
+  server is indexing right now. An agent that finds nothing it expects can see
+  whether the index exists, how many files it holds and how many have changed
+  since it was built.
 - The index is read faster and takes less memory. A record no longer owns five
   allocations of its own: `index.bin` stores one column per field, and loading
   hands every record a range of a few shared buffers. Reading the index takes
