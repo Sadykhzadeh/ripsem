@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `jina-embeddings-v2-base-code` (Apache-2.0, 768 dimensions) is a model to
+  choose with `ripsem model set`: the one model offered that was trained on
+  code, 30 languages of it. It takes queries and code with no prefix. On the
+  benchmark in `eval/` it beats the default on both query sets: region MRR@10
+  of the merged ranking 0.412 against 0.391 on the 1,043 automatic queries and
+  0.479 against 0.414 on the 100 hand-written ones (means over four projects;
+  pooled differences +0.025, 95% bootstrap interval +0.013 to +0.037, and
+  +0.065, +0.005 to +0.129), and of the dense retriever alone 0.343 against
+  0.305 and 0.438 against 0.300. It costs a 644 MB download against 128 MB, an
+  index that takes 1.9 to 2.2 times as long on a GPU and 3.0 times as long on a
+  CPU, 940 MB of memory while indexing on a GPU (default 380 MB) and 890 MB
+  for a search (default 230 MB). The default model does not change. Switching
+  models embeds the whole index again, as for any model.
 - A chunk is embedded with its path on a line above its code, so a question
   that names the module (`routing`, `session`) finds the vector of code that
   never says so itself. Only the embedding input changes: the snippet, the

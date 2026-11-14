@@ -306,6 +306,30 @@ fn switching_model_reembeds_without_force() {
 }
 
 #[test]
+fn switching_to_the_code_model_reembeds_and_a_search_asks_for_a_rebuild() {
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie");
+    dir.write("b.rs", "delta echo foxtrot");
+    let mut config = config_for(&dir.path);
+    assert_eq!(config.dims(), 384);
+
+    pipeline::index_repo(&config, false).unwrap();
+
+    config.model = "jina-embeddings-v2-base-code".into();
+    assert_eq!(config.dims(), 768);
+    match pipeline::open(&config) {
+        Ok(_) => panic!("an index from another model must not open"),
+        Err(e) => assert!(e.to_string().contains("bge-small-en-v1.5"), "{e}"),
+    }
+    let after = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!((after.reused, after.embedded), (0, 2));
+    assert_eq!(
+        pipeline::open(&config).unwrap().model(),
+        "jina-embeddings-v2-base-code"
+    );
+}
+
+#[test]
 fn scoped_search_limits_results_to_a_subdirectory() {
     let dir = TempDir::new();
     std::fs::create_dir_all(dir.path.join("src")).unwrap();
