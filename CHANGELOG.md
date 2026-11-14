@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- `ripsem search` takes `-e`/`--regex` and the MCP `search` tool a `regex`
+  argument, to keep only the hits whose code matches a regular expression:
+  the place that does one thing and also mentions a name. The pattern is
+  matched against the whole chunk, `(?i)` ignores case, and it goes with the
+  language, glob and path filters, `min_score` and paging. Chunk text is read
+  from the files, not held in the index, so the pattern is tried on the 200
+  best-ranked places, or eight times the page's end when that is more. A
+  pattern that does not parse, or compiles to more than 1 MiB, is an error:
+  an `isError` result over MCP, a one-line message and a non-zero exit on the
+  command line. `regex` is now a direct dependency; it was already in the
+  tree through tree-sitter and tokenizers.
 - `ripsem search` takes `--offset` and the MCP `search` tool an `offset`, to
   read the next page of a ranking instead of raising the limit and reading
   everything again. The offset counts after the language, glob and path

@@ -737,3 +737,64 @@ fn an_offset_that_is_not_a_count_is_an_error() {
         assert_eq!(out.status.code(), Some(2), "{offset}: {}", stderr(&out));
     }
 }
+
+#[test]
+fn a_regex_keeps_the_hits_whose_code_matches() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    let all = heads(&ripsem(&dir.path, &["search", query, "-k", "50"]));
+    let wanted: Vec<String> = all
+        .iter()
+        .filter(|h| h.contains("auth2.rs") || h.contains("auth4.rs"))
+        .cloned()
+        .collect();
+    assert_eq!(wanted.len(), 2);
+
+    for flag in ["-e", "--regex"] {
+        let out = ripsem(&dir.path, &["search", query, flag, r"auth[24]\("]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(heads(&out), wanted, "{flag}");
+    }
+    // Inline flags, other filters and paging all go with it.
+    let folded = ripsem(
+        &dir.path,
+        &["search", query, "-e", "(?i)AUTH", "--lang", "rust"],
+    );
+    assert_eq!(heads(&folded).len(), 5, "{}", stdout(&folded));
+    let page = ripsem(
+        &dir.path,
+        &["search", query, "-e", "(?i)auth|note", "-k", "6"],
+    );
+    assert!(stdout(&page).contains("pass --offset 6 to see them"));
+    let rest = ripsem(
+        &dir.path,
+        &[
+            "search",
+            query,
+            "-e",
+            "(?i)auth|note",
+            "-k",
+            "6",
+            "--offset",
+            "6",
+        ],
+    );
+    assert_eq!(heads(&rest).len(), 4);
+    assert!(!stdout(&rest).contains("--offset"));
+    let none = ripsem(&dir.path, &["search", query, "-e", "nothing like this"]);
+    assert!(none.status.success());
+    assert_eq!(stdout(&none).trim(), "no matches");
+}
+
+#[test]
+fn a_regex_that_does_not_parse_is_an_error_before_any_search() {
+    // No project here: the pattern is refused before an index is looked for.
+    let dir = TempDir::new();
+    for pattern in ["foo(", "[a-", "((a{100}){100}){100}"] {
+        let out = ripsem(&dir.path, &["search", "x", "-e", pattern]);
+        assert_eq!(out.status.code(), Some(1), "{pattern}");
+        let message = stderr(&out);
+        assert!(message.contains("invalid regex"), "{pattern}: {message}");
+        assert_eq!(message.trim().lines().count(), 1, "{pattern}: {message}");
+    }
+}

@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::{Result, anyhow, bail};
 use ignore::overrides::{Override, OverrideBuilder};
+use regex::{Regex, RegexBuilder};
 
 use crate::index::path_in_scope;
 use crate::walk::slashed;
@@ -74,6 +75,34 @@ fn reaches(set: &Override, path: &str) -> bool {
             .skip(1)
             .filter(|dir| !dir.as_os_str().is_empty())
             .any(|dir| set.matched(dir, true).is_whitelist())
+}
+
+/// The most a pattern may compile to. The engine matches in time linear in
+/// the text whatever the pattern, so this is what bounds a pattern from an
+/// agent: one that would need more is refused rather than built.
+const PATTERN_BYTES: usize = 1 << 20;
+
+/// A regular expression a hit's chunk must match, for `--regex` and the MCP
+/// `regex` argument. A flag such as `(?i)` goes in the pattern. The error is
+/// one line, so a command line or a tool result shows it as it is.
+pub fn text_pattern(raw: &str) -> Result<Regex> {
+    RegexBuilder::new(raw)
+        .size_limit(PATTERN_BYTES)
+        .dfa_size_limit(PATTERN_BYTES)
+        .build()
+        .map_err(|e| {
+            let why = match &e {
+                regex::Error::Syntax(message) => message
+                    .lines()
+                    .rev()
+                    .find_map(|line| line.strip_prefix("error: "))
+                    .unwrap_or(message)
+                    .to_string(),
+                regex::Error::CompiledTooBig(_) => "the pattern is too large".to_string(),
+                other => other.to_string(),
+            };
+            anyhow!("invalid regex '{raw}': {}", why.replace('\n', " "))
+        })
 }
 
 impl Scope {
@@ -293,5 +322,46 @@ mod tests {
             scope(None, &["go"], &["!a/**"]).nothing_matches(),
             "no indexed file matches lang go and glob !a/**"
         );
+    }
+
+    #[test]
+    fn a_pattern_matches_text_and_takes_inline_flags() {
+        let plain = text_pattern("Argon2").unwrap();
+        assert!(plain.is_match("hash with Argon2id"));
+        assert!(!plain.is_match("hash with argon2id"));
+        assert!(text_pattern("(?i)argon2").unwrap().is_match("Argon2"));
+        assert!(text_pattern(r"fn\s+\w+\(").unwrap().is_match("fn  main()"));
+    }
+
+    #[test]
+    fn a_pattern_that_does_not_parse_is_a_one_line_error() {
+        for raw in ["foo(", "[a-", r"\p{Nope}", "*x", "(?<n>a)(?<n>b)"] {
+            let message = text_pattern(raw).unwrap_err().to_string();
+            assert!(!message.contains('\n'), "{raw}: {message}");
+            assert!(
+                message.starts_with(&format!("invalid regex '{raw}': ")),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pattern_that_compiles_to_too_much_is_refused() {
+        let message = text_pattern("((a{100}){100}){100}")
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("too large"), "{message}");
+        assert!(!message.contains('\n'), "{message}");
+    }
+
+    /// The engine runs in time linear in the text, so a pattern that makes a
+    /// backtracking engine hang is no cost here.
+    #[test]
+    fn a_pattern_that_backtracks_in_other_engines_is_quick_here() {
+        let pattern = text_pattern("(x+x+)+y").unwrap();
+        let text = "x".repeat(200_000);
+        let start = std::time::Instant::now();
+        assert!(!pattern.is_match(&text));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
     }
 }

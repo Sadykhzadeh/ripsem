@@ -221,6 +221,17 @@ asks the same as `ripsem search "where is auth set up"`.
   does, and a leading `!` leaves matching paths out: `-g '*.rs' -g
   '!*_test.rs'`. A directory counts for the files inside it, so
   `-g '!vendor/'` skips all of `vendor`. Repeat for several.
+- `-e, --regex <PATTERN>` keeps only hits whose code matches the regular
+  expression, for "the place that does X and mentions `foo`":
+  `ripsem search retry on failure -e 'backoff|jitter'`. The pattern uses the
+  Rust regex syntax and is matched against each hit's whole chunk, not just
+  the snippet shown; `(?i)` ignores case. It applies before the ranking is cut
+  and goes with `--lang`, `--glob`, `--in`, `--min-score` and `--offset`, but
+  it is tried on the 200 best-ranked places only (more when `-k` and
+  `--offset` reach further), because chunk text is read from the files rather
+  than held in the index. It narrows an answer; for every occurrence of a
+  string use grep. A pattern that does not parse, or compiles to more than 1
+  MiB, is an error.
 - `--context <N>` sets how many snippet lines print per hit (3 in a terminal,
   the whole snippet when the output goes to another program; `0` prints just
   the locations).
@@ -274,7 +285,8 @@ note in `CLAUDE.md`.
 
 `ripsem mcp` speaks MCP over stdio and exposes a `search` tool: a
 `query`, and optionally a `path` to stay inside, a `lang` and a `glob` (each one
-string or a list, as `--lang` and `--glob`), a `limit` (default 5, at most
+string or a list, as `--lang` and `--glob`), a `regex` (only hits whose code
+matches it, as `--regex`; an invalid pattern is a tool error), a `limit` (default 5, at most
 50), an `offset` (default 0) to skip results and read the next page, and a
 `min_score`. When more results follow, the text ends with the line `More
 results below this; pass offset=5 to see them.` An `offset` past the last

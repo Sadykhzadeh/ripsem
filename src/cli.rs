@@ -117,6 +117,13 @@ pub enum Command {
         /// directory above it matches.
         #[arg(short = 'g', long, value_name = "GLOB")]
         glob: Vec<String>,
+        /// Keep only hits whose code matches this regular expression, to find
+        /// the place that does something and also mentions a name: `-e
+        /// 'retry|backoff'`, `-e '(?i)argon2'`. It is matched against each
+        /// hit's whole chunk and tried on the best 200 places of the ranking,
+        /// so it narrows an answer; to find every occurrence use grep.
+        #[arg(short = 'e', long, value_name = "PATTERN")]
+        regex: Option<String>,
         /// Number of snippet lines to print per hit in the human output: 3 in
         /// a terminal, and the whole snippet when the output goes to another
         /// program, such as an agent's shell tool. `0` prints just the
@@ -226,6 +233,7 @@ pub fn run(cli: Cli) -> Result<()> {
             within,
             lang,
             glob,
+            regex,
             context,
             min_score,
             count_by_file,
@@ -238,6 +246,7 @@ pub fn run(cli: Cli) -> Result<()> {
             within.as_deref(),
             &lang,
             &glob,
+            regex.as_deref(),
             context,
             min_score,
             count_by_file,
@@ -626,10 +635,12 @@ fn cmd_search(
     within: Option<&str>,
     langs: &[String],
     globs: &[String],
+    regex: Option<&str>,
     context: Option<usize>,
     min_score: Option<f32>,
     count_by_file: bool,
 ) -> Result<()> {
+    let text = regex.map(crate::scope::text_pattern).transpose()?;
     let context = context.unwrap_or(match std::io::stdout().is_terminal() {
         true => 3,
         false => usize::MAX,
@@ -641,7 +652,7 @@ fn cmd_search(
         None => None,
     };
     let scope = Scope::new(prefix.as_deref(), langs, globs)?;
-    let page = pipeline::search_page(&config, query, limit, offset, scope.as_ref())?;
+    let page = pipeline::search_page(&config, query, limit, offset, scope.as_ref(), text.as_ref())?;
     let more = page.more(min_score);
     let hits = apply_min_score(page.hits, min_score);
     let next = more.then_some(offset + hits.len());

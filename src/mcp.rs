@@ -396,6 +396,7 @@ fn tool_schema() -> Value {
                 "path": { "type": "string", "description": "Optional subdirectory (relative to the repo) to limit results to, e.g. 'src/embed'." },
                 "lang": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only files of these languages or extensions, e.g. 'rust' or ['py', 'ts']." },
                 "glob": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only paths matching these globs; a leading ! excludes, e.g. ['*.rs', '!*_test.rs']." },
+                "regex": { "type": "string", "description": format!("Only hits whose code matches this regular expression (Rust regex syntax, matched against the whole chunk, so `(?i)` makes it case-insensitive), for \"the place that does X and mentions foo\". Looked for among the {} best-ranked places, so it narrows the answer rather than searching for the pattern; use grep when every occurrence is needed.", pipeline::TEXT_DEPTH) },
                 "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "default": DEFAULT_LIMIT, "description": format!("Maximum number of results (default {DEFAULT_LIMIT}, at most {MAX_LIMIT}).") },
                 "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Results to skip, taken from the ranking after every filter, to read the next page: when more follow, the result ends with the offset to pass. Default 0." },
                 "min_score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Drop hits scoring below this (0–1). 0 is no closer than unrelated text in this repository, 1 is every query term found literally; scores fall with rank, so this keeps the top results. Default: no filter." }
@@ -448,19 +449,19 @@ fn handle_call(
         offset,
         min_score,
         scope,
+        text,
     } = match parse_call(&args, &config.root) {
         Ok(call) => call,
         Err(e) => return failed(id, &e),
     };
 
     let result = match session {
-        Some(s) => s.query_page(query, limit, offset, scope.as_ref()),
+        Some(s) => s.query_page(query, limit, offset, scope.as_ref(), text.as_ref()),
         None if crate::watch::indexing() => Err(anyhow!(
             "the index is being built in the background; search again shortly"
         )),
-        None => {
-            pipeline::open(config).and_then(|s| s.query_page(query, limit, offset, scope.as_ref()))
-        }
+        None => pipeline::open(config)
+            .and_then(|s| s.query_page(query, limit, offset, scope.as_ref(), text.as_ref())),
     };
 
     match result {
@@ -539,11 +540,12 @@ fn index_status(config: &Config, id: Value, args: &Value) -> Value {
     )
 }
 
-const ARGUMENTS: [&str; 7] = [
+const ARGUMENTS: [&str; 8] = [
     "query",
     "path",
     "lang",
     "glob",
+    "regex",
     "limit",
     "offset",
     "min_score",
@@ -557,6 +559,7 @@ struct Call<'a> {
     offset: usize,
     min_score: Option<f32>,
     scope: Option<Scope>,
+    text: Option<regex::Regex>,
 }
 
 /// Arguments that do not fit the input schema are a tool error, which the
@@ -568,7 +571,7 @@ fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
         .ok_or_else(|| anyhow!("the arguments must be an object with a 'query'"))?;
     if let Some(name) = args.keys().find(|k| !ARGUMENTS.contains(&k.as_str())) {
         bail!(
-            "unknown argument '{name}'; the arguments are query, path, lang, glob, limit, offset and min_score"
+            "unknown argument '{name}'; the arguments are query, path, lang, glob, regex, limit, offset and min_score"
         );
     }
     let given = |name: &str| args.get(name).filter(|v| !v.is_null());
@@ -618,12 +621,18 @@ fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
     };
     let langs = strings("lang", given("lang"))?;
     let globs = strings("glob", given("glob"))?;
+    let text = match given("regex") {
+        None => None,
+        Some(Value::String(pattern)) => Some(crate::scope::text_pattern(pattern)?),
+        Some(other) => bail!("'regex' must be a string, not {other}"),
+    };
     Ok(Call {
         query,
         limit,
         offset,
         min_score,
         scope: Scope::new(prefix.as_deref(), &langs, &globs)?,
+        text,
     })
 }
 
@@ -2036,5 +2045,79 @@ mod tests {
             below.starts_with("No matches scoring 1 or higher"),
             "{below}"
         );
+    }
+
+    #[test]
+    fn a_regex_keeps_the_hits_whose_chunk_matches_in_rank_order() {
+        let (_dir, config, searcher) = paged_project();
+        let query = "verify password create session token";
+        let all = search_text(&config, &searcher, json!({ "query": query, "limit": 50 }));
+        let wanted: Vec<&str> = heads(&all)
+            .into_iter()
+            .filter(|h| h.contains("auth2.rs") || h.contains("auth4.rs"))
+            .collect();
+        assert_eq!(wanted.len(), 2);
+
+        let kept = search_text(
+            &config,
+            &searcher,
+            json!({ "query": query, "regex": r"auth[24]\(" }),
+        );
+        assert_eq!(heads(&kept), wanted, "{kept}");
+        assert!(!kept.contains("offset="), "{kept}");
+
+        let folded = search_text(
+            &config,
+            &searcher,
+            json!({ "query": query, "regex": "(?i)NOTE [0-9]:" }),
+        );
+        assert_eq!(heads(&folded).len(), 5, "{folded}");
+        assert!(
+            heads(&folded).iter().all(|h| h.contains(".md:")),
+            "{folded}"
+        );
+
+        let none = search_text(
+            &config,
+            &searcher,
+            json!({ "query": query, "regex": "no such text" }),
+        );
+        assert_eq!(none, "No matches.");
+    }
+
+    #[test]
+    fn a_regex_combines_with_the_other_filters_and_with_paging() {
+        let (_dir, config, searcher) = paged_project();
+        let query = "verify password create session token";
+        let ask = |limit: u64, offset: u64, filter: Value| {
+            let mut args = filter;
+            args["query"] = json!(query);
+            args["regex"] = json!("(?i)auth|note");
+            args["limit"] = json!(limit);
+            args["offset"] = json!(offset);
+            search_text(&config, &searcher, args)
+        };
+        let all = ask(50, 0, json!({}));
+        assert_eq!(heads(&all).len(), 10, "{all}");
+        let (first, second) = (ask(6, 0, json!({})), ask(6, 6, json!({})));
+        assert!(first.ends_with("pass offset=6 to see them."), "{first}");
+        assert!(!second.contains("offset="), "{second}");
+        let joined: Vec<&str> = heads(&first).into_iter().chain(heads(&second)).collect();
+        assert_eq!(joined, heads(&all));
+
+        let rust = ask(50, 0, json!({ "lang": "rust" }));
+        assert_eq!(heads(&rust).len(), 5, "{rust}");
+        let docs = ask(50, 0, json!({ "path": "docs", "glob": "*.md" }));
+        assert_eq!(heads(&docs).len(), 5, "{docs}");
+    }
+
+    #[test]
+    fn a_regex_that_does_not_parse_is_a_tool_error() {
+        let text = tool_error(json!({ "query": "x", "regex": "foo(" }));
+        assert_eq!(text, "search failed: invalid regex 'foo(': unclosed group");
+        let text = tool_error(json!({ "query": "x", "regex": 7 }));
+        assert!(text.contains("'regex' must be a string"), "{text}");
+        let text = tool_error(json!({ "query": "x", "regex": "((a{100}){100}){100}" }));
+        assert!(text.contains("too large"), "{text}");
     }
 }
