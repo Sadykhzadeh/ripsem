@@ -19,6 +19,15 @@ impl Symbol {
         self.kind == "heading"
     }
 
+    /// A block whose members are declarations searched for on their own, as
+    /// a class's methods are.
+    pub fn is_container(&self) -> bool {
+        matches!(
+            self.kind.as_str(),
+            "impl" | "class" | "trait" | "interface" | "mod"
+        )
+    }
+
     pub fn label(&self) -> String {
         format!("{} {}", self.kind, self.name)
     }
@@ -48,10 +57,7 @@ impl Declaration {
     /// A block whose members are declarations searched for on their own, as
     /// a class's methods are.
     pub fn is_container(&self) -> bool {
-        matches!(
-            self.symbol.kind.as_str(),
-            "impl" | "class" | "trait" | "interface" | "mod"
-        )
+        self.symbol.is_container()
     }
 }
 

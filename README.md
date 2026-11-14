@@ -138,12 +138,14 @@ ranks by the words of the query alone, as the lexical arm does.
 
 The `treesitter` feature, also on by default, chunks code on function and type
 boundaries instead of fixed line windows, and names each chunk after the
-declaration it belongs to. Results look like `src/auth/session.rs:40-72 fn
-Session::refresh`, so a caller can tell a definition from a call site without
-opening the file. A function too large for one chunk passes its name to every
-piece. It covers Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#,
-Ruby, PHP, Scala, Kotlin, Bash, HTML, CSS and JSON; other files are cut into
-line windows.
+declaration it belongs to. A function or method is a chunk of its own however
+small; a class or `impl` is cut into its members; other small declarations and
+the lines between declarations are grouped. Results look like
+`src/auth/session.rs:40-72 fn Session::refresh`, so a caller can tell a
+definition from a call site without opening the file. A function too large for
+one chunk passes its name to every piece. It covers Rust, Python, JavaScript,
+TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Scala, Kotlin, Bash, HTML, CSS and
+JSON; other files are cut into line windows.
 
 The `hnsw` feature adds an approximate-nearest-neighbour graph for indexes above
 500 000 chunks. It changes only how the vector arm gathers candidates; the
@@ -385,11 +387,14 @@ anyway.
    gitignore and `.ripsemignore` apply, and binary files, files above
    `max_file_kb` and machine-written files are left out.
 2. **Chunk.** tree-sitter cuts each file at function and type boundaries and
-   names every chunk after its declaration. A doc comment or docstring becomes a
-   second record for the same declaration, because an author describes code in
-   words the code itself rarely uses. Markdown is cut at its headings, so a hit
-   starts at the heading that says what the text is about and a code block in
-   it stays whole.
+   names every chunk after its declaration. A function or method is a chunk
+   of its own however few lines it has, a class or `impl` is cut into one
+   chunk per member, and what is no declaration is grouped up to
+   `max_chunk_lines`. A doc comment or docstring becomes a second record for
+   the same declaration, because an author describes code in words the code
+   itself rarely uses. Markdown is cut at its headings, so a hit starts at
+   the heading that says what the text is about and a code block in it stays
+   whole.
 3. **Embed and tokenise.** Each chunk gets a vector from the local model,
    made from the file's path and the code, stored as int8, and a set of terms in which identifiers are kept whole and
    also split at `snake_case` and `camelCase` boundaries. Every chunk also

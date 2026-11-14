@@ -17,7 +17,7 @@ pub struct Chunk {
 
 /// Changes whenever the same file and settings would give other chunks, so an
 /// index cut by an older ripsem is cut again. A test pins it to the output.
-const REVISION: u32 = 9;
+const REVISION: u32 = 10;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -252,12 +252,12 @@ mod tests {
             }
         }
         let expected = match cfg!(feature = "treesitter") {
-            true => 0xb1ec_0f31_a3cb_5626,
+            true => 0x229c_0c8b_1945_d7f1,
             false => 0x6725_02a7_559a_6bae,
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (9, expected),
+            (10, expected),
             "{seen}"
         );
     }
@@ -296,5 +296,187 @@ mod tests {
         assert!(chunks.iter().all(|c| c.text.len() <= MAX_CHUNK_BYTES));
         let pieces: String = chunks[1..4].iter().map(|c| c.text.as_str()).collect();
         assert_eq!(pieces, long);
+    }
+}
+
+/// How a source is cut into records: a declaration that can stand alone is a
+/// record of its own however small, a container is cut into its members, and
+/// what is no declaration stays grouped.
+#[cfg(all(test, feature = "treesitter"))]
+mod cutting {
+    use super::*;
+
+    /// First line, last line and label of every record cut from the code,
+    /// leaving out the records that hold a declaration's prose.
+    fn cut_code(file: &str, src: &str) -> Vec<(usize, usize, String)> {
+        let lines: Vec<&str> = src.lines().collect();
+        chunk_source(Path::new(file), src, &Config::default())
+            .into_iter()
+            .filter(|c| {
+                lines[c.start_line - 1..c.end_line]
+                    .join("\n")
+                    .starts_with(c.text.trim_end())
+            })
+            .map(|c| {
+                let label = c.symbol.as_ref().map(Symbol::label).unwrap_or_default();
+                (c.start_line, c.end_line, label)
+            })
+            .collect()
+    }
+
+    fn has(cut: &[(usize, usize, String)], start: usize, end: usize, label: &str) -> bool {
+        cut.iter()
+            .any(|(s, e, l)| (*s, *e) == (start, end) && l == label)
+    }
+
+    fn spans(cut: &[(usize, usize, String)], start: usize, end: usize) -> bool {
+        cut.iter().any(|(s, e, _)| (*s, *e) == (start, end))
+    }
+
+    fn assert_apart(cut: &[(usize, usize, String)]) {
+        for (i, (s, e, _)) in cut.iter().enumerate() {
+            for (s2, e2, _) in &cut[i + 1..] {
+                assert!(e < s2 || e2 < s, "{cut:?}: {s}-{e} overlaps {s2}-{e2}");
+            }
+        }
+    }
+
+    #[test]
+    fn rust_functions_are_records_of_their_own_with_their_doc_comment() {
+        let src = "use std::fmt;\n\nconst LIMIT: u32 = 3;\n\n/// Adds two numbers.\n#[inline]\n\
+                   fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n\
+                   fn sub(a: i32, b: i32) -> i32 {\n    a - b\n}\n";
+        let cut = cut_code("a.rs", src);
+        assert_eq!(cut.len(), 3, "{cut:?}");
+        assert!(has(&cut, 5, 9, "fn add"), "{cut:?}");
+        assert!(has(&cut, 11, 13, "fn sub"), "{cut:?}");
+        assert!(spans(&cut, 1, 3), "{cut:?}");
+        assert_apart(&cut);
+    }
+
+    #[test]
+    fn a_one_line_function_is_a_record_and_a_one_line_constant_is_not() {
+        let src = "fn first() -> u8 {\n    1\n}\nfn id(x: u8) -> u8 { x }\n\
+                   const A: u8 = 1;\nconst B: u8 = 2;\ntype Pair = (u8, u8);\n\
+                   fn last() -> u8 {\n    2\n}\n";
+        let cut = cut_code("a.rs", src);
+        assert!(has(&cut, 4, 4, "fn id"), "{cut:?}");
+        assert!(has(&cut, 8, 10, "fn last"), "{cut:?}");
+        assert!(
+            spans(&cut, 5, 7),
+            "the constants and the alias are one: {cut:?}"
+        );
+        assert_eq!(cut.len(), 4, "{cut:?}");
+    }
+
+    #[test]
+    fn rust_methods_are_records_and_a_bare_header_joins_the_first() {
+        let src = "struct Counter {\n    n: u32,\n}\n\nimpl Counter {\n    fn new() -> Self {\n\
+                   \x20       Counter { n: 0 }\n    }\n\n    fn bump(&mut self) {\n\
+                   \x20       self.n += 1;\n    }\n}\n";
+        let cut = cut_code("a.rs", src);
+        assert!(has(&cut, 1, 3, "struct Counter"), "{cut:?}");
+        assert!(has(&cut, 5, 8, "fn Counter::new"), "{cut:?}");
+        assert!(has(&cut, 10, 12, "fn Counter::bump"), "{cut:?}");
+        assert_eq!(cut.len(), 3, "{cut:?}");
+        let chunks = chunk_source(Path::new("a.rs"), src, &Config::default());
+        let first = chunks.iter().find(|c| c.start_line == 5).unwrap();
+        let held: Vec<(String, usize, usize)> = first
+            .declarations
+            .iter()
+            .map(|d| (d.symbol.label(), d.start_line, d.end_line))
+            .collect();
+        assert_eq!(
+            held,
+            [
+                ("impl Counter".to_string(), 5, 13),
+                ("fn Counter::new".to_string(), 6, 8)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_trait_keeps_its_signatures_together_and_cuts_out_a_default_method() {
+        let signatures =
+            "trait Shape {\n    fn area(&self) -> f64;\n    fn name(&self) -> String;\n}\n";
+        assert_eq!(cut_code("a.rs", signatures), [(1, 4, "trait Shape".into())]);
+        let src = "trait Shape {\n    fn area(&self) -> f64;\n\n    fn describe(&self) -> String {\n\
+                   \x20       format!(\"{}\", self.area())\n    }\n}\n";
+        let cut = cut_code("a.rs", src);
+        assert!(has(&cut, 1, 2, "trait Shape"), "{cut:?}");
+        assert!(has(&cut, 4, 6, "fn Shape::describe"), "{cut:?}");
+    }
+
+    #[test]
+    fn python_functions_and_methods_are_records_and_the_docstring_opens_the_class() {
+        let src = "import os\n\nLIMIT = 3\n\ndef load(path):\n    return open(path).read()\n\n\
+                   class Store:\n    \"\"\"Keeps things.\"\"\"\n\n    def get(self, key):\n\
+                   \x20       return self.items[key]\n\n    def put(self, key, value):\n\
+                   \x20       self.items[key] = value\n";
+        let cut = cut_code("a.py", src);
+        assert!(has(&cut, 5, 6, "fn load"), "{cut:?}");
+        assert!(has(&cut, 8, 9, "class Store"), "{cut:?}");
+        assert!(has(&cut, 11, 12, "fn Store::get"), "{cut:?}");
+        assert!(has(&cut, 14, 15, "fn Store::put"), "{cut:?}");
+        assert!(spans(&cut, 1, 3), "{cut:?}");
+        assert_apart(&cut);
+    }
+
+    #[test]
+    fn a_decorated_python_function_keeps_its_decorators() {
+        let src = "@cache\n@wraps(f)\ndef slow(x):\n    return x\n\ndef fast(x):\n    return x\n";
+        let cut = cut_code("a.py", src);
+        assert!(has(&cut, 1, 4, "fn slow"), "{cut:?}");
+        assert!(has(&cut, 6, 7, "fn fast"), "{cut:?}");
+    }
+
+    #[test]
+    fn typescript_functions_methods_and_bound_functions_are_records() {
+        let src = "import { a } from './a';\n\nexport interface Options {\n  limit: number;\n}\n\n\
+                   export function parse(text: string): number {\n  return text.length;\n}\n\n\
+                   export class Reader {\n  private n = 0;\n\n  read(): number {\n\
+                   \x20   return this.n++;\n  }\n\n  reset(): void {\n    this.n = 0;\n  }\n}\n\n\
+                   export const double = (x: number) => x * 2;\n";
+        let cut = cut_code("a.ts", src);
+        assert!(has(&cut, 3, 5, "interface Options"), "{cut:?}");
+        assert!(has(&cut, 7, 9, "fn parse"), "{cut:?}");
+        assert!(has(&cut, 11, 12, "class Reader"), "{cut:?}");
+        assert!(has(&cut, 14, 16, "fn Reader::read"), "{cut:?}");
+        assert!(has(&cut, 18, 20, "fn Reader::reset"), "{cut:?}");
+        assert!(has(&cut, 23, 23, "fn double"), "{cut:?}");
+        assert_apart(&cut);
+    }
+
+    #[test]
+    fn go_functions_methods_and_types_are_records() {
+        let src = "package main\n\nimport \"fmt\"\n\ntype Server struct {\n\tname string\n}\n\n\
+                   func (s *Server) Name() string {\n\treturn s.name\n}\n\n\
+                   func run() {\n\tfmt.Println(\"hi\")\n}\n";
+        let cut = cut_code("a.go", src);
+        assert!(has(&cut, 5, 7, "type Server"), "{cut:?}");
+        assert!(has(&cut, 9, 11, "fn Name"), "{cut:?}");
+        assert!(has(&cut, 13, 15, "fn run"), "{cut:?}");
+        assert_apart(&cut);
+    }
+
+    #[test]
+    fn a_function_inside_a_function_stays_with_it() {
+        let rust = "fn outer() {\n    fn inner() -> u8 {\n        1\n    }\n    inner();\n}\n";
+        assert_eq!(cut_code("a.rs", rust), [(1, 6, "fn outer".into())]);
+        let js =
+            "function outer() {\n  function inner() {\n    return 1;\n  }\n  return inner();\n}\n";
+        assert_eq!(cut_code("a.js", js), [(1, 6, "fn outer".into())]);
+    }
+
+    #[test]
+    fn a_container_on_one_line_is_not_cut() {
+        let src = "impl Road { fn preview() {} }\n";
+        assert_eq!(cut_code("a.rs", src), [(1, 1, "impl Road".into())]);
+    }
+
+    #[test]
+    fn a_file_without_declarations_to_cut_out_is_one_record() {
+        let src = "use a::b;\nuse a::c;\nconst X: u8 = 1;\n";
+        assert_eq!(cut_code("a.rs", src).len(), 1);
     }
 }

@@ -57,6 +57,36 @@
   differ from the index's, and the first search or `ripsem index` embeds every
   chunk again, as it does for a new chunking revision: about as long as a
   first index of that repository.
+- A function or method is now a record of its own however small it is, where
+  its neighbours used to share one chunk of up to 50 lines. A class, `impl`,
+  trait or module is cut into its members: one record per member, and the lines
+  from the container's first line to its first member, when there are more than
+  two of them, as a record that opens it (two lines or fewer, such as
+  `impl Road {`, open the first member's record instead). Declarations that are
+  not functions (a constant, an alias, a signature without a body) stay grouped
+  with their neighbours unless they take three lines or more, and a function
+  inside a function stays inside it. A doc comment or decorator above a
+  declaration is still the first lines of its record. The cause was dilution:
+  in a sample of 40 misses, 25 on the doc-comment queries and 5 of 35 on the
+  hand-written ones were a small function inside a much larger chunk. On the
+  benchmark in `eval/` with the default model, region-level MRR@10 goes from
+  0.391 to 0.423 on the doc-comment queries (recall@10 0.649 to 0.722; pooled
+  difference +0.025, 95% interval +0.008 to +0.042) and from 0.414 to 0.388 on
+  the hand-written ones (recall@10 0.690 to 0.650; -0.026, -0.076 to +0.025:
+  100 queries cannot tell). File-level MRR@10 goes from 0.689 to 0.703 and from
+  0.616 to 0.585. On the hashing backend region MRR@10 goes from 0.369 to 0.352
+  (-0.024, -0.039 to -0.009) and from 0.322 to 0.320, and the file level stays
+  at 0.654 on the first set. Region level counts any chunk that holds the
+  answer, so it also credited the large chunk around a small answer; counting
+  only hits at most three times as long as the answer plus ten lines (the
+  tight level), the default model goes from 0.309 to 0.418 and from 0.396 to
+  0.388, and the hashing backend from 0.282 to 0.344 and from 0.305 to 0.320.
+  The `nest` project, whose answers are often accessors of two or three lines,
+  loses at region level on the doc-comment queries (hashing backend 0.231 to
+  0.168, default model 0.254 to 0.235) but not at file level (0.477 to 0.476
+  and 0.513 to 0.515) and gains at tight level (0.144 to 0.157 and 0.189 to
+  0.234). The four projects hold 50,527 records instead of 35,382 (+43%), and
+  their indexes are 30% larger. The chunk revision goes to 10.
 - `ripsem search` takes `-e`/`--regex` and the MCP `search` tool a `regex`
   argument, to keep only the hits whose code matches a regular expression:
   the place that does one thing and also mentions a name. The pattern is

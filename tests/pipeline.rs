@@ -1120,7 +1120,7 @@ fn a_huge_result_count_is_not_reserved_up_front() {
 fn a_named_block_does_not_hide_the_methods_inside_it() {
     let dir = TempDir::new();
     let mut src = String::from("impl Searcher {\n");
-    for i in 0..20 {
+    for i in 0..3 {
         src.push_str(&format!(
             "    fn helper{i}(&self) -> u32 {{\n        {i}\n    }}\n\n"
         ));
