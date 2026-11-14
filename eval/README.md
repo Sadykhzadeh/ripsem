@@ -45,6 +45,18 @@ python eval/bench.py failures --system fastembed --set auto --sample 10
 lists the misses of one system with what is known about each, for sorting them
 into classes by hand.
 
+```
+python eval/bench.py ranks --system fastembed --set curated
+```
+
+writes, for every query of a set and not only for the misses, the position of
+the answer in the vector ranking, the lexical ranking and the merged ranking
+(`results/ranks-<backend>-<set>.json`), and prints how the queries the merge
+misses are spread: answer at merged 11 to 50, further down, or in the top
+three of exactly one arm. The merge there is the one a search for 200 results
+makes, which draws its candidates deeper than a search for 10, so its
+positions can differ a little from the ones in `report`.
+
 ## Corpora
 
 `corpora.json` pins four projects by commit: axum (Rust), scrapy (Python),

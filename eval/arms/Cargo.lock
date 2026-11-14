@@ -1880,6 +1880,7 @@ dependencies = [
  "notify",
  "ort",
  "rayon",
+ "regex",
  "serde",
  "serde_json",
  "thiserror",
