@@ -6,6 +6,21 @@
   `glob` argument, such as `-g '!vendor\'`, matches as it does with slashes.
   The backslash was read as an escape, so `vendor\` was refused as an invalid
   glob and `src\*.rs` matched nothing.
+- The MCP `search` tool states its default `limit` (5) in the input schema as
+  `default`, where a client that fills in a form from the schema reads it,
+  as well as in the description.
+- An MCP `search` whose hits were all dropped by `min_score` now says so and
+  how many there were, instead of answering "No matches.", which an agent
+  reads as the code not existing.
+- An MCP server started in a directory `ripsem init` has set up, with no index
+  yet, answers a search that comes in before the first index is built with
+  "the index is being built in the background" instead of telling the agent
+  to run `ripsem index`, which the server is already doing.
+- The MCP server has an `index_status` tool, which takes no arguments and
+  returns what `ripsem status --json` prints, plus `updating` for whether the
+  server is indexing right now. An agent that finds nothing it expects can see
+  whether the index exists, how many files it holds and how many have changed
+  since it was built.
 - The index is read faster and takes less memory. A record no longer owns five
   allocations of its own: `index.bin` stores one column per field, and loading
   hands every record a range of a few shared buffers. Reading the index takes

@@ -321,6 +321,29 @@ fn status_json(
     index: Option<&IndexFacts>,
     error: Option<&str>,
 ) -> String {
+    let doc = status_value(model, backend, dims, index, error);
+    serde_json::to_string_pretty(&doc).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+}
+
+/// The document `status --json` prints, for the MCP `index_status` tool.
+pub(crate) fn status_report(config: &Config) -> Value {
+    let (facts, error) = index_facts(config);
+    status_value(
+        &config.model,
+        config.backend,
+        config.dims(),
+        facts.as_ref(),
+        error.as_deref(),
+    )
+}
+
+fn status_value(
+    model: &str,
+    backend: Backend,
+    dims: usize,
+    index: Option<&IndexFacts>,
+    error: Option<&str>,
+) -> Value {
     let index_json = match index {
         Some(f) => json!({
             "present": true,
@@ -344,24 +367,22 @@ fn status_json(
         }),
         None => json!({ "present": false, "error": error }),
     };
-    let doc = json!({
+    json!({
         "schema": "ripsem/status/v1",
         "model": model,
         "backend": backend,
         "dims": dims,
         "warning": embed::backend_warning(backend),
         "index": index_json,
-    });
-    serde_json::to_string_pretty(&doc).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    })
 }
 
-fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
-    let config = Config::load(root)?;
+/// What the index file on disk holds, and how far the tree has drifted from
+/// it. A missing file and an unreadable index both yield no facts; only the
+/// latter carries an error.
+fn index_facts(config: &Config) -> (Option<IndexFacts>, Option<String>) {
     let path = config.index_path();
-
-    // A missing file and an unreadable index both yield no facts; only the
-    // latter carries an error.
-    let (facts, error) = if !path.exists() {
+    if !path.exists() {
         (None, None)
     } else {
         match Index::load(&path) {
@@ -369,7 +390,7 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
                 let files: std::collections::HashSet<&str> =
                     index.records.iter().map(|r| r.path.as_str()).collect();
                 let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                let drift = pipeline::drift(&config, &index).ok();
+                let drift = pipeline::drift(config, &index).ok();
                 let facts = IndexFacts {
                     path: show_path(&path),
                     size_bytes: size,
@@ -380,14 +401,19 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
                     index_backend: index.backend,
                     index_model: index.model.clone(),
                     stale: !index.built_for(config.backend, &config.model),
-                    rechunk: index.chunking != crate::chunk::Chunking::of(&config),
+                    rechunk: index.chunking != crate::chunk::Chunking::of(config),
                     drift,
                 };
                 (Some(facts), None)
             }
             Err(e) => (None, Some(e.to_string())),
         }
-    };
+    }
+}
+
+fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
+    let config = Config::load(root)?;
+    let (facts, error) = index_facts(&config);
 
     if as_json {
         out!(

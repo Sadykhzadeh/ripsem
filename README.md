@@ -263,11 +263,15 @@ descriptions of MCP tools only when the model looks a tool up, so the model
 learns that `search` exists, and when to use it, from the instructions and the
 note in `CLAUDE.md`.
 
-`ripsem mcp` speaks MCP over stdio and exposes a single `search` tool: a
+`ripsem mcp` speaks MCP over stdio and exposes a `search` tool: a
 `query`, and optionally a `path` to stay inside, a `lang` and a `glob` (each one
 string or a list, as `--lang` and `--glob`), a `limit` (default 5, at most
 50) and a `min_score`. An argument outside the schema comes back as a tool
-error that names what is expected, so the agent can correct the call. In a
+error that names what is expected, so the agent can correct the call. The
+`index_status` tool, which takes no arguments, returns what `ripsem status
+--json` prints plus `updating`, whether the server is indexing right now, so an
+agent that finds nothing it expects can see whether the index exists and how
+many files have changed since it was built. In a
 directory with a `.ripsem` directory the server keeps the index current by
 itself: it builds the index on its first start and re-embeds the code the
 agent changes. Running `ripsem index` once beforehand has the index ready

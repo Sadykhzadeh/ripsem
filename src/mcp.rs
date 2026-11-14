@@ -355,7 +355,10 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
                 "instructions": INSTRUCTIONS.replace('\n', " ")
             }),
         )),
-        "tools/list" => Some(ok(id?, json!({ "tools": [tool_schema()] }))),
+        "tools/list" => Some(ok(
+            id?,
+            json!({ "tools": [tool_schema(), status_schema()] }),
+        )),
         "tools/call" => Some(handle_call(config, session, id?, request)),
         "ping" => Some(ok(id?, json!({}))),
         _ if id.is_some() => Some(error(id.unwrap(), -32601, "method not found")),
@@ -374,10 +377,22 @@ fn tool_schema() -> Value {
                 "path": { "type": "string", "description": "Optional subdirectory (relative to the repo) to limit results to, e.g. 'src/embed'." },
                 "lang": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only files of these languages or extensions, e.g. 'rust' or ['py', 'ts']." },
                 "glob": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only paths matching these globs; a leading ! excludes, e.g. ['*.rs', '!*_test.rs']." },
-                "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "description": format!("Maximum number of results (default {DEFAULT_LIMIT}, at most {MAX_LIMIT}).") },
+                "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "default": DEFAULT_LIMIT, "description": format!("Maximum number of results (default {DEFAULT_LIMIT}, at most {MAX_LIMIT}).") },
                 "min_score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Drop hits scoring below this (0–1). 0 is no closer than unrelated text in this repository, 1 is every query term found literally; scores fall with rank, so this keeps the top results. Default: no filter." }
             },
             "required": ["query"],
+            "additionalProperties": false
+        }
+    })
+}
+
+fn status_schema() -> Value {
+    json!({
+        "name": "index_status",
+        "description": "Report whether this repository's search index exists, how many files and chunks it holds, how many files were added, changed or removed since it was built, and whether it is being updated right now. Call it when `search` says there is no index or finds nothing you expect.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
             "additionalProperties": false
         }
     })
@@ -395,19 +410,16 @@ fn handle_call(
         .and_then(|n| n.as_str())
     {
         Some("search") => {}
+        Some("index_status") => return index_status(config, id, &call_arguments(request)),
         Some(other) => {
-            let message = format!("unknown tool '{other}'; the only tool is 'search'");
+            let message =
+                format!("unknown tool '{other}'; the tools are 'search' and 'index_status'");
             return error(id, -32602, &message);
         }
         None => return error(id, -32602, "missing tool name"),
     }
 
-    let args = request
-        .get("params")
-        .and_then(|p| p.get("arguments"))
-        .filter(|a| !a.is_null())
-        .cloned()
-        .unwrap_or_else(|| json!({}));
+    let args = call_arguments(request);
     let Call {
         query,
         limit,
@@ -428,11 +440,51 @@ fn handle_call(
 
     match result {
         Ok(hits) => {
+            let found = hits.len();
             let hits = apply_min_score(hits, min_score);
-            ok(id, tool_result(&hits))
+            match min_score {
+                Some(min) if hits.is_empty() && found > 0 => ok(id, below_threshold(min, found)),
+                _ => ok(id, tool_result(&hits)),
+            }
         }
         Err(e) => failed(id, &e),
     }
+}
+
+/// The `arguments` of a `tools/call`; a missing or `null` one is no arguments.
+fn call_arguments(request: &Value) -> Value {
+    request
+        .get("params")
+        .and_then(|p| p.get("arguments"))
+        .filter(|a| !a.is_null())
+        .cloned()
+        .unwrap_or_else(|| json!({}))
+}
+
+/// What `ripsem status --json` prints, plus whether the server is indexing
+/// right now. It answers an agent that was told there is no index, or that
+/// finds nothing it expects: whether the index exists, how much it holds and
+/// how many files have changed since.
+fn index_status(config: &Config, id: Value, args: &Value) -> Value {
+    let text_result = |text: String, is_error: bool| {
+        ok(
+            id.clone(),
+            json!({ "content": [{ "type": "text", "text": text }], "isError": is_error }),
+        )
+    };
+    let Some(args) = args.as_object() else {
+        return text_result("the arguments must be an object".into(), true);
+    };
+    if let Some(name) = args.keys().next() {
+        let message = format!("unknown argument '{name}'; this tool takes none");
+        return text_result(message, true);
+    }
+    let mut report = crate::cli::status_report(config);
+    report["updating"] = json!(crate::watch::indexing());
+    text_result(
+        serde_json::to_string_pretty(&report).unwrap_or_default(),
+        false,
+    )
 }
 
 const ARGUMENTS: [&str; 6] = ["query", "path", "lang", "glob", "limit", "min_score"];
@@ -593,6 +645,21 @@ fn apply_min_score(hits: Vec<pipeline::SearchHit>, min: Option<f32>) -> Vec<pipe
     }
 }
 
+/// Every hit scored under `min_score`. Saying only "No matches." would read as
+/// the code not being there.
+fn below_threshold(min: f32, found: usize) -> Value {
+    let text = format!(
+        "No matches scoring {min} or higher; {} scored lower and {} left out. Lower or leave out `min_score` to see {}.",
+        crate::cli::plural(found, "hit"),
+        if found == 1 { "was" } else { "were" },
+        if found == 1 { "it" } else { "them" }
+    );
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false
+    })
+}
+
 fn tool_result(hits: &[pipeline::SearchHit]) -> Value {
     if hits.is_empty() {
         return json!({
@@ -731,12 +798,70 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_exposes_search() {
+    fn tools_list_exposes_search_and_index_status() {
         let cfg = Config::default();
         let resp = handle(&cfg, None, &req("tools/list", json!({}))).unwrap();
         let tools = resp["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["name"], "search");
+        let names: Vec<&Value> = tools.iter().map(|t| &t["name"]).collect();
+        assert_eq!(names, ["search", "index_status"]);
+        let status = &tools[1]["inputSchema"];
+        assert_eq!(status["type"], "object");
+        assert_eq!(status["additionalProperties"], false);
+        assert!(status.get("required").is_none());
+    }
+
+    fn call_tool(config: &Config, name: &str, arguments: Value) -> Value {
+        let request = req(
+            "tools/call",
+            json!({ "name": name, "arguments": arguments }),
+        );
+        handle(config, None, &request).unwrap()
+    }
+
+    /// An agent that is told there is no index, or finds nothing it expects,
+    /// can ask what the index holds and whether it is behind the tree.
+    #[test]
+    fn index_status_reports_what_the_index_holds_and_how_far_behind_it_is() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("auth.rs", "fn authenticate(user) { verify password }");
+        let config = Config {
+            backend: crate::config::Backend::Hash,
+            root: dir.path().canonicalize().unwrap(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+
+        let report = |config: &Config| -> Value {
+            let resp = call_tool(config, "index_status", json!({}));
+            assert_eq!(resp["result"]["isError"], false, "{resp}");
+            let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+            serde_json::from_str(text).unwrap()
+        };
+        let before = report(&config);
+        assert_eq!(before["schema"], "ripsem/status/v1");
+        assert_eq!(before["index"]["present"], false);
+
+        pipeline::index_repo(&config, false).unwrap();
+        let built = report(&config);
+        assert_eq!(built["index"]["present"], true);
+        assert_eq!(built["index"]["files"], 1);
+        assert_eq!(built["index"]["drift"]["added"], 0);
+
+        dir.write("new.rs", "fn added() {}");
+        let behind = report(&config);
+        assert_eq!(behind["index"]["drift"]["added"], 1);
+        assert!(behind["updating"].is_boolean(), "{behind}");
+    }
+
+    #[test]
+    fn index_status_takes_no_arguments() {
+        let cfg = Config::default();
+        let resp = call_tool(&cfg, "index_status", json!({ "verbose": true }));
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("unknown argument 'verbose'"), "got: {text}");
+        let resp = call_tool(&cfg, "index_status", Value::Null);
+        assert_eq!(resp["result"]["isError"], false, "{resp}");
     }
 
     #[test]
@@ -901,6 +1026,13 @@ mod tests {
         let schema = &tool_schema()["inputSchema"];
         assert_eq!(schema["properties"]["limit"]["minimum"], 1);
         assert_eq!(schema["properties"]["limit"]["maximum"], MAX_LIMIT);
+        let default = schema["properties"]["limit"]["default"].clone();
+        assert_eq!(default, DEFAULT_LIMIT);
+        let args = json!({ "query": "x" });
+        assert_eq!(
+            parse_call(&args, Path::new("/repo")).unwrap().limit,
+            DEFAULT_LIMIT
+        );
         assert_eq!(schema["properties"]["min_score"]["minimum"], 0);
         assert_eq!(schema["properties"]["min_score"]["maximum"], 1);
         assert_eq!(schema["additionalProperties"], false);
@@ -1612,9 +1744,14 @@ mod tests {
             }),
         )
         .unwrap();
-        assert_eq!(
-            unrelated["result"]["content"][0]["text"].as_str().unwrap(),
-            "No matches."
+        // Saying only "No matches." would read as the code not existing.
+        let text = unrelated["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.starts_with("No matches scoring 0.5 or higher"),
+            "{text}"
         );
+        assert!(text.contains("scored lower"), "{text}");
+        assert!(text.contains("min_score"), "{text}");
+        assert_eq!(unrelated["result"]["isError"], false);
     }
 }
