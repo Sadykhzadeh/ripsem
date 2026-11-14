@@ -5,6 +5,9 @@
 - The MCP `search` tool states its default `limit` (5) in the input schema as
   `default`, where a client that fills in a form from the schema reads it,
   as well as in the description.
+- An MCP `search` whose hits were all dropped by `min_score` now says so and
+  how many there were, instead of answering "No matches.", which an agent
+  reads as the code not existing.
 - The index is read faster and takes less memory. A record no longer owns five
   allocations of its own: `index.bin` stores one column per field, and loading
   hands every record a range of a few shared buffers. Reading the index takes

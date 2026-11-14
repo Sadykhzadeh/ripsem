@@ -428,8 +428,12 @@ fn handle_call(
 
     match result {
         Ok(hits) => {
+            let found = hits.len();
             let hits = apply_min_score(hits, min_score);
-            ok(id, tool_result(&hits))
+            match min_score {
+                Some(min) if hits.is_empty() && found > 0 => ok(id, below_threshold(min, found)),
+                _ => ok(id, tool_result(&hits)),
+            }
         }
         Err(e) => failed(id, &e),
     }
@@ -591,6 +595,21 @@ fn apply_min_score(hits: Vec<pipeline::SearchHit>, min: Option<f32>) -> Vec<pipe
         Some(min) => hits.into_iter().filter(|h| h.score >= min).collect(),
         None => hits,
     }
+}
+
+/// Every hit scored under `min_score`. Saying only "No matches." would read as
+/// the code not being there.
+fn below_threshold(min: f32, found: usize) -> Value {
+    let text = format!(
+        "No matches scoring {min} or higher; {} scored lower and {} left out. Lower or leave out `min_score` to see {}.",
+        crate::cli::plural(found, "hit"),
+        if found == 1 { "was" } else { "were" },
+        if found == 1 { "it" } else { "them" }
+    );
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false
+    })
 }
 
 fn tool_result(hits: &[pipeline::SearchHit]) -> Value {
@@ -1619,9 +1638,14 @@ mod tests {
             }),
         )
         .unwrap();
-        assert_eq!(
-            unrelated["result"]["content"][0]["text"].as_str().unwrap(),
-            "No matches."
+        // Saying only "No matches." would read as the code not existing.
+        let text = unrelated["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.starts_with("No matches scoring 0.5 or higher"),
+            "{text}"
         );
+        assert!(text.contains("scored lower"), "{text}");
+        assert!(text.contains("min_score"), "{text}");
+        assert_eq!(unrelated["result"]["isError"], false);
     }
 }
