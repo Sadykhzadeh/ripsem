@@ -26,11 +26,19 @@ pub fn run(config: Config) -> Result<()> {
 /// Keeps the index current from a thread of its own, for `ripsem mcp`: an
 /// agent edits files all day, and a server that only reads the index would
 /// answer from code that no longer exists.
+///
+/// The first index counts as underway from here, not from the thread's first
+/// walk, so a search that arrives while the watcher is being set up is told the
+/// index is on its way instead of that there is none.
 pub fn spawn(config: Config) {
+    INDEXING.store(true, Ordering::Relaxed);
     std::thread::spawn(move || {
         if let Err(e) = keep_current(config, false, |line| tracing::info!("{line}")) {
             tracing::warn!("stopped keeping the index current: {e:#}");
         }
+        // A watch that never got as far as an index must not leave searches
+        // waiting for one.
+        INDEXING.store(false, Ordering::Relaxed);
     });
 }
 
@@ -180,6 +188,29 @@ mod tests {
             Event::new(EventKind::Create(CreateKind::Folder)).add_path(src.clone())
         ));
         assert_eq!(burst.paths, [src]);
+    }
+
+    /// A search that arrives while the watcher is still being set up must be
+    /// told the index is on its way, not that there is none.
+    #[test]
+    fn the_first_index_counts_as_underway_from_the_moment_the_watch_starts() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("a.rs", "fn a() {}\n");
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            backend: crate::config::Backend::Hash,
+            ..Default::default()
+        };
+        config.create_data_dir().unwrap();
+
+        spawn(config);
+        assert!(indexing());
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while indexing() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!indexing(), "the flag has to clear once the index is built");
     }
 
     /// A scanner holding the index file open fails a save, and the server

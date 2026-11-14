@@ -8,6 +8,10 @@
 - An MCP `search` whose hits were all dropped by `min_score` now says so and
   how many there were, instead of answering "No matches.", which an agent
   reads as the code not existing.
+- An MCP server started in a directory `ripsem init` has set up, with no index
+  yet, answers a search that comes in before the first index is built with
+  "the index is being built in the background" instead of telling the agent
+  to run `ripsem index`, which the server is already doing.
 - The index is read faster and takes less memory. A record no longer owns five
   allocations of its own: `index.bin` stores one column per field, and loading
   hands every record a range of a few shared buffers. Reading the index takes
