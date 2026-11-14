@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
+use regex::Regex;
 
 use crate::config::Config;
 use crate::index::{Index, Record};
@@ -95,6 +96,25 @@ pub struct SearchHit {
     pub symbol: Option<crate::symbol::Symbol>,
 }
 
+/// A window of the ranking. `next` is the score of the hit that comes right
+/// after it, when there is one, which is how a caller knows there is more to
+/// ask for.
+#[derive(Debug)]
+pub struct Page {
+    pub hits: Vec<SearchHit>,
+    pub next: Option<f32>,
+}
+
+impl Page {
+    /// Whether another page has anything to show once hits scoring below
+    /// `min_score` are left out. Scores never rise down the ranking, so a hit
+    /// under the threshold means that everything after it is under it too.
+    pub fn more(&self, min_score: Option<f32>) -> bool {
+        self.next
+            .is_some_and(|score| min_score.is_none_or(|min| score >= min))
+    }
+}
+
 const SNIPPET_BYTES: usize = 400;
 
 /// How many of the first hits are shown as their code, and how much of it.
@@ -105,6 +125,13 @@ const FULL_BYTES: usize = 3000;
 /// Hits fetched beyond the number asked for, to replace those a wider hit
 /// above them covers.
 const SPARE_HITS: usize = 5;
+
+/// How deep into the ranking a text pattern looks, in places, and the factor
+/// of the end of the page it grows by when a page reaches further. Each place
+/// costs a read of its file, once per file, so this is a few hundred reads at
+/// most; a pattern that few places match cannot show more than they do.
+pub const TEXT_DEPTH: usize = 200;
+const TEXT_DEPTH_FACTOR: usize = 8;
 
 /// Queries about anything but code, to measure how closely unrelated text
 /// matches an index.
@@ -825,6 +852,31 @@ impl Searcher {
         k: usize,
         scope: Option<&Scope>,
     ) -> Result<Vec<SearchHit>> {
+        Ok(self.query_page(query, k, 0, scope, None)?.hits)
+    }
+
+    /// `limit` hits from the ranking after skipping the first `offset`, taken
+    /// after every filter. The ranking reaches as deep as `offset + limit`
+    /// asks, up to the places the index holds, so an offset beyond the last
+    /// one is an empty page.
+    ///
+    /// The candidates each arm contributes grow with the depth asked for, so a
+    /// page is a window of the ranking as it is for that depth. A chunk that
+    /// holds every term the query has and that only a deeper search finds can
+    /// move a page that was read at a shallower one.
+    ///
+    /// With a `text` pattern only the places whose chunk matches it count. It
+    /// is tried on the best [`TEXT_DEPTH`] places, or [`TEXT_DEPTH_FACTOR`]
+    /// times as many as the page ends at when that is more, and a place
+    /// ranked below them is not found by it.
+    pub fn query_page(
+        &self,
+        query: &str,
+        limit: usize,
+        offset: usize,
+        scope: Option<&Scope>,
+        text: Option<&Regex>,
+    ) -> Result<Page> {
         // Every record ties on an empty query, so any answer would be noise.
         if query.trim().is_empty() {
             anyhow::bail!("the query is empty; say what to look for");
@@ -840,41 +892,63 @@ impl Searcher {
         let terms = crate::lexical::query_terms(query);
         let names = crate::lexical::query_names(query);
         let words = query_words(query);
-        let wanted = k;
-        let k = k.saturating_add(SPARE_HITS);
+        let end = offset.saturating_add(limit);
+        // Chunk text is not in memory when the ranking is cut, so a pattern
+        // is tried on a deeper stretch of it than the page asks for.
+        let wanted = match text {
+            Some(_) => end.saturating_mul(TEXT_DEPTH_FACTOR).max(TEXT_DEPTH),
+            None => end,
+        };
+        let k = wanted.saturating_add(SPARE_HITS);
 
+        let mut hits = self.ranked(&qv, &terms, &names, k, scope);
+        if let Some(text) = text {
+            hits = self.matching(hits, text, end.saturating_add(SPARE_HITS));
+        }
+        Ok(self.places(hits, &names, &words, offset, end))
+    }
+
+    /// The best `k` places for a query embedded as `qv`, through the
+    /// nearest-neighbour graph when there is one and nothing limits the scope.
+    fn ranked(
+        &self,
+        qv: &[f32],
+        terms: &[TermHash],
+        names: &[TermHash],
+        k: usize,
+        scope: Option<&Scope>,
+    ) -> Vec<crate::index::Hit> {
         #[cfg(feature = "hnsw")]
         if scope.is_none()
             && let Some(map) = &self.ann_map
         {
             let depth = crate::index::candidate_depth(k);
-            let dense: Vec<crate::index::Hit> = crate::ann::search_map(map, &qv, depth)
+            let dense: Vec<crate::index::Hit> = crate::ann::search_map(map, qv, depth)
                 .into_iter()
                 .map(|(record_idx, score)| crate::index::Hit { score, record_idx })
                 .collect();
-            let hits = self.index.search_fused_with(&dense, &qv, &terms, &names, k);
-            return Ok(self.places(hits, &names, &words, wanted));
+            return self.index.search_fused_with(&dense, qv, terms, names, k);
         }
-
-        let hits = self.index.search_fused(&qv, &terms, &names, k, scope);
-        Ok(self.places(hits, &names, &words, wanted))
+        self.index.search_fused(qv, terms, names, k, scope)
     }
 
-    /// A hit reported as a whole declaration covers the records inside it
-    /// that rank below, such as the rest of a long enum's variants.
+    /// The hits from place `skip` up to place `end` of the ranking. A hit
+    /// reported as a whole declaration covers the records inside it that rank
+    /// below, such as the rest of a long enum's variants, so the places above
+    /// the page are worked out too, without their snippets. The first hits of
+    /// a page are shown as their code.
     fn places(
         &self,
         hits: Vec<crate::index::Hit>,
         names: &[TermHash],
         words: &[String],
-        k: usize,
-    ) -> Vec<SearchHit> {
-        let mut out: Vec<SearchHit> = Vec::with_capacity(k.min(hits.len()));
+        skip: usize,
+        end: usize,
+    ) -> Page {
+        let mut out: Vec<SearchHit> = Vec::with_capacity(end.min(hits.len()));
         let mut wider: Vec<(String, usize, usize)> = Vec::new();
+        let mut next = None;
         for h in hits {
-            if out.len() == k {
-                break;
-            }
             let record = &self.index.records[h.record_idx];
             let covered = wider.iter().any(|(path, start, end)| {
                 path.as_str() == record.path.as_str()
@@ -884,21 +958,28 @@ impl Searcher {
             if covered {
                 continue;
             }
+            if out.len() == end {
+                next = Some(h.score);
+                break;
+            }
             let mut hit = self.hit(h.record_idx, h.score, names);
             if hit.end_line > record.end_line {
                 wider.push((hit.path.clone(), hit.start_line, hit.end_line));
             }
-            let shown = match out.len() < SHOWN_IN_FULL {
-                true => self.code(record, &hit),
-                false => self.near(record, &hit, words),
-            };
-            let shown = shown.or_else(|| self.piece(h.record_idx, &hit, words));
-            if let Some(shown) = shown {
-                hit.snippet = shown;
+            if out.len() >= skip {
+                let shown = match out.len() - skip < SHOWN_IN_FULL {
+                    true => self.code(record, &hit),
+                    false => self.near(record, &hit, words),
+                };
+                let shown = shown.or_else(|| self.piece(h.record_idx, &hit, words));
+                if let Some(shown) = shown {
+                    hit.snippet = shown;
+                }
             }
             out.push(hit);
         }
-        out
+        out.drain(..skip.min(out.len()));
+        Page { hits: out, next }
     }
 
     /// The first hits are shown as their code, up to [`FULL_LINES`]: whoever
@@ -1010,21 +1091,68 @@ impl Searcher {
         }
     }
 
-    /// Lines of an indexed file as they were indexed. A file changed since then
-    /// has nothing to offer: its lines may have moved.
-    fn lines(&self, record: &Record, start: usize, end: usize, budget: usize) -> Option<String> {
+    /// The file a record was cut from, as it was indexed; `None` when it was
+    /// changed since or cannot be read.
+    fn indexed_bytes(&self, record: &Record) -> Option<Vec<u8>> {
         // The index is data on disk, and a repository can ship one: a path that
         // leaves the root is not a file this index could have been built from.
         let inside = Path::new(record.path.as_str())
             .components()
             .all(|c| matches!(c, std::path::Component::Normal(_)));
-        if !inside || start == 0 || end < start {
+        if !inside {
             return None;
         }
         let bytes = std::fs::read(self.root.join(record.path.as_str())).ok()?;
-        if fingerprint::content_hash(&bytes) != record.file_hash {
+        (fingerprint::content_hash(&bytes) == record.file_hash).then_some(bytes)
+    }
+
+    /// The hits, in their order, whose chunk the pattern matches, up to
+    /// `needed` of them. Chunk text is not held in memory, only a snippet of
+    /// it, so each is read from its file, which is read once however many
+    /// chunks it has. A chunk whose file changed since the index was built is
+    /// matched on its snippet instead.
+    fn matching(
+        &self,
+        hits: Vec<crate::index::Hit>,
+        text: &Regex,
+        needed: usize,
+    ) -> Vec<crate::index::Hit> {
+        let mut files: HashMap<&str, Option<Vec<u8>>> = HashMap::new();
+        let mut kept = Vec::new();
+        for h in hits {
+            if kept.len() == needed {
+                break;
+            }
+            let record = &self.index.records[h.record_idx];
+            let bytes = files
+                .entry(record.path.as_str())
+                .or_insert_with(|| self.indexed_bytes(record));
+            let found = match bytes {
+                Some(bytes) => {
+                    let file = walk::decode_text(bytes);
+                    let lines: Vec<&str> = file
+                        .lines()
+                        .skip(record.start_line.saturating_sub(1))
+                        .take((record.end_line + 1).saturating_sub(record.start_line))
+                        .collect();
+                    text.is_match(&lines.join("\n"))
+                }
+                None => text.is_match(&record.snippet),
+            };
+            if found {
+                kept.push(h);
+            }
+        }
+        kept
+    }
+
+    /// Lines of an indexed file as they were indexed. A file changed since then
+    /// has nothing to offer: its lines may have moved.
+    fn lines(&self, record: &Record, start: usize, end: usize, budget: usize) -> Option<String> {
+        if start == 0 || end < start {
             return None;
         }
+        let bytes = self.indexed_bytes(record)?;
         let text = walk::decode_text(&bytes);
         let wanted: Vec<&str> = text.lines().skip(start - 1).take(end + 1 - start).collect();
         // A line that long was indexed in pieces, and its start is not the
@@ -1049,6 +1177,20 @@ pub fn search_scoped(
     k: usize,
     scope: Option<&Scope>,
 ) -> Result<Vec<SearchHit>> {
+    Ok(search_page(config, query, k, 0, scope, None)?.hits)
+}
+
+/// Like [`search_scoped`], for the page of `limit` hits that starts at place
+/// `offset` of the ranking, of the hits whose chunk matches `text` when there
+/// is one; see [`Searcher::query_page`].
+pub fn search_page(
+    config: &Config,
+    query: &str,
+    limit: usize,
+    offset: usize,
+    scope: Option<&Scope>,
+    text: Option<&Regex>,
+) -> Result<Page> {
     if query.trim().is_empty() {
         anyhow::bail!("the query is empty; say what to look for");
     }
@@ -1078,7 +1220,7 @@ pub fn search_scoped(
         None => open_with(config, Arc::clone(&embedder)),
     };
     let found = searcher.and_then(|searcher| {
-        let found = searcher.query_scoped(query, k, scope);
+        let found = searcher.query_page(query, limit, offset, scope, text);
         leave_to_exit(searcher.index);
         found
     });

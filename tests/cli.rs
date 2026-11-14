@@ -595,3 +595,206 @@ fn a_model_that_cannot_be_fetched_says_what_to_do() {
         );
     }
 }
+
+/// Ten files that fit the query, five of them in `.rs` files.
+fn paged_tree() -> TempDir {
+    let dir = TempDir::new();
+    for i in 0..5 {
+        dir.write(
+            &format!("src/auth{i}.rs"),
+            &format!("fn auth{i}() {{ verify password create session token }}"),
+        );
+        dir.write(
+            &format!("docs/note{i}.md"),
+            &format!("note {i}: verify the setup first"),
+        );
+    }
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+    dir
+}
+
+/// The `path:start-end` heads of what a search printed.
+fn heads(output: &Output) -> Vec<String> {
+    stdout(output)
+        .lines()
+        .filter(|l| !l.starts_with(' '))
+        .filter_map(|l| l.split("  ").next())
+        .filter(|h| h.contains(".rs:") || h.contains(".md:"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn an_offset_reads_the_next_page_and_says_when_more_follow() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    let page = |limit: &str, offset: &str, extra: &[&str]| {
+        let mut args = vec!["search", query, "-k", limit, "--offset", offset];
+        args.extend_from_slice(extra);
+        ripsem(&dir.path, &args)
+    };
+    let all = page("50", "0", &[]);
+    assert_eq!(heads(&all).len(), 10, "{}", stdout(&all));
+    assert!(!stdout(&all).contains("--offset"), "{}", stdout(&all));
+
+    let mut joined = Vec::new();
+    for offset in ["0", "4", "8"] {
+        let out = page("4", offset, &[]);
+        let text = stdout(&out);
+        let next = offset.parse::<usize>().unwrap() + 4;
+        let line = format!("more results below this; pass --offset {next} to see them");
+        assert_eq!(text.contains(&line), next < 10, "{text}");
+        if next < 10 {
+            assert_eq!(
+                text.trim_end().lines().last(),
+                Some(line.as_str()),
+                "{text}"
+            );
+        }
+        joined.extend(heads(&out));
+    }
+    assert_eq!(joined, heads(&all));
+
+    let past = page("4", "10", &[]);
+    assert!(past.status.success(), "{}", stderr(&past));
+    assert_eq!(stdout(&past).trim(), "no further matches");
+}
+
+#[test]
+fn the_json_of_a_page_is_the_same_array_of_hits() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    let rows = |args: &[&str]| -> Vec<serde_json::Value> {
+        let mut all = vec!["search", query, "--json"];
+        all.extend_from_slice(args);
+        serde_json::from_str(&stdout(&ripsem(&dir.path, &all))).unwrap()
+    };
+
+    let first = rows(&["-k", "4"]);
+    assert_eq!(first.len(), 4);
+    // A page is the same array of hits as before, with the same fields and no others.
+    let fields = [
+        "end_line",
+        "kind",
+        "path",
+        "score",
+        "snippet",
+        "start_line",
+        "symbol",
+    ];
+    for row in &first {
+        let mut names: Vec<&str> = row
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, fields);
+    }
+    // A page shorter than the limit is the last one.
+    let last = rows(&["-k", "4", "--offset", "8"]);
+    assert_eq!(last.len(), 2);
+    assert!(rows(&["--offset", "40"]).is_empty());
+}
+
+#[test]
+fn an_offset_follows_a_language_a_glob_a_path_and_a_threshold() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    for filter in [
+        &["--lang", "rust"][..],
+        &["-g", "*.rs"],
+        &["--in", "src"],
+        &["--min-score", "1"],
+    ] {
+        let ask = |limit: &str, offset: &str| {
+            let mut args = vec!["search", query, "-k", limit, "--offset", offset];
+            args.extend_from_slice(filter);
+            ripsem(&dir.path, &args)
+        };
+        let all = heads(&ask("50", "0"));
+        assert_eq!(all.len(), 5, "{filter:?}");
+        let (first, second) = (ask("3", "0"), ask("3", "3"));
+        assert!(
+            stdout(&first).contains("pass --offset 3 to see them"),
+            "{filter:?}: {}",
+            stdout(&first)
+        );
+        assert!(!stdout(&second).contains("--offset"), "{filter:?}");
+        let joined: Vec<String> = heads(&first).into_iter().chain(heads(&second)).collect();
+        assert_eq!(joined, all, "{filter:?}");
+    }
+}
+
+#[test]
+fn an_offset_that_is_not_a_count_is_an_error() {
+    let dir = TempDir::new();
+    for offset in ["-1", "two", "1.5"] {
+        let out = ripsem(&dir.path, &["search", "x", "--offset", offset]);
+        assert_eq!(out.status.code(), Some(2), "{offset}: {}", stderr(&out));
+    }
+}
+
+#[test]
+fn a_regex_keeps_the_hits_whose_code_matches() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    let all = heads(&ripsem(&dir.path, &["search", query, "-k", "50"]));
+    let wanted: Vec<String> = all
+        .iter()
+        .filter(|h| h.contains("auth2.rs") || h.contains("auth4.rs"))
+        .cloned()
+        .collect();
+    assert_eq!(wanted.len(), 2);
+
+    for flag in ["-e", "--regex"] {
+        let out = ripsem(&dir.path, &["search", query, flag, r"auth[24]\("]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(heads(&out), wanted, "{flag}");
+    }
+    // Inline flags, other filters and paging all go with it.
+    let folded = ripsem(
+        &dir.path,
+        &["search", query, "-e", "(?i)AUTH", "--lang", "rust"],
+    );
+    assert_eq!(heads(&folded).len(), 5, "{}", stdout(&folded));
+    let page = ripsem(
+        &dir.path,
+        &["search", query, "-e", "(?i)auth|note", "-k", "6"],
+    );
+    assert!(stdout(&page).contains("pass --offset 6 to see them"));
+    let rest = ripsem(
+        &dir.path,
+        &[
+            "search",
+            query,
+            "-e",
+            "(?i)auth|note",
+            "-k",
+            "6",
+            "--offset",
+            "6",
+        ],
+    );
+    assert_eq!(heads(&rest).len(), 4);
+    assert!(!stdout(&rest).contains("--offset"));
+    let none = ripsem(&dir.path, &["search", query, "-e", "nothing like this"]);
+    assert!(none.status.success());
+    assert_eq!(stdout(&none).trim(), "no matches");
+}
+
+#[test]
+fn a_regex_that_does_not_parse_is_an_error_before_any_search() {
+    // No project here: the pattern is refused before an index is looked for.
+    let dir = TempDir::new();
+    for pattern in ["foo(", "[a-", "((a{100}){100}){100}"] {
+        let out = ripsem(&dir.path, &["search", "x", "-e", pattern]);
+        assert_eq!(out.status.code(), Some(1), "{pattern}");
+        let message = stderr(&out);
+        assert!(message.contains("invalid regex"), "{pattern}: {message}");
+        assert_eq!(message.trim().lines().count(), 1, "{pattern}: {message}");
+    }
+}

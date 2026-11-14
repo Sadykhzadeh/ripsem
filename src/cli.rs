@@ -92,6 +92,11 @@ pub enum Command {
         /// Number of results.
         #[arg(short = 'k', long, default_value_t = 10, value_parser = limit)]
         limit: usize,
+        /// Skip this many results, taken from the ranking after every filter,
+        /// to read the next page: the output says when more follow and what
+        /// to pass.
+        #[arg(long, default_value_t = 0, value_name = "N")]
+        offset: usize,
         /// Print the results as JSON.
         #[arg(long)]
         json: bool,
@@ -112,6 +117,13 @@ pub enum Command {
         /// directory above it matches.
         #[arg(short = 'g', long, value_name = "GLOB")]
         glob: Vec<String>,
+        /// Keep only hits whose code matches this regular expression, to find
+        /// the place that does something and also mentions a name: `-e
+        /// 'retry|backoff'`, `-e '(?i)argon2'`. It is matched against each
+        /// hit's whole chunk and tried on the best 200 places of the ranking,
+        /// so it narrows an answer; to find every occurrence use grep.
+        #[arg(short = 'e', long, value_name = "PATTERN")]
+        regex: Option<String>,
         /// Number of snippet lines to print per hit in the human output: 3 in
         /// a terminal, and the whole snippet when the output goes to another
         /// program, such as an agent's shell tool. `0` prints just the
@@ -216,10 +228,12 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Search {
             query,
             limit,
+            offset,
             json,
             within,
             lang,
             glob,
+            regex,
             context,
             min_score,
             count_by_file,
@@ -227,10 +241,12 @@ pub fn run(cli: Cli) -> Result<()> {
             &root,
             &query.join(" "),
             limit,
+            offset,
             json,
             within.as_deref(),
             &lang,
             &glob,
+            regex.as_deref(),
             context,
             min_score,
             count_by_file,
@@ -614,14 +630,17 @@ fn cmd_search(
     root: &Path,
     query: &str,
     limit: usize,
+    offset: usize,
     as_json: bool,
     within: Option<&str>,
     langs: &[String],
     globs: &[String],
+    regex: Option<&str>,
     context: Option<usize>,
     min_score: Option<f32>,
     count_by_file: bool,
 ) -> Result<()> {
+    let text = regex.map(crate::scope::text_pattern).transpose()?;
     let context = context.unwrap_or(match std::io::stdout().is_terminal() {
         true => 3,
         false => usize::MAX,
@@ -633,14 +652,18 @@ fn cmd_search(
         None => None,
     };
     let scope = Scope::new(prefix.as_deref(), langs, globs)?;
-    let hits = pipeline::search_scoped(&config, query, limit, scope.as_ref())?;
-    let hits = apply_min_score(hits, min_score);
+    let page = pipeline::search_page(&config, query, limit, offset, scope.as_ref(), text.as_ref())?;
+    let more = page.more(min_score);
+    let hits = apply_min_score(page.hits, min_score);
+    let next = more.then_some(offset + hits.len());
     print_hits(
         &hits,
         as_json,
         context,
         &pipeline::query_words(query),
         count_by_file,
+        offset,
+        next,
     )?;
     warn_about_backend(&config);
     Ok(())
@@ -661,13 +684,16 @@ fn from_here(raw: &str, root: &Path) -> String {
     }
 }
 
-/// Prints search results in the shape the flags ask for.
+/// Prints search results in the shape the flags ask for. `next` is the offset
+/// of the page that follows, when there is one.
 fn print_hits(
     hits: &[pipeline::SearchHit],
     as_json: bool,
     context: usize,
     words: &[String],
     count_by_file: bool,
+    offset: usize,
+    next: Option<usize>,
 ) -> Result<()> {
     if count_by_file {
         let counts = file_hit_counts(hits);
@@ -707,7 +733,14 @@ fn print_hits(
     }
 
     if hits.is_empty() {
-        out!("no matches");
+        out!(
+            "{}",
+            if offset > 0 {
+                "no further matches"
+            } else {
+                "no matches"
+            }
+        );
         return Ok(());
     }
     for h in hits {
@@ -734,6 +767,9 @@ fn print_hits(
             }
         }
         out!();
+    }
+    if let Some(next) = next {
+        out!("more results below this; pass --offset {next} to see them");
     }
     Ok(())
 }

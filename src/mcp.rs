@@ -10,8 +10,12 @@ use crate::scope::Scope;
 
 /// Protocol revisions this server speaks, newest first. Between them they
 /// change transports, authorization and client features, and add optional
-/// tool fields (structured output, titles, annotations, icons) that a single
-/// text-returning tool has no need for. The one difference that reaches a
+/// tool fields (structured output, titles, annotations, icons). Structured
+/// output and icons stay out, as a text-returning tool has no need for them.
+/// A title and annotations are sent, because a client that is told nothing
+/// about a tool asks the user before every call. They sit in fields a client
+/// of the 2024-11-05 revision does not know and ignores, and nothing in the
+/// tool depends on a client reading them. The one difference that reaches a
 /// stdio server is that 2025-03-26 lets the client send JSON-RPC batches,
 /// which [`reply`] accepts under any revision.
 ///
@@ -366,9 +370,24 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
     }
 }
 
+/// Hints for a client that a tool changes nothing the user owns. `search`
+/// refreshes ripsem's own index cache under `.ripsem/` before it answers,
+/// which is the tool's cache and not the user's files.
+fn read_only(title: &str) -> Value {
+    json!({
+        "title": title,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+    })
+}
+
 fn tool_schema() -> Value {
     json!({
         "name": "search",
+        "title": "Search the code",
+        "annotations": read_only("Search the code"),
         "description": "Find code in this repository. Handles both exact terms (identifiers, error strings, constants) and plain-language descriptions of behaviour in the same call, and returns ranked snippets with file paths and line ranges. Prefer this over grepping and reading whole files: it costs one call instead of guessing at the author's wording.",
         "inputSchema": {
             "type": "object",
@@ -377,7 +396,9 @@ fn tool_schema() -> Value {
                 "path": { "type": "string", "description": "Optional subdirectory (relative to the repo) to limit results to, e.g. 'src/embed'." },
                 "lang": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only files of these languages or extensions, e.g. 'rust' or ['py', 'ts']." },
                 "glob": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only paths matching these globs; a leading ! excludes, e.g. ['*.rs', '!*_test.rs']." },
+                "regex": { "type": "string", "description": format!("Only hits whose code matches this regular expression (Rust regex syntax, matched against the whole chunk, so `(?i)` makes it case-insensitive), for \"the place that does X and mentions foo\". Looked for among the {} best-ranked places, so it narrows the answer rather than searching for the pattern; use grep when every occurrence is needed.", pipeline::TEXT_DEPTH) },
                 "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "default": DEFAULT_LIMIT, "description": format!("Maximum number of results (default {DEFAULT_LIMIT}, at most {MAX_LIMIT}).") },
+                "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Results to skip, taken from the ranking after every filter, to read the next page: when more follow, the result ends with the offset to pass. Default 0." },
                 "min_score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Drop hits scoring below this (0–1). 0 is no closer than unrelated text in this repository, 1 is every query term found literally; scores fall with rank, so this keeps the top results. Default: no filter." }
             },
             "required": ["query"],
@@ -389,6 +410,8 @@ fn tool_schema() -> Value {
 fn status_schema() -> Value {
     json!({
         "name": "index_status",
+        "title": "Index status",
+        "annotations": read_only("Index status"),
         "description": "Report whether this repository's search index exists, how many files and chunks it holds, how many files were added, changed or removed since it was built, and whether it is being updated right now. Call it when `search` says there is no index or finds nothing you expect.",
         "inputSchema": {
             "type": "object",
@@ -423,31 +446,61 @@ fn handle_call(
     let Call {
         query,
         limit,
+        offset,
         min_score,
         scope,
+        text,
     } = match parse_call(&args, &config.root) {
         Ok(call) => call,
         Err(e) => return failed(id, &e),
     };
 
     let result = match session {
-        Some(s) => s.query_scoped(query, limit, scope.as_ref()),
+        Some(s) => s.query_page(query, limit, offset, scope.as_ref(), text.as_ref()),
         None if crate::watch::indexing() => Err(anyhow!(
             "the index is being built in the background; search again shortly"
         )),
-        None => pipeline::open(config).and_then(|s| s.query_scoped(query, limit, scope.as_ref())),
+        None => pipeline::open(config)
+            .and_then(|s| s.query_page(query, limit, offset, scope.as_ref(), text.as_ref())),
     };
 
     match result {
-        Ok(hits) => {
-            let found = hits.len();
-            let hits = apply_min_score(hits, min_score);
-            match min_score {
-                Some(min) if hits.is_empty() && found > 0 => ok(id, below_threshold(min, found)),
-                _ => ok(id, tool_result(&hits)),
+        Ok(page) => {
+            let more = page.more(min_score);
+            let found = page.hits.len();
+            let hits = apply_min_score(page.hits, min_score);
+            let mut result = match min_score {
+                Some(min) if hits.is_empty() && found > 0 => below_threshold(min, found),
+                _ if hits.is_empty() && offset > 0 => nothing_further(offset),
+                _ => tool_result(&hits),
+            };
+            if more {
+                say_more(&mut result, offset + hits.len());
             }
+            ok(id, result)
         }
         Err(e) => failed(id, &e),
+    }
+}
+
+/// An offset past the last hit the search ranks is an answer, not a mistake:
+/// an agent that pages until it runs out should be told that it has.
+fn nothing_further(offset: usize) -> Value {
+    json!({
+        "content": [{
+            "type": "text",
+            "text": format!("No further results: offset {offset} is past the last hit this search ranks.")
+        }],
+        "isError": false
+    })
+}
+
+/// Ends the text of a result with where the next page starts.
+fn say_more(result: &mut Value, next_offset: usize) {
+    if let Some(Value::String(text)) = result.pointer_mut("/content/0/text") {
+        text.push_str(&format!(
+            "\n\nMore results below this; pass offset={next_offset} to see them."
+        ));
     }
 }
 
@@ -487,15 +540,26 @@ fn index_status(config: &Config, id: Value, args: &Value) -> Value {
     )
 }
 
-const ARGUMENTS: [&str; 6] = ["query", "path", "lang", "glob", "limit", "min_score"];
+const ARGUMENTS: [&str; 8] = [
+    "query",
+    "path",
+    "lang",
+    "glob",
+    "regex",
+    "limit",
+    "offset",
+    "min_score",
+];
 const DEFAULT_LIMIT: usize = 5;
 const MAX_LIMIT: usize = 50;
 
 struct Call<'a> {
     query: &'a str,
     limit: usize,
+    offset: usize,
     min_score: Option<f32>,
     scope: Option<Scope>,
+    text: Option<regex::Regex>,
 }
 
 /// Arguments that do not fit the input schema are a tool error, which the
@@ -507,7 +571,7 @@ fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
         .ok_or_else(|| anyhow!("the arguments must be an object with a 'query'"))?;
     if let Some(name) = args.keys().find(|k| !ARGUMENTS.contains(&k.as_str())) {
         bail!(
-            "unknown argument '{name}'; the arguments are query, path, lang, glob, limit and min_score"
+            "unknown argument '{name}'; the arguments are query, path, lang, glob, regex, limit, offset and min_score"
         );
     }
     let given = |name: &str| args.get(name).filter(|v| !v.is_null());
@@ -529,6 +593,18 @@ fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
                 anyhow!("'limit' must be a whole number from 1 to {MAX_LIMIT}, not {v}")
             })?,
     };
+    let offset = match given("offset") {
+        None => 0,
+        Some(v) => v
+            .as_u64()
+            .or_else(|| {
+                v.as_f64()
+                    .filter(|f| f.fract() == 0.0 && *f >= 0.0)
+                    .map(|f| f as u64)
+            })
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| anyhow!("'offset' must be a whole number, 0 or more, not {v}"))?,
+    };
     let min_score = match given("min_score") {
         None => None,
         Some(v) => Some(
@@ -545,11 +621,18 @@ fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
     };
     let langs = strings("lang", given("lang"))?;
     let globs = strings("glob", given("glob"))?;
+    let text = match given("regex") {
+        None => None,
+        Some(Value::String(pattern)) => Some(crate::scope::text_pattern(pattern)?),
+        Some(other) => bail!("'regex' must be a string, not {other}"),
+    };
     Ok(Call {
         query,
         limit,
+        offset,
         min_score,
         scope: Scope::new(prefix.as_deref(), &langs, &globs)?,
+        text,
     })
 }
 
@@ -808,6 +891,38 @@ mod tests {
         assert_eq!(status["type"], "object");
         assert_eq!(status["additionalProperties"], false);
         assert!(status.get("required").is_none());
+    }
+
+    /// Both tools only read, so a client need not ask before each call. The
+    /// annotations are hints in fields a 2024-11-05 client does not know and
+    /// ignores: what that revision requires of a tool is untouched.
+    #[test]
+    fn both_tools_are_marked_as_changing_nothing_the_user_owns() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("tools/list", json!({}))).unwrap();
+        for tool in resp["result"]["tools"].as_array().unwrap() {
+            let name = tool["name"].as_str().unwrap();
+            let hints = &tool["annotations"];
+            assert_eq!(hints["readOnlyHint"], true, "{name}");
+            assert_eq!(hints["destructiveHint"], false, "{name}");
+            assert_eq!(hints["idempotentHint"], true, "{name}");
+            assert_eq!(hints["openWorldHint"], false, "{name}");
+            let title = tool["title"].as_str().unwrap();
+            assert!(!title.is_empty() && title != name, "{name}");
+            assert_eq!(hints["title"], tool["title"], "{name}");
+            let mut fields: Vec<&str> = tool
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            fields.sort_unstable();
+            assert_eq!(
+                fields,
+                ["annotations", "description", "inputSchema", "name", "title"],
+                "{name}"
+            );
+        }
     }
 
     fn call_tool(config: &Config, name: &str, arguments: Value) -> Value {
@@ -1753,5 +1868,256 @@ mod tests {
         assert!(text.contains("scored lower"), "{text}");
         assert!(text.contains("min_score"), "{text}");
         assert_eq!(unrelated["result"]["isError"], false);
+    }
+
+    /// Files that all fit the query: `auth` ones hold every term, `note` ones
+    /// only some, so the ranking has two plainly different levels.
+    fn paged_project() -> (crate::testutil::TempDir, Config, pipeline::Searcher) {
+        use crate::config::Backend;
+
+        let dir = crate::testutil::TempDir::new();
+        for i in 0..5 {
+            dir.write(
+                &format!("src/auth{i}.rs"),
+                &format!("fn auth{i}() {{ verify password create session token }}"),
+            );
+            dir.write(
+                &format!("docs/note{i}.md"),
+                &format!("note {i}: verify the setup first"),
+            );
+        }
+        let config = Config {
+            backend: Backend::Hash,
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        pipeline::index_repo(&config, false).unwrap();
+        let searcher = pipeline::open(&config).unwrap();
+        (dir, config, searcher)
+    }
+
+    fn search_text(config: &Config, searcher: &pipeline::Searcher, arguments: Value) -> String {
+        let request = req(
+            "tools/call",
+            json!({ "name": "search", "arguments": arguments }),
+        );
+        let resp = handle(config, Some(searcher), &request).unwrap();
+        assert_eq!(resp["result"]["isError"], false, "{arguments}: {resp}");
+        resp["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// The `path:start-end` heads of a result text, in order.
+    fn heads(text: &str) -> Vec<&str> {
+        text.lines()
+            .filter(|l| {
+                l.split_once(':')
+                    .is_some_and(|(path, _)| path.ends_with(".rs") || path.ends_with(".md"))
+            })
+            .map(|l| l.split(' ').next().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn an_offset_pages_through_the_ranking() {
+        let (_dir, config, searcher) = paged_project();
+        let query = "verify password create session token";
+        let all = search_text(&config, &searcher, json!({ "query": query, "limit": 50 }));
+        assert_eq!(heads(&all).len(), 10, "{all}");
+        assert!(
+            !all.contains("offset="),
+            "nothing follows the last hit: {all}"
+        );
+
+        let mut joined = Vec::new();
+        for offset in [0, 4, 8] {
+            let page = search_text(
+                &config,
+                &searcher,
+                json!({ "query": query, "limit": 4, "offset": offset }),
+            );
+            let shown = heads(&page);
+            assert_eq!(shown.len(), (10 - offset).min(4), "{page}");
+            let more = format!("pass offset={} to see them", offset + 4);
+            assert_eq!(page.contains(&more), offset + 4 < 10, "{page}");
+            if offset + 4 < 10 {
+                assert!(page.ends_with(&format!("{more}.")), "{page}");
+            }
+            joined.extend(shown.into_iter().map(str::to_string));
+        }
+        assert_eq!(joined, heads(&all));
+    }
+
+    #[test]
+    fn an_offset_past_the_last_hit_says_there_is_nothing_further() {
+        let (_dir, config, searcher) = paged_project();
+        let query = "verify password create session token";
+        for offset in [10, 11, 5000] {
+            let text = search_text(
+                &config,
+                &searcher,
+                json!({ "query": query, "offset": offset }),
+            );
+            assert!(
+                text.starts_with("No further results")
+                    && text.contains(&format!("offset {offset}")),
+                "{text}"
+            );
+        }
+        let none = search_text(&config, &searcher, json!({ "query": query }));
+        assert!(!none.contains("No further"), "{none}");
+    }
+
+    #[test]
+    fn an_offset_outside_the_schema_is_a_tool_error() {
+        for offset in [json!(-1), json!(1.5), json!("2"), json!(true)] {
+            let text = tool_error(json!({ "query": "x", "offset": offset }));
+            assert!(
+                text.contains("'offset' must be a whole number, 0 or more"),
+                "{offset}: {text}"
+            );
+        }
+        let root = Path::new("/repo");
+        let offset = |args: Value| parse_call(&args, root).unwrap().offset;
+        assert_eq!(offset(json!({ "query": "x" })), 0);
+        assert_eq!(offset(json!({ "query": "x", "offset": null })), 0);
+        assert_eq!(offset(json!({ "query": "x", "offset": 7 })), 7);
+        assert_eq!(offset(json!({ "query": "x", "offset": 7.0 })), 7);
+    }
+
+    #[test]
+    fn paging_follows_lang_glob_and_path() {
+        let (_dir, config, searcher) = paged_project();
+        let query = "verify password create session token";
+        for filter in [
+            json!({ "lang": "rust" }),
+            json!({ "glob": ["*.rs"] }),
+            json!({ "path": "src" }),
+        ] {
+            let ask = |limit: u64, offset: u64| {
+                let mut args = filter.clone();
+                args["query"] = json!(query);
+                args["limit"] = json!(limit);
+                args["offset"] = json!(offset);
+                search_text(&config, &searcher, args)
+            };
+            let all = ask(50, 0);
+            assert_eq!(heads(&all).len(), 5, "{filter}: {all}");
+            let (first, second) = (ask(3, 0), ask(3, 3));
+            assert!(first.ends_with("pass offset=3 to see them."), "{first}");
+            assert!(!second.contains("offset="), "{second}");
+            let joined: Vec<&str> = heads(&first).into_iter().chain(heads(&second)).collect();
+            assert_eq!(joined, heads(&all), "{filter}");
+            assert!(
+                joined
+                    .iter()
+                    .all(|h| h.ends_with(".rs") || h.contains(".rs:"))
+            );
+        }
+    }
+
+    #[test]
+    fn paging_follows_min_score() {
+        let (_dir, config, searcher) = paged_project();
+        let query = "verify password create session token";
+        let certain = |limit: u64, offset: u64| {
+            let args =
+                json!({ "query": query, "min_score": 1.0, "limit": limit, "offset": offset });
+            search_text(&config, &searcher, args)
+        };
+        let first = certain(3, 0);
+        assert_eq!(heads(&first).len(), 3, "{first}");
+        assert!(first.ends_with("pass offset=3 to see them."), "{first}");
+        // Two hits hold every term and are left; the notes score lower, so
+        // nothing is promised after them.
+        let second = certain(3, 3);
+        assert_eq!(heads(&second).len(), 2, "{second}");
+        assert!(!second.contains("offset="), "{second}");
+        // A page of exactly the hits above the threshold has no more to say.
+        let exact = certain(5, 0);
+        assert_eq!(heads(&exact).len(), 5, "{exact}");
+        assert!(!exact.contains("offset="), "{exact}");
+        // Everything on the page scores below the threshold.
+        let below = certain(3, 5);
+        assert!(
+            below.starts_with("No matches scoring 1 or higher"),
+            "{below}"
+        );
+    }
+
+    #[test]
+    fn a_regex_keeps_the_hits_whose_chunk_matches_in_rank_order() {
+        let (_dir, config, searcher) = paged_project();
+        let query = "verify password create session token";
+        let all = search_text(&config, &searcher, json!({ "query": query, "limit": 50 }));
+        let wanted: Vec<&str> = heads(&all)
+            .into_iter()
+            .filter(|h| h.contains("auth2.rs") || h.contains("auth4.rs"))
+            .collect();
+        assert_eq!(wanted.len(), 2);
+
+        let kept = search_text(
+            &config,
+            &searcher,
+            json!({ "query": query, "regex": r"auth[24]\(" }),
+        );
+        assert_eq!(heads(&kept), wanted, "{kept}");
+        assert!(!kept.contains("offset="), "{kept}");
+
+        let folded = search_text(
+            &config,
+            &searcher,
+            json!({ "query": query, "regex": "(?i)NOTE [0-9]:" }),
+        );
+        assert_eq!(heads(&folded).len(), 5, "{folded}");
+        assert!(
+            heads(&folded).iter().all(|h| h.contains(".md:")),
+            "{folded}"
+        );
+
+        let none = search_text(
+            &config,
+            &searcher,
+            json!({ "query": query, "regex": "no such text" }),
+        );
+        assert_eq!(none, "No matches.");
+    }
+
+    #[test]
+    fn a_regex_combines_with_the_other_filters_and_with_paging() {
+        let (_dir, config, searcher) = paged_project();
+        let query = "verify password create session token";
+        let ask = |limit: u64, offset: u64, filter: Value| {
+            let mut args = filter;
+            args["query"] = json!(query);
+            args["regex"] = json!("(?i)auth|note");
+            args["limit"] = json!(limit);
+            args["offset"] = json!(offset);
+            search_text(&config, &searcher, args)
+        };
+        let all = ask(50, 0, json!({}));
+        assert_eq!(heads(&all).len(), 10, "{all}");
+        let (first, second) = (ask(6, 0, json!({})), ask(6, 6, json!({})));
+        assert!(first.ends_with("pass offset=6 to see them."), "{first}");
+        assert!(!second.contains("offset="), "{second}");
+        let joined: Vec<&str> = heads(&first).into_iter().chain(heads(&second)).collect();
+        assert_eq!(joined, heads(&all));
+
+        let rust = ask(50, 0, json!({ "lang": "rust" }));
+        assert_eq!(heads(&rust).len(), 5, "{rust}");
+        let docs = ask(50, 0, json!({ "path": "docs", "glob": "*.md" }));
+        assert_eq!(heads(&docs).len(), 5, "{docs}");
+    }
+
+    #[test]
+    fn a_regex_that_does_not_parse_is_a_tool_error() {
+        let text = tool_error(json!({ "query": "x", "regex": "foo(" }));
+        assert_eq!(text, "search failed: invalid regex 'foo(': unclosed group");
+        let text = tool_error(json!({ "query": "x", "regex": 7 }));
+        assert!(text.contains("'regex' must be a string"), "{text}");
+        let text = tool_error(json!({ "query": "x", "regex": "((a{100}){100}){100}" }));
+        assert!(text.contains("too large"), "{text}");
     }
 }

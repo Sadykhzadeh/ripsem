@@ -197,10 +197,19 @@ The words of a query need no quotes: `ripsem search where is auth set up`
 asks the same as `ripsem search "where is auth set up"`.
 
 - `-k <N>` sets the number of results (default 10).
+- `--offset <N>` skips the first N results, counted in the ranking after every
+  filter and `--min-score`, to read the next page. When more results follow,
+  the output ends with `more results below this; pass --offset 10 to see
+  them`. An offset past the last result prints `no further matches`. The
+  ranking is made again for each page, so a page reads the same as the
+  matching stretch of one larger `-k` except where a deeper search finds a
+  chunk that holds every term of the query.
 - `--json` prints the hits as a JSON array. Each has `path`, `start_line`,
   `end_line`, `score`, `kind` and `symbol` (such as `fn` and
-  `Session::refresh`, both `null` for a hit outside any declaration) and
-  `snippet`. With `--count-by-file` each entry is a `path` and its `count`.
+  `Session::refresh`, both `null` for a hit outside any declaration),
+  and `snippet`. With `--offset` the array holds that page; a page shorter
+  than `-k` is the last one. With `--count-by-file` each entry is a `path`
+  and its `count`.
 - `--in <subdir>` limits results to a subdirectory. A relative path starts
   from the current directory, as in the shell: in `src`, `--in auth` means
   `src/auth` and `--in .` means `src`. An absolute path into the repository
@@ -212,6 +221,17 @@ asks the same as `ripsem search "where is auth set up"`.
   does, and a leading `!` leaves matching paths out: `-g '*.rs' -g
   '!*_test.rs'`. A directory counts for the files inside it, so
   `-g '!vendor/'` skips all of `vendor`. Repeat for several.
+- `-e, --regex <PATTERN>` keeps only hits whose code matches the regular
+  expression, for "the place that does X and mentions `foo`":
+  `ripsem search retry on failure -e 'backoff|jitter'`. The pattern uses the
+  Rust regex syntax and is matched against each hit's whole chunk, not just
+  the snippet shown; `(?i)` ignores case. It applies before the ranking is cut
+  and goes with `--lang`, `--glob`, `--in`, `--min-score` and `--offset`, but
+  it is tried on the 200 best-ranked places only (more when `-k` and
+  `--offset` reach further), because chunk text is read from the files rather
+  than held in the index. It narrows an answer; for every occurrence of a
+  string use grep. A pattern that does not parse, or compiles to more than 1
+  MiB, is an error.
 - `--context <N>` sets how many snippet lines print per hit (3 in a terminal,
   the whole snippet when the output goes to another program; `0` prints just
   the locations).
@@ -265,13 +285,21 @@ note in `CLAUDE.md`.
 
 `ripsem mcp` speaks MCP over stdio and exposes a `search` tool: a
 `query`, and optionally a `path` to stay inside, a `lang` and a `glob` (each one
-string or a list, as `--lang` and `--glob`), a `limit` (default 5, at most
-50) and a `min_score`. An argument outside the schema comes back as a tool
+string or a list, as `--lang` and `--glob`), a `regex` (only hits whose code
+matches it, as `--regex`; an invalid pattern is a tool error), a `limit` (default 5, at most
+50), an `offset` (default 0) to skip results and read the next page, and a
+`min_score`. When more results follow, the text ends with the line `More
+results below this; pass offset=5 to see them.` An `offset` past the last
+result is an answer, not an error: `No further results`. An argument outside the schema comes back as a tool
 error that names what is expected, so the agent can correct the call. The
 `index_status` tool, which takes no arguments, returns what `ripsem status
 --json` prints plus `updating`, whether the server is indexing right now, so an
 agent that finds nothing it expects can see whether the index exists and how
-many files have changed since it was built. In a
+many files have changed since it was built. Both tools carry the standard
+MCP annotations (`readOnlyHint` and `idempotentHint` true, `destructiveHint`
+and `openWorldHint` false) and a title, so a client can run them without asking each
+time. `search` refreshes ripsem's own index under `.ripsem/` before it
+answers, and touches nothing else. In a
 directory with a `.ripsem` directory the server keeps the index current by
 itself: it builds the index on its first start and re-embeds the code the
 agent changes. Running `ripsem index` once beforehand has the index ready

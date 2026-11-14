@@ -1248,3 +1248,230 @@ fn markdown_without_headings_is_cut_into_line_windows() {
     let stats = pipeline::index_repo(&config, false).unwrap();
     assert_eq!(stats.chunks, 3);
 }
+
+fn places(hits: &[pipeline::SearchHit]) -> Vec<(String, usize, usize)> {
+    hits.iter()
+        .map(|h| (h.path.clone(), h.start_line, h.end_line))
+        .collect()
+}
+
+#[test]
+fn pages_are_disjoint_and_together_make_one_big_page() {
+    let dir = TempDir::new();
+    mixed_tree(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let query = "verify password create session token";
+
+    let big = pipeline::search_page(&config, query, 50, 0, None, None).unwrap();
+    assert_eq!(big.hits.len(), 13);
+    assert!(big.next.is_none());
+
+    let mut joined = Vec::new();
+    for offset in (0..13).step_by(4) {
+        let page = pipeline::search_page(&config, query, 4, offset, None, None).unwrap();
+        assert_eq!(
+            page.next.is_some(),
+            offset + 4 < 13,
+            "offset {offset} says whether more follow"
+        );
+        joined.extend(places(&page.hits));
+    }
+    assert_eq!(joined, places(&big.hits));
+}
+
+#[test]
+fn an_offset_past_the_last_hit_is_an_empty_page() {
+    let dir = TempDir::new();
+    mixed_tree(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let query = "verify password create session token";
+
+    for offset in [13, 14, 1000, usize::MAX] {
+        let page = pipeline::search_page(&config, query, 5, offset, None, None).unwrap();
+        assert!(page.hits.is_empty(), "offset {offset}");
+        assert!(page.next.is_none(), "offset {offset}");
+    }
+}
+
+#[test]
+fn a_page_ending_exactly_at_the_last_hit_has_nothing_after_it() {
+    let dir = TempDir::new();
+    mixed_tree(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let query = "verify password create session token";
+
+    let last = pipeline::search_page(&config, query, 3, 10, None, None).unwrap();
+    assert_eq!(last.hits.len(), 3);
+    assert!(last.next.is_none());
+    let before = pipeline::search_page(&config, query, 3, 9, None, None).unwrap();
+    assert_eq!(before.hits.len(), 3);
+    assert!(before.next.is_some());
+}
+
+#[test]
+fn paging_follows_a_language_a_glob_and_a_path() {
+    let dir = TempDir::new();
+    mixed_tree(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let query = "verify password create session token";
+    let scopes = [
+        scope(None, &["rust"], &[]),
+        scope(None, &[], &["docs/**"]),
+        scope(Some("src"), &[], &["!*.txt"]),
+    ];
+    for scope in &scopes {
+        let big = pipeline::search_page(&config, query, 50, 0, Some(scope), None).unwrap();
+        assert_eq!(big.hits.len(), 6, "{scope:?}");
+        let mut joined = Vec::new();
+        for offset in [0, 2, 4, 6] {
+            let page = pipeline::search_page(&config, query, 2, offset, Some(scope), None).unwrap();
+            assert_eq!(page.next.is_some(), offset + 2 < 6, "{scope:?} {offset}");
+            joined.extend(places(&page.hits));
+        }
+        assert_eq!(joined, places(&big.hits), "{scope:?}");
+    }
+}
+
+#[test]
+fn the_score_of_the_next_hit_decides_whether_a_threshold_leaves_more() {
+    let dir = TempDir::new();
+    mixed_tree(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let query = "verify password create session token";
+
+    let page = pipeline::search_page(&config, query, 2, 0, None, None).unwrap();
+    let next = page.next.expect("more hits follow");
+    assert!(page.more(None));
+    assert!(page.more(Some(next)));
+    assert!(!page.more(Some(next + 0.001)));
+}
+
+/// Files that all fit the query; some also name `Argon2`, in the code or the
+/// docs.
+fn tree_with_a_word(dir: &TempDir) {
+    std::fs::create_dir_all(dir.path.join("src")).unwrap();
+    std::fs::create_dir_all(dir.path.join("docs")).unwrap();
+    for i in 0..6 {
+        let extra = if i % 2 == 1 { " Argon2 hash" } else { "" };
+        dir.write(
+            &format!("src/auth{i}.rs"),
+            &format!("fn auth{i}() {{ verify password create session token{extra} }}"),
+        );
+    }
+    for i in 0..3 {
+        dir.write(
+            &format!("docs/note{i}.md"),
+            &format!("verify password create session token with argon2 note {i}"),
+        );
+    }
+}
+
+const WORD_QUERY: &str = "verify password create session token";
+
+fn matching(
+    config: &Config,
+    pattern: &str,
+    limit: usize,
+    offset: usize,
+    scope: Option<&Scope>,
+) -> pipeline::Page {
+    let re = ripsem::scope::text_pattern(pattern).unwrap();
+    pipeline::search_page(config, WORD_QUERY, limit, offset, scope, Some(&re)).unwrap()
+}
+
+#[test]
+fn a_pattern_keeps_the_hits_whose_chunk_matches_in_rank_order() {
+    let dir = TempDir::new();
+    tree_with_a_word(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let everything = pipeline::search_page(&config, WORD_QUERY, 50, 0, None, None).unwrap();
+    assert_eq!(everything.hits.len(), 9);
+    let wanted: Vec<_> = places(&everything.hits)
+        .into_iter()
+        .filter(|(path, _, _)| {
+            ["src/auth1.rs", "src/auth3.rs", "src/auth5.rs"].contains(&path.as_str())
+        })
+        .collect();
+    assert_eq!(wanted.len(), 3);
+
+    let kept = matching(&config, "Argon2", 50, 0, None);
+    assert_eq!(places(&kept.hits), wanted);
+    assert!(kept.next.is_none());
+}
+
+#[test]
+fn a_pattern_can_ignore_case_with_an_inline_flag() {
+    let dir = TempDir::new();
+    tree_with_a_word(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let exact = matching(&config, "argon2", 50, 0, None);
+    assert_eq!(places(&exact.hits).len(), 3, "only the docs spell it so");
+    assert!(exact.hits.iter().all(|h| h.path.starts_with("docs/")));
+    let any = matching(&config, "(?i)argon2", 50, 0, None);
+    assert_eq!(any.hits.len(), 6);
+}
+
+#[test]
+fn a_pattern_combines_with_a_scope_and_with_paging() {
+    let dir = TempDir::new();
+    tree_with_a_word(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let rust = scope(None, &["rust"], &[]);
+    let only_rust = matching(&config, "(?i)argon2", 50, 0, Some(&rust));
+    assert_eq!(only_rust.hits.len(), 3);
+    assert!(only_rust.hits.iter().all(|h| h.path.ends_with(".rs")));
+
+    let all = matching(&config, "(?i)argon2", 50, 0, None);
+    assert_eq!(all.hits.len(), 6);
+    let mut joined = Vec::new();
+    for offset in [0, 4] {
+        let page = matching(&config, "(?i)argon2", 4, offset, None);
+        assert_eq!(page.next.is_some(), offset + 4 < 6, "offset {offset}");
+        joined.extend(places(&page.hits));
+    }
+    assert_eq!(joined, places(&all.hits));
+    assert!(matching(&config, "(?i)argon2", 4, 6, None).hits.is_empty());
+}
+
+#[test]
+fn a_pattern_nothing_matches_gives_an_empty_page() {
+    let dir = TempDir::new();
+    tree_with_a_word(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let page = matching(&config, "zzz_not_there", 5, 0, None);
+    assert!(page.hits.is_empty() && page.next.is_none());
+}
+
+#[test]
+fn a_pattern_reads_the_whole_chunk_not_only_its_snippet() {
+    let dir = TempDir::new();
+    // The deep word is far below the 400 bytes a snippet keeps.
+    let filler = "// verify password create session token\n".repeat(30);
+    dir.write(
+        "long.rs",
+        &format!("fn long() {{\n{filler}    let deep_marker = 1;\n}}\n"),
+    );
+    dir.write(
+        "other.rs",
+        "fn other() { verify password create session token }",
+    );
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+
+    let page = matching(&config, "deep_marker", 5, 0, None);
+    assert_eq!(page.hits.len(), 1, "{page:?}");
+    assert_eq!(page.hits[0].path, "long.rs");
+}
