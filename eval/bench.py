@@ -58,6 +58,10 @@ class Ctx:
         self.rg = args.rg or shutil.which("rg") or "rg"
         self.repos = [c for c in CORPORA if not args.repo or c["name"] in args.repo]
         self.args = args
+        self.model = args.model
+        self.tag = args.tag or args.model or ""
+        self.suffix = f"-{self.tag}" if self.tag else ""
+        self.results = self.work / "results"
 
     def corpus(self, name):
         return self.work / "corpora" / name
@@ -66,7 +70,7 @@ class Ctx:
         return self.work / "trees" / name / variant
 
     def tree(self, name, variant, backend):
-        return self.work / "trees" / name / f"{variant}-{backend}"
+        return self.work / "trees" / name / f"{variant}-{backend}{self.suffix}"
 
     def queries(self, name, qset):
         if qset == "curated":
@@ -74,7 +78,7 @@ class Ctx:
         return self.work / "queries" / f"auto-{name}.jsonl"
 
     def raw(self, system, qset, name):
-        return self.work / "results" / "raw" / f"{system}__{qset}__{name}.json"
+        return self.results / f"raw{self.suffix}" / f"{system}__{qset}__{name}.json"
 
 
 def peak_rss_tools():
@@ -265,6 +269,8 @@ def prepare_index_tree(ctx, name, variant, backend):
     copy_tree(ctx.base(name, variant), tree)
     sh([ctx.ripsem, "init", "--path", str(tree)])
     sh([ctx.ripsem, "model", "--path", str(tree), "backend", backend])
+    if ctx.model and backend == "fastembed":
+        sh([ctx.ripsem, "model", "--path", str(tree), "set", ctx.model])
     return tree
 
 
@@ -276,7 +282,7 @@ def indexed_files(ctx, tree):
 
 def cmd_index(ctx):
     results = {}
-    results_path = ctx.work / "results" / "index.json"
+    results_path = ctx.results / f"index{ctx.suffix}.json"
     if results_path.exists():
         results = json.loads(results_path.read_text())
     repeats = ctx.args.repeats
@@ -541,7 +547,7 @@ def cmd_report(ctx):
         if secs:
             print(f"| {s} | {len(secs)} | {pct(secs, .5):.0f} | {pct(secs, .95):.0f} | "
                   f"{statistics.median(rss):.0f} | {max(rss):.0f} |")
-    index_path = ctx.work / "results" / "index.json"
+    index_path = ctx.results / f"index{ctx.suffix}.json"
     if index_path.exists():
         idx = json.loads(index_path.read_text())
         print("\n### Index build (median of the runs, original tree)\n")
@@ -675,6 +681,8 @@ def main():
     ap.add_argument("--systems", type=lambda s: s.split(","), default=list(SYSTEMS))
     ap.add_argument("--sets", type=lambda s: s.split(","), default=list(SETS))
     ap.add_argument("--backends", type=lambda s: s.split(","), default=BACKENDS)
+    ap.add_argument("--model", help="embedding model of the fastembed systems (default: the config's default)")
+    ap.add_argument("--tag", help="name of this run's trees and results, to keep them next to another run's (default: the model)")
     ap.add_argument("--repeats", type=int, default=5, help="index builds to time per corpus and backend")
     ap.add_argument("--system", default="fastembed", help="failures: the system to analyse")
     ap.add_argument("--set", default="curated", help="failures: the query set")
