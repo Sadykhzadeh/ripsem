@@ -1,0 +1,16 @@
+[package]
+name = "ripsem-eval-arms"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Ranks queries with each retrieval arm of a ripsem index on its own, for eval/bench.py"
+
+[dependencies]
+anyhow = "1.0.102"
+ripsem = { path = "../..", default-features = false, features = ["fastembed", "treesitter"] }
+serde_json = "1.0.150"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
