@@ -95,6 +95,25 @@ pub struct SearchHit {
     pub symbol: Option<crate::symbol::Symbol>,
 }
 
+/// A window of the ranking. `next` is the score of the hit that comes right
+/// after it, when there is one, which is how a caller knows there is more to
+/// ask for.
+#[derive(Debug)]
+pub struct Page {
+    pub hits: Vec<SearchHit>,
+    pub next: Option<f32>,
+}
+
+impl Page {
+    /// Whether another page has anything to show once hits scoring below
+    /// `min_score` are left out. Scores never rise down the ranking, so a hit
+    /// under the threshold means that everything after it is under it too.
+    pub fn more(&self, min_score: Option<f32>) -> bool {
+        self.next
+            .is_some_and(|score| min_score.is_none_or(|min| score >= min))
+    }
+}
+
 const SNIPPET_BYTES: usize = 400;
 
 /// How many of the first hits are shown as their code, and how much of it.
@@ -825,6 +844,25 @@ impl Searcher {
         k: usize,
         scope: Option<&Scope>,
     ) -> Result<Vec<SearchHit>> {
+        Ok(self.query_page(query, k, 0, scope)?.hits)
+    }
+
+    /// `limit` hits from the ranking after skipping the first `offset`, taken
+    /// after every filter. The ranking reaches as deep as `offset + limit`
+    /// asks, up to the places the index holds, so an offset beyond the last
+    /// one is an empty page.
+    ///
+    /// The candidates each arm contributes grow with the depth asked for, so a
+    /// page is a window of the ranking as it is for that depth. A chunk that
+    /// holds every term the query has and that only a deeper search finds can
+    /// move a page that was read at a shallower one.
+    pub fn query_page(
+        &self,
+        query: &str,
+        limit: usize,
+        offset: usize,
+        scope: Option<&Scope>,
+    ) -> Result<Page> {
         // Every record ties on an empty query, so any answer would be noise.
         if query.trim().is_empty() {
             anyhow::bail!("the query is empty; say what to look for");
@@ -840,8 +878,8 @@ impl Searcher {
         let terms = crate::lexical::query_terms(query);
         let names = crate::lexical::query_names(query);
         let words = query_words(query);
-        let wanted = k;
-        let k = k.saturating_add(SPARE_HITS);
+        let end = offset.saturating_add(limit);
+        let k = end.saturating_add(SPARE_HITS);
 
         #[cfg(feature = "hnsw")]
         if scope.is_none()
@@ -853,28 +891,30 @@ impl Searcher {
                 .map(|(record_idx, score)| crate::index::Hit { score, record_idx })
                 .collect();
             let hits = self.index.search_fused_with(&dense, &qv, &terms, &names, k);
-            return Ok(self.places(hits, &names, &words, wanted));
+            return Ok(self.places(hits, &names, &words, offset, end));
         }
 
         let hits = self.index.search_fused(&qv, &terms, &names, k, scope);
-        Ok(self.places(hits, &names, &words, wanted))
+        Ok(self.places(hits, &names, &words, offset, end))
     }
 
-    /// A hit reported as a whole declaration covers the records inside it
-    /// that rank below, such as the rest of a long enum's variants.
+    /// The hits from place `skip` up to place `end` of the ranking. A hit
+    /// reported as a whole declaration covers the records inside it that rank
+    /// below, such as the rest of a long enum's variants, so the places above
+    /// the page are worked out too, without their snippets. The first hits of
+    /// a page are shown as their code.
     fn places(
         &self,
         hits: Vec<crate::index::Hit>,
         names: &[TermHash],
         words: &[String],
-        k: usize,
-    ) -> Vec<SearchHit> {
-        let mut out: Vec<SearchHit> = Vec::with_capacity(k.min(hits.len()));
+        skip: usize,
+        end: usize,
+    ) -> Page {
+        let mut out: Vec<SearchHit> = Vec::with_capacity(end.min(hits.len()));
         let mut wider: Vec<(String, usize, usize)> = Vec::new();
+        let mut next = None;
         for h in hits {
-            if out.len() == k {
-                break;
-            }
             let record = &self.index.records[h.record_idx];
             let covered = wider.iter().any(|(path, start, end)| {
                 path.as_str() == record.path.as_str()
@@ -884,21 +924,28 @@ impl Searcher {
             if covered {
                 continue;
             }
+            if out.len() == end {
+                next = Some(h.score);
+                break;
+            }
             let mut hit = self.hit(h.record_idx, h.score, names);
             if hit.end_line > record.end_line {
                 wider.push((hit.path.clone(), hit.start_line, hit.end_line));
             }
-            let shown = match out.len() < SHOWN_IN_FULL {
-                true => self.code(record, &hit),
-                false => self.near(record, &hit, words),
-            };
-            let shown = shown.or_else(|| self.piece(h.record_idx, &hit, words));
-            if let Some(shown) = shown {
-                hit.snippet = shown;
+            if out.len() >= skip {
+                let shown = match out.len() - skip < SHOWN_IN_FULL {
+                    true => self.code(record, &hit),
+                    false => self.near(record, &hit, words),
+                };
+                let shown = shown.or_else(|| self.piece(h.record_idx, &hit, words));
+                if let Some(shown) = shown {
+                    hit.snippet = shown;
+                }
             }
             out.push(hit);
         }
-        out
+        out.drain(..skip.min(out.len()));
+        Page { hits: out, next }
     }
 
     /// The first hits are shown as their code, up to [`FULL_LINES`]: whoever
@@ -1049,6 +1096,18 @@ pub fn search_scoped(
     k: usize,
     scope: Option<&Scope>,
 ) -> Result<Vec<SearchHit>> {
+    Ok(search_page(config, query, k, 0, scope)?.hits)
+}
+
+/// Like [`search_scoped`], for the page of `limit` hits that starts at place
+/// `offset` of the ranking; see [`Searcher::query_page`].
+pub fn search_page(
+    config: &Config,
+    query: &str,
+    limit: usize,
+    offset: usize,
+    scope: Option<&Scope>,
+) -> Result<Page> {
     if query.trim().is_empty() {
         anyhow::bail!("the query is empty; say what to look for");
     }
@@ -1078,7 +1137,7 @@ pub fn search_scoped(
         None => open_with(config, Arc::clone(&embedder)),
     };
     let found = searcher.and_then(|searcher| {
-        let found = searcher.query_scoped(query, k, scope);
+        let found = searcher.query_page(query, limit, offset, scope);
         leave_to_exit(searcher.index);
         found
     });

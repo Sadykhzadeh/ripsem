@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `ripsem search` takes `--offset` and the MCP `search` tool an `offset`, to
+  read the next page of a ranking instead of raising the limit and reading
+  everything again. The offset counts after the language, glob and path
+  filters and `min_score`. When more results follow, a text result ends with
+  `more results below this; pass --offset 5 to see them` (`offset=5` over
+  MCP); `--json` prints the page as the same array of hits as before. An
+  offset past the last result answers `no further matches` and is not an
+  error. A search without an offset prints what it did before, plus that line.
 - The MCP `search` and `index_status` tools carry a title and the standard
   annotations: read-only, not destructive, idempotent, not open-world. A
   client that asks the user before every call to a tool it knows nothing

@@ -197,10 +197,19 @@ The words of a query need no quotes: `ripsem search where is auth set up`
 asks the same as `ripsem search "where is auth set up"`.
 
 - `-k <N>` sets the number of results (default 10).
+- `--offset <N>` skips the first N results, counted in the ranking after every
+  filter and `--min-score`, to read the next page. When more results follow,
+  the output ends with `more results below this; pass --offset 10 to see
+  them`. An offset past the last result prints `no further matches`. The
+  ranking is made again for each page, so a page reads the same as the
+  matching stretch of one larger `-k` except where a deeper search finds a
+  chunk that holds every term of the query.
 - `--json` prints the hits as a JSON array. Each has `path`, `start_line`,
   `end_line`, `score`, `kind` and `symbol` (such as `fn` and
-  `Session::refresh`, both `null` for a hit outside any declaration) and
-  `snippet`. With `--count-by-file` each entry is a `path` and its `count`.
+  `Session::refresh`, both `null` for a hit outside any declaration),
+  and `snippet`. With `--offset` the array holds that page; a page shorter
+  than `-k` is the last one. With `--count-by-file` each entry is a `path`
+  and its `count`.
 - `--in <subdir>` limits results to a subdirectory. A relative path starts
   from the current directory, as in the shell: in `src`, `--in auth` means
   `src/auth` and `--in .` means `src`. An absolute path into the repository
@@ -266,7 +275,10 @@ note in `CLAUDE.md`.
 `ripsem mcp` speaks MCP over stdio and exposes a `search` tool: a
 `query`, and optionally a `path` to stay inside, a `lang` and a `glob` (each one
 string or a list, as `--lang` and `--glob`), a `limit` (default 5, at most
-50) and a `min_score`. An argument outside the schema comes back as a tool
+50), an `offset` (default 0) to skip results and read the next page, and a
+`min_score`. When more results follow, the text ends with the line `More
+results below this; pass offset=5 to see them.` An `offset` past the last
+result is an answer, not an error: `No further results`. An argument outside the schema comes back as a tool
 error that names what is expected, so the agent can correct the call. The
 `index_status` tool, which takes no arguments, returns what `ripsem status
 --json` prints plus `updating`, whether the server is indexing right now, so an

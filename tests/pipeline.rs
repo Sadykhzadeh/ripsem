@@ -1248,3 +1248,105 @@ fn markdown_without_headings_is_cut_into_line_windows() {
     let stats = pipeline::index_repo(&config, false).unwrap();
     assert_eq!(stats.chunks, 3);
 }
+
+fn places(hits: &[pipeline::SearchHit]) -> Vec<(String, usize, usize)> {
+    hits.iter()
+        .map(|h| (h.path.clone(), h.start_line, h.end_line))
+        .collect()
+}
+
+#[test]
+fn pages_are_disjoint_and_together_make_one_big_page() {
+    let dir = TempDir::new();
+    mixed_tree(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let query = "verify password create session token";
+
+    let big = pipeline::search_page(&config, query, 50, 0, None).unwrap();
+    assert_eq!(big.hits.len(), 13);
+    assert!(big.next.is_none());
+
+    let mut joined = Vec::new();
+    for offset in (0..13).step_by(4) {
+        let page = pipeline::search_page(&config, query, 4, offset, None).unwrap();
+        assert_eq!(
+            page.next.is_some(),
+            offset + 4 < 13,
+            "offset {offset} says whether more follow"
+        );
+        joined.extend(places(&page.hits));
+    }
+    assert_eq!(joined, places(&big.hits));
+}
+
+#[test]
+fn an_offset_past_the_last_hit_is_an_empty_page() {
+    let dir = TempDir::new();
+    mixed_tree(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let query = "verify password create session token";
+
+    for offset in [13, 14, 1000, usize::MAX] {
+        let page = pipeline::search_page(&config, query, 5, offset, None).unwrap();
+        assert!(page.hits.is_empty(), "offset {offset}");
+        assert!(page.next.is_none(), "offset {offset}");
+    }
+}
+
+#[test]
+fn a_page_ending_exactly_at_the_last_hit_has_nothing_after_it() {
+    let dir = TempDir::new();
+    mixed_tree(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let query = "verify password create session token";
+
+    let last = pipeline::search_page(&config, query, 3, 10, None).unwrap();
+    assert_eq!(last.hits.len(), 3);
+    assert!(last.next.is_none());
+    let before = pipeline::search_page(&config, query, 3, 9, None).unwrap();
+    assert_eq!(before.hits.len(), 3);
+    assert!(before.next.is_some());
+}
+
+#[test]
+fn paging_follows_a_language_a_glob_and_a_path() {
+    let dir = TempDir::new();
+    mixed_tree(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let query = "verify password create session token";
+    let scopes = [
+        scope(None, &["rust"], &[]),
+        scope(None, &[], &["docs/**"]),
+        scope(Some("src"), &[], &["!*.txt"]),
+    ];
+    for scope in &scopes {
+        let big = pipeline::search_page(&config, query, 50, 0, Some(scope)).unwrap();
+        assert_eq!(big.hits.len(), 6, "{scope:?}");
+        let mut joined = Vec::new();
+        for offset in [0, 2, 4, 6] {
+            let page = pipeline::search_page(&config, query, 2, offset, Some(scope)).unwrap();
+            assert_eq!(page.next.is_some(), offset + 2 < 6, "{scope:?} {offset}");
+            joined.extend(places(&page.hits));
+        }
+        assert_eq!(joined, places(&big.hits), "{scope:?}");
+    }
+}
+
+#[test]
+fn the_score_of_the_next_hit_decides_whether_a_threshold_leaves_more() {
+    let dir = TempDir::new();
+    mixed_tree(&dir);
+    let config = config_for(&dir.path);
+    pipeline::index_repo(&config, false).unwrap();
+    let query = "verify password create session token";
+
+    let page = pipeline::search_page(&config, query, 2, 0, None).unwrap();
+    let next = page.next.expect("more hits follow");
+    assert!(page.more(None));
+    assert!(page.more(Some(next)));
+    assert!(!page.more(Some(next + 0.001)));
+}
