@@ -118,7 +118,7 @@ fn builder(config: &Config) -> Result<WalkBuilder> {
 
 /// Globs treat a backslash as an escape, but on Windows it is the separator
 /// and cannot be part of a name, so `vendor\third_party` means `vendor/third_party`.
-fn slashed(pattern: &str) -> Cow<'_, str> {
+pub(crate) fn slashed(pattern: &str) -> Cow<'_, str> {
     match cfg!(windows) && pattern.contains('\\') {
         true => Cow::Owned(pattern.replace('\\', "/")),
         false => Cow::Borrowed(pattern),
