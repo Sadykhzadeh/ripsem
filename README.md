@@ -375,7 +375,7 @@ anyway.
    starts at the heading that says what the text is about and a code block in
    it stays whole.
 3. **Embed and tokenise.** Each chunk gets a vector from the local model,
-   stored as int8, and a set of terms in which identifiers are kept whole and
+   made from the file's path and the code, stored as int8, and a set of terms in which identifiers are kept whole and
    also split at `snake_case` and `camelCase` boundaries. Every chunk also
    lists the declarations it holds, with their lines.
 4. **Search.** The query runs through both arms and their rankings are merged

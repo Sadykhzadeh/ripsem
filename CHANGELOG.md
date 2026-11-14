@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- A chunk is embedded with its path on a line above its code, so a question
+  that names the module (`routing`, `session`) finds the vector of code that
+  never says so itself. Only the embedding input changes: the snippet, the
+  stored text and the keyword terms are what they were. On the benchmark in
+  `eval/` (default model, four corpora) the dense retriever alone goes from
+  0.261 to 0.305 region MRR@10 on the automatic queries and from 0.269 to
+  0.300 on the hand-written ones, and the merged ranking from 0.369 to 0.391
+  and from 0.383 to 0.414. Pooled over all queries the merged gain is +0.023
+  (95% bootstrap interval +0.013 to +0.034) on the automatic set and +0.031
+  (-0.004 to +0.073) on the hand-written one, whose 100 queries are too few to
+  call it. Indexing takes a few percent longer (median of three cold builds per
+  project on a GPU: 21.4 s against 20.7 s on axum, 101.7 s against 89.9 s on
+  nest; 75 s against 69 s on a CPU, axum). After the upgrade `ripsem status` reports that the chunk settings
+  differ from the index's, and the first search or `ripsem index` embeds every
+  chunk again, as it does for a new chunking revision: about as long as a
+  first index of that repository.
 - `ripsem search` takes `-e`/`--regex` and the MCP `search` tool a `regex`
   argument, to keep only the hits whose code matches a regular expression:
   the place that does one thing and also mentions a name. The pattern is

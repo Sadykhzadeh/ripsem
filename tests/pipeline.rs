@@ -111,7 +111,8 @@ fn every_record_keeps_its_own_vector_when_embedded_out_of_order() {
     let index = Index::load(&config.index_path()).unwrap();
     assert_eq!(index.records.len(), 50);
     for record in &index.records {
-        let own = embedder.embed_query(&record.snippet).unwrap();
+        let input = ripsem::embed::document_input(&record.path, &record.snippet);
+        let own = embedder.embed_query(&input).unwrap();
         let similarity = ripsem::quant::dot(&record.vector, &own);
         assert!(similarity > 0.99, "{} got {similarity}", record.path);
     }

@@ -15,6 +15,16 @@ pub trait Embedder: Send + Sync {
     fn embed_query(&self, text: &str) -> Result<Vec<f32>>;
 }
 
+/// What a chunk is embedded as: its path on a line of its own, then its code.
+/// A chunk rarely says which file or module it belongs to, and a question often
+/// does (`how does routing match a path`). Only the vector sees the line; the
+/// snippet, the lexical terms and the chunk text keep the code alone. A change
+/// here is a change to every stored vector, so it comes with a new
+/// `chunk::REVISION`, which makes an index embed its chunks again.
+pub fn document_input(path: &str, text: &str) -> String {
+    format!("{path}\n{text}")
+}
+
 /// Chunks waiting for vectors from which [`build_for`] puts the model on the
 /// GPU. Starting the device costs more than embedding a few chunks, and far
 /// more than one query, so smaller jobs stay on the CPU.
