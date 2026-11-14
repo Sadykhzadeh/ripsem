@@ -247,13 +247,28 @@ ripsem model set bge-base-en-v1.5
 ripsem index                      # rebuilds the index for the new model
 ```
 
-| Model | Dims | Disk | Notes |
-| --- | --- | --- | --- |
-| bge-small-en-v1.5 | 384 | ~133 MB | default |
-| all-MiniLM-L6-v2 | 384 | ~90 MB | smallest and fastest to embed |
-| bge-base-en-v1.5 | 768 | ~436 MB | larger English model |
-| multilingual-e5-small | 384 | ~470 MB | queries and comments in other languages |
-| nomic-embed-text-v1.5 | 768 | ~550 MB | larger English model, the most memory to index |
+| Model | Dims | Disk | Merged MRR@10, automatic / hand-written | Notes |
+| --- | --- | --- | --- | --- |
+| bge-small-en-v1.5 | 384 | ~133 MB | 0.391 / 0.414 | default |
+| all-MiniLM-L6-v2 | 384 | ~90 MB | not measured | smallest and fastest to embed |
+| bge-base-en-v1.5 | 768 | ~436 MB | not measured | larger English model |
+| multilingual-e5-small | 384 | ~470 MB | not measured | queries and comments in other languages |
+| nomic-embed-text-v1.5 | 768 | ~550 MB | not measured | larger English model, the most memory to index |
+| jina-embeddings-v2-base-code | 768 | ~644 MB | 0.412 / 0.479 | trained on code in 30 languages; the best results measured, at the largest download and about twice the time and memory to index |
+
+The numbers are region-level MRR@10 of the merged ranking on the benchmark in
+[`eval/`](eval/README.md): four projects (axum, scrapy, nest, caddy), 1,043
+queries made from doc comments and 100 written by hand, averaged over the four
+projects. The code model gains +0.025 (95% interval +0.013 to +0.037) on the
+automatic queries and +0.065 (+0.005 to +0.129) on the hand-written ones over
+the default, and its dense retriever alone goes from 0.305 to 0.343 and from
+0.300 to 0.438. It costs more: a 644 MB download against 128 MB, an index
+that takes about twice as long on a GPU (1.9 to 2.2 times on the four
+projects) and 3 times as long on a CPU (axum: 223 s against 75 s), 940 MB of
+memory while indexing on a GPU against 380 MB, and 890 MB against 230 MB for
+each search. The
+default stays small; set the code model when the repository is large enough
+for results to matter more than the first index.
 
 The model downloads once on first use, then everything is offline.
 
@@ -376,7 +391,7 @@ anyway.
    starts at the heading that says what the text is about and a code block in
    it stays whole.
 3. **Embed and tokenise.** Each chunk gets a vector from the local model,
-   stored as int8, and a set of terms in which identifiers are kept whole and
+   made from the file's path and the code, stored as int8, and a set of terms in which identifiers are kept whole and
    also split at `snake_case` and `camelCase` boundaries. Every chunk also
    lists the declarations it holds, with their lines.
 4. **Search.** The query runs through both arms and their rankings are merged

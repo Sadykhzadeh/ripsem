@@ -46,6 +46,13 @@ pub fn catalog() -> &'static [ModelInfo] {
             multilingual: false,
             note: "Larger English model, the most memory to index.",
         },
+        ModelInfo {
+            id: "jina-embeddings-v2-base-code",
+            dims: 768,
+            disk_mb: 644,
+            multilingual: false,
+            note: "Trained on code in 30 languages; the largest download.",
+        },
     ]
 }
 

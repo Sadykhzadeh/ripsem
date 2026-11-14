@@ -34,6 +34,12 @@ DirectML on Windows) and much longer on a CPU; `RIPSEM_NO_GPU=1` keeps the
 build on the CPU if the vectors have to match another machine's. The model
 downloads once, as for any use of ripsem.
 
+`--model jina-embeddings-v2-base-code` runs the fastembed systems with another
+model from `ripsem model list`, in trees and result files of their own (named
+after the model). `--tag` gives a run another name, to keep the results of two
+binaries built from different code next to each other; give the same
+`--model` and `--tag` to `index`, `run` and `report`.
+
 `report` ends with a digest of every quality number. Two runs of the same
 commands on the same machine print the same digest; timings are left out of it.
 

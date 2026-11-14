@@ -301,7 +301,8 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
                 let pending = chunks
                     .into_iter()
                     .map(|c| {
-                        let text_hash = fingerprint::content_hash(c.text.as_bytes());
+                        let input = embed::document_input(&rel, &c.text);
+                        let text_hash = fingerprint::content_hash(input.as_bytes());
                         let pending = Pending {
                             path: rel.clone(),
                             start_line: c.start_line,
@@ -318,7 +319,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
                             text_hash,
                             vector: known_vectors.get(&text_hash).cloned(),
                         };
-                        (pending, c.text)
+                        (pending, input)
                     })
                     .collect();
                 Prepared::Cut(pending)
@@ -1374,12 +1375,55 @@ const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 mod tests {
     use super::*;
     use crate::config::Backend;
+    use crate::embed::Embedder;
 
     fn hash_config() -> Config {
         Config {
             backend: Backend::Hash,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_vector_is_made_from_the_path_and_the_code_but_the_snippet_keeps_the_code() {
+        let dir = crate::testutil::TempDir::new();
+        let code = "fn refresh(token: &str) -> bool {\n    token.len() > 3\n}\n";
+        dir.write("src/auth/session.rs", code);
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        index_repo(&config, false).unwrap();
+        let index = Index::load(&config.index_path()).unwrap();
+        assert_eq!(index.records.len(), 1);
+        let record = &index.records[0];
+
+        let hasher = crate::embed::hashing::HashEmbedder::new(config.dims());
+        let embed = |text: &str| {
+            let vector = hasher.embed_documents(&[text.to_string()]).unwrap();
+            crate::quant::dequantize(&crate::quant::quantize(&vector[0]))
+        };
+        let stored = crate::quant::dequantize(&record.vector);
+        assert_eq!(stored, embed(&format!("src/auth/session.rs\n{code}")));
+        assert_ne!(stored, embed(code));
+        assert_eq!(record.snippet.to_string(), code.trim_end());
+        assert!(!record.snippet.to_string().contains("session.rs"));
+    }
+
+    #[test]
+    fn a_moved_file_is_embedded_again_because_its_path_is_in_the_vector() {
+        let dir = crate::testutil::TempDir::new();
+        let code = "fn refresh(token: &str) -> bool {\n    token.len() > 3\n}\n";
+        dir.write("a.rs", code);
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        index_repo(&config, false).unwrap();
+        std::fs::remove_file(dir.path().join("a.rs")).unwrap();
+        dir.write("b.rs", code);
+        let stats = index_repo(&config, false).unwrap();
+        assert_eq!(stats.vectors, 1);
     }
 
     #[test]

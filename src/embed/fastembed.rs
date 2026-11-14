@@ -74,8 +74,18 @@ fn map_model(id: &str) -> Result<(EmbeddingModel, usize, Option<String>)> {
             Some("query:".to_string()),
         ),
         "nomic-embed-text-v1.5" => (EmbeddingModel::NomicEmbedTextV15, 768, None),
+        // Trained on queries and code as they come: no prefix on either side.
+        "jina-embeddings-v2-base-code" => (EmbeddingModel::JinaEmbeddingsV2BaseCode, 768, None),
         other => return Err(anyhow!("unknown model {other:?}; see `ripsem model list`")),
     })
+}
+
+/// The text a query is embedded as: the model's prefix, a space, the query.
+fn with_prefix(prefix: Option<&str>, text: &str) -> String {
+    match prefix {
+        Some(p) => format!("{p} {text}"),
+        None => text.to_string(),
+    }
 }
 
 impl Embedder for FastEmbedder {
@@ -90,13 +100,52 @@ impl Embedder for FastEmbedder {
     }
 
     fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
-        let q = match &self.query_prefix {
-            Some(p) => format!("{p} {text}"),
-            None => text.to_string(),
-        };
+        let q = with_prefix(self.query_prefix.as_deref(), text);
         let mut model = self.model.lock().expect("embedder mutex poisoned");
         let mut out = model.embed(vec![q.as_str()], None)?;
         out.pop()
             .ok_or_else(|| anyhow!("embedding backend returned no vector"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model;
+
+    #[test]
+    fn every_catalogued_model_maps_to_a_model_of_the_same_width() {
+        for info in model::catalog() {
+            let (mapped, dims, _) = map_model(info.id).unwrap();
+            assert_eq!(dims, info.dims, "{}", info.id);
+            let known = TextEmbedding::get_model_info(&mapped).unwrap();
+            assert_eq!(known.dim, info.dims, "{}", info.id);
+        }
+    }
+
+    #[test]
+    fn an_unknown_model_is_refused() {
+        assert!(map_model("jina-embeddings-v2-base-codee").is_err());
+    }
+
+    #[test]
+    fn the_code_model_takes_queries_as_they_are() {
+        let (_, _, prefix) = map_model("jina-embeddings-v2-base-code").unwrap();
+        assert_eq!(prefix, None);
+        assert_eq!(
+            with_prefix(prefix.as_deref(), "parse a header"),
+            "parse a header"
+        );
+    }
+
+    #[test]
+    fn a_query_prefix_is_joined_with_one_space() {
+        let (_, _, prefix) = map_model("multilingual-e5-small").unwrap();
+        assert_eq!(with_prefix(prefix.as_deref(), "find it"), "query: find it");
+        let (_, _, prefix) = map_model("bge-small-en-v1.5").unwrap();
+        assert!(
+            with_prefix(prefix.as_deref(), "find it")
+                .starts_with("Represent this sentence for searching relevant passages: find it")
+        );
     }
 }

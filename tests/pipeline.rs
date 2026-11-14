@@ -111,7 +111,8 @@ fn every_record_keeps_its_own_vector_when_embedded_out_of_order() {
     let index = Index::load(&config.index_path()).unwrap();
     assert_eq!(index.records.len(), 50);
     for record in &index.records {
-        let own = embedder.embed_query(&record.snippet).unwrap();
+        let input = ripsem::embed::document_input(&record.path, &record.snippet);
+        let own = embedder.embed_query(&input).unwrap();
         let similarity = ripsem::quant::dot(&record.vector, &own);
         assert!(similarity > 0.99, "{} got {similarity}", record.path);
     }
@@ -302,6 +303,30 @@ fn switching_model_reembeds_without_force() {
     let after = pipeline::index_repo(&config, false).unwrap();
     assert_eq!(after.reused, 0);
     assert_eq!(after.embedded, 2);
+}
+
+#[test]
+fn switching_to_the_code_model_reembeds_and_a_search_asks_for_a_rebuild() {
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie");
+    dir.write("b.rs", "delta echo foxtrot");
+    let mut config = config_for(&dir.path);
+    assert_eq!(config.dims(), 384);
+
+    pipeline::index_repo(&config, false).unwrap();
+
+    config.model = "jina-embeddings-v2-base-code".into();
+    assert_eq!(config.dims(), 768);
+    match pipeline::open(&config) {
+        Ok(_) => panic!("an index from another model must not open"),
+        Err(e) => assert!(e.to_string().contains("bge-small-en-v1.5"), "{e}"),
+    }
+    let after = pipeline::index_repo(&config, false).unwrap();
+    assert_eq!((after.reused, after.embedded), (0, 2));
+    assert_eq!(
+        pipeline::open(&config).unwrap().model(),
+        "jina-embeddings-v2-base-code"
+    );
 }
 
 #[test]
