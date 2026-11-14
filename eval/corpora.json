@@ -1,0 +1,34 @@
+[
+  {
+    "name": "axum",
+    "url": "https://github.com/tokio-rs/axum.git",
+    "tag": "axum-v0.8.9",
+    "commit": "c59208c86fded335cd85e388030ad59347b0e5ae",
+    "language": "rust",
+    "extensions": [".rs"]
+  },
+  {
+    "name": "scrapy",
+    "url": "https://github.com/scrapy/scrapy.git",
+    "tag": "2.20.0",
+    "commit": "4a421e451845ac0b3047402e43dc285a37ca7664",
+    "language": "python",
+    "extensions": [".py"]
+  },
+  {
+    "name": "nest",
+    "url": "https://github.com/nestjs/nest.git",
+    "tag": "v12.5.0",
+    "commit": "3a1c9ac570a822ce92e2b7f35b79b5391ca393e3",
+    "language": "typescript",
+    "extensions": [".ts"]
+  },
+  {
+    "name": "caddy",
+    "url": "https://github.com/caddyserver/caddy.git",
+    "tag": "v2.11.9",
+    "commit": "0d98caea58f794f88e709b1bef2880996a471bca",
+    "language": "go",
+    "extensions": [".go"]
+  }
+]
