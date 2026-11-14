@@ -10,8 +10,12 @@ use crate::scope::Scope;
 
 /// Protocol revisions this server speaks, newest first. Between them they
 /// change transports, authorization and client features, and add optional
-/// tool fields (structured output, titles, annotations, icons) that a single
-/// text-returning tool has no need for. The one difference that reaches a
+/// tool fields (structured output, titles, annotations, icons). Structured
+/// output and icons stay out, as a text-returning tool has no need for them.
+/// A title and annotations are sent, because a client that is told nothing
+/// about a tool asks the user before every call. They sit in fields a client
+/// of the 2024-11-05 revision does not know and ignores, and nothing in the
+/// tool depends on a client reading them. The one difference that reaches a
 /// stdio server is that 2025-03-26 lets the client send JSON-RPC batches,
 /// which [`reply`] accepts under any revision.
 ///
@@ -366,9 +370,24 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
     }
 }
 
+/// Hints for a client that a tool changes nothing the user owns. `search`
+/// refreshes ripsem's own index cache under `.ripsem/` before it answers,
+/// which is the tool's cache and not the user's files.
+fn read_only(title: &str) -> Value {
+    json!({
+        "title": title,
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+    })
+}
+
 fn tool_schema() -> Value {
     json!({
         "name": "search",
+        "title": "Search the code",
+        "annotations": read_only("Search the code"),
         "description": "Find code in this repository. Handles both exact terms (identifiers, error strings, constants) and plain-language descriptions of behaviour in the same call, and returns ranked snippets with file paths and line ranges. Prefer this over grepping and reading whole files: it costs one call instead of guessing at the author's wording.",
         "inputSchema": {
             "type": "object",
@@ -389,6 +408,8 @@ fn tool_schema() -> Value {
 fn status_schema() -> Value {
     json!({
         "name": "index_status",
+        "title": "Index status",
+        "annotations": read_only("Index status"),
         "description": "Report whether this repository's search index exists, how many files and chunks it holds, how many files were added, changed or removed since it was built, and whether it is being updated right now. Call it when `search` says there is no index or finds nothing you expect.",
         "inputSchema": {
             "type": "object",
@@ -808,6 +829,38 @@ mod tests {
         assert_eq!(status["type"], "object");
         assert_eq!(status["additionalProperties"], false);
         assert!(status.get("required").is_none());
+    }
+
+    /// Both tools only read, so a client need not ask before each call. The
+    /// annotations are hints in fields a 2024-11-05 client does not know and
+    /// ignores: what that revision requires of a tool is untouched.
+    #[test]
+    fn both_tools_are_marked_as_changing_nothing_the_user_owns() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("tools/list", json!({}))).unwrap();
+        for tool in resp["result"]["tools"].as_array().unwrap() {
+            let name = tool["name"].as_str().unwrap();
+            let hints = &tool["annotations"];
+            assert_eq!(hints["readOnlyHint"], true, "{name}");
+            assert_eq!(hints["destructiveHint"], false, "{name}");
+            assert_eq!(hints["idempotentHint"], true, "{name}");
+            assert_eq!(hints["openWorldHint"], false, "{name}");
+            let title = tool["title"].as_str().unwrap();
+            assert!(!title.is_empty() && title != name, "{name}");
+            assert_eq!(hints["title"], tool["title"], "{name}");
+            let mut fields: Vec<&str> = tool
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            fields.sort_unstable();
+            assert_eq!(
+                fields,
+                ["annotations", "description", "inputSchema", "name", "title"],
+                "{name}"
+            );
+        }
     }
 
     fn call_tool(config: &Config, name: &str, arguments: Value) -> Value {

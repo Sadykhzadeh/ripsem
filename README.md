@@ -271,7 +271,11 @@ error that names what is expected, so the agent can correct the call. The
 `index_status` tool, which takes no arguments, returns what `ripsem status
 --json` prints plus `updating`, whether the server is indexing right now, so an
 agent that finds nothing it expects can see whether the index exists and how
-many files have changed since it was built. In a
+many files have changed since it was built. Both tools carry the standard
+MCP annotations (`readOnlyHint` and `idempotentHint` true, `destructiveHint`
+and `openWorldHint` false) and a title, so a client can run them without asking each
+time. `search` refreshes ripsem's own index under `.ripsem/` before it
+answers, and touches nothing else. In a
 directory with a `.ripsem` directory the server keeps the index current by
 itself: it builds the index on its first start and re-embeds the code the
 agent changes. Running `ripsem index` once beforehand has the index ready

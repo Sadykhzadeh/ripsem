@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The MCP `search` and `index_status` tools carry a title and the standard
+  annotations: read-only, not destructive, idempotent, not open-world. A
+  client that asks the user before every call to a tool it knows nothing
+  about can now run them without asking. The fields are hints that a client
+  of any protocol revision may ignore.
 - On Windows, a glob written with backslashes in `-g`/`--glob` or the MCP
   `glob` argument, such as `-g '!vendor\'`, matches as it does with slashes.
   The backslash was read as an escape, so `vendor\` was refused as an invalid
