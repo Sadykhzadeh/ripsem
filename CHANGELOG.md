@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-15)
 
 - A `ripsem index` that finds nothing to do, the update every `ripsem search`
   starts with, and `ripsem status` (which the MCP `index_status` tool shares)
