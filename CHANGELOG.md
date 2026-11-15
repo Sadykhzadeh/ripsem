@@ -87,6 +87,20 @@
   and 0.513 to 0.515) and gains at tight level (0.144 to 0.157 and 0.189 to
   0.234). The four projects hold 50,527 records instead of 35,382 (+43%), and
   their indexes are 30% larger. The chunk revision goes to 10.
+- The line above a chunk that the model reads now also names the declaration
+  the chunk is cut from, `src/io.ts: fn IoAdapter::mapPayload`, where it was
+  the path alone (a chunk that declares nothing keeps the path alone). A method
+  cut out of its class says little of the class, and a description of it names
+  the class. Only the embedding input changes: the snippet, the stored text and
+  the keyword terms are what they were, and the hashing backend, which ranks by
+  words, does not change. On the benchmark in `eval/` with the default model
+  and the chunking above, region-level MRR@10 goes from 0.374 to 0.397 on the
+  hand-written queries (+0.023, 95% interval -0.018 to +0.062) and from 0.423 to
+  0.425 on the doc-comment ones (+0.001, -0.006 to +0.007); file-level from
+  0.567 to 0.587 and from 0.703 to 0.703. Neither interval excludes zero; the
+  line costs a few tokens per chunk and the gain is kept for what it restores
+  and not for what the numbers can tell. The chunk revision goes to 11, so
+  existing indexes are embedded again.
 - `ripsem search` takes `-e`/`--regex` and the MCP `search` tool a `regex`
   argument, to keep only the hits whose code matches a regular expression:
   the place that does one thing and also mentions a name. The pattern is

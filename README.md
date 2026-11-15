@@ -395,10 +395,13 @@ anyway.
    itself rarely uses. Markdown is cut at its headings, so a hit starts at
    the heading that says what the text is about and a code block in it stays
    whole.
-3. **Embed and tokenise.** Each chunk gets a vector from the local model,
-   made from the file's path and the code, stored as int8, and a set of terms in which identifiers are kept whole and
-   also split at `snake_case` and `camelCase` boundaries. Every chunk also
-   lists the declarations it holds, with their lines.
+3. **Embed and tokenise.** Each chunk gets a vector from the local model, read
+   under its file's path and its declaration's qualified name (`src/io.ts: fn
+   IoAdapter::mapPayload`), so a method cut out of its class still says what it
+   belongs to. The vector is stored as int8, next to a set of terms in which
+   identifiers are kept whole and also split at `snake_case` and `camelCase`
+   boundaries. Every chunk also lists the declarations it holds, with their
+   lines.
 4. **Search.** The query runs through both arms and their rankings are merged
    by reciprocal rank fusion. With the hashing backend the vectors do not
    vote, since they only record which words occur: the lexical arm ranks, and
