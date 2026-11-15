@@ -254,8 +254,11 @@ jobs:
           jq --arg v "$version" '.version = $v | .packages[0].version = $v' server.json > server.tmp
           mv server.tmp server.json
           ./mcp-publisher login github-oidc
-          for attempt in 1 2 3 4; do
+          # The registry looks the version up on npm, and npm can take several
+          # minutes to serve a package that was just published: 0.3.0 was not
+          # there after two.
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
             ./mcp-publisher publish && exit 0
-            sleep 30
+            sleep 60
           done
           ./mcp-publisher publish
