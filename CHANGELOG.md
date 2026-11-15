@@ -26,20 +26,24 @@
   nothing in an existing index changes. In the benchmark in `eval/` the region
   MRR@10 of `backend = "hash"`, averaged over the four projects, goes from
   0.152 to 0.322 on the hand-written queries (the lexical arm alone: 0.269)
-  and from 0.271 to 0.369 on the automatic ones (lexical alone: 0.337). The
-  model backend is not affected.
+  and from 0.271 to 0.369 on the automatic ones (lexical alone: 0.337); those
+  numbers are for this change alone, on the chunking before the changes
+  below, which bring the hashing backend to 0.326 and 0.349. The model
+  backend is not affected.
 - `jina-embeddings-v2-base-code` (Apache-2.0, 768 dimensions) is a model to
   choose with `ripsem model set`: the one model offered that was trained on
   code, 30 languages of it. It takes queries and code with no prefix. On the
   benchmark in `eval/` it beats the default on both query sets: region MRR@10
-  of the merged ranking 0.412 against 0.391 on the 1,043 automatic queries and
-  0.479 against 0.414 on the 100 hand-written ones (means over four projects;
-  pooled differences +0.025, 95% bootstrap interval +0.013 to +0.037, and
-  +0.065, +0.005 to +0.129), and of the dense retriever alone 0.343 against
-  0.305 and 0.438 against 0.300. It costs a 644 MB download against 128 MB, an
-  index that takes 1.9 to 2.2 times as long on a GPU and 3.0 times as long on a
-  CPU, 940 MB of memory while indexing on a GPU (default 380 MB) and 890 MB
-  for a search (default 230 MB). The default model does not change. Switching
+  of the merged ranking 0.464 against 0.425 on the 1,043 automatic queries and
+  0.493 against 0.397 on the 100 hand-written ones (means over four projects,
+  with the chunking and the embedded line of this release; pooled differences
+  +0.043, 95% bootstrap interval +0.032 to +0.054, and +0.096, +0.040 to
+  +0.158), and of the dense retriever alone 0.649 against 0.478 and 0.493
+  against 0.297. It costs a 644 MB download against 128 MB, an index that takes
+  about twice as long on a GPU (1.3 to 3 times over two runs on this machine,
+  which was not equally quiet in both), 940 MB of memory while indexing on a
+  GPU (default 460 MB) and 890 MB for a search (default 240 MB), which takes
+  about 0.75 s at the median against 0.4 s. The default model does not change. Switching
   models embeds the whole index again, as for any model.
 - A chunk is embedded with its path on a line above its code, so a question
   that names the module (`routing`, `session`) finds the vector of code that
@@ -48,7 +52,8 @@
   `eval/` (default model, four corpora) the dense retriever alone goes from
   0.261 to 0.305 region MRR@10 on the automatic queries and from 0.269 to
   0.300 on the hand-written ones, and the merged ranking from 0.369 to 0.391
-  and from 0.383 to 0.414. Pooled over all queries the merged gain is +0.023
+  and from 0.383 to 0.414 (for this change alone, on the chunking before the
+  changes below). Pooled over all queries the merged gain is +0.023
   (95% bootstrap interval +0.013 to +0.034) on the automatic set and +0.031
   (-0.004 to +0.073) on the hand-written one, whose 100 queries are too few to
   call it. Indexing takes a few percent longer (median of three cold builds per
@@ -57,6 +62,103 @@
   differ from the index's, and the first search or `ripsem index` embeds every
   chunk again, as it does for a new chunking revision: about as long as a
   first index of that repository.
+- Fewer records of one or two lines that are not answers. On the four projects
+  of the benchmark in `eval/` the previous change left 912 of the 11,430
+  top-ten places of the doc-comment and hand-written queries (8.0%, default
+  model) to records of one or two lines, 29 of them the right place. By kind,
+  of 10,231 such records: 5,234 were the doc-comment record of a declaration
+  (an enum variant, a field, a constant), 2,551 were a single comment line,
+  because a long comment above a declaration was cut line by line, 1,025 the
+  few lines that open a block too long for one chunk (`describe('suite', () =>
+  {`, a signature) or close one, 481 a constant, alias or type on one line, 359
+  the tail of a split function, and 90 an import or `mod` line. A comment line
+  is no longer taken for the lead of the comment below it, so a long comment is
+  cut by size; the opening lines of a block too long for one chunk go into its
+  first piece, and the closing lines into its last; a fragment of two lines or
+  fewer between two declarations joins the one that follows it, or the one
+  before it when only a comment cut off by a blank line is left; and a
+  declaration of under three lines that is not a function no longer gets a
+  record for its doc comment. A function of one or two lines keeps its record.
+  Together with the previous change the projects hold 40,853 records instead of
+  35,382 (+15%; the previous change alone gave 50,527), and their indexes are
+  46.6 MB against 39.9 (51.7 without this change). Records of one or two lines
+  fill 673 top-ten places (5.9%), 28 of them the right place. Region-level
+  MRR@10 with the default model, with the path alone on the embedded line, is
+  0.423 and 0.374 (0.423 and 0.388 before;
+  the second difference is -0.015, 95% interval -0.040 to +0.007 over 100
+  queries), and on the hashing backend 0.349 and 0.326 (0.352 and 0.320), so
+  this is no gain in ranking, and the saving is the reason for it. Ranking
+  the records that remain below all longer ones was tried and not kept: it
+  changes the hand-written queries by +0.001 and costs the automatic ones
+  0.008 (-0.013 to -0.003) with the default model. The chunk revision goes to
+  11.
+- The benchmark in `eval/` reports a tight level next to the region and file
+  ones: a region hit that is at most three times as long as the answer, plus
+  ten lines. Region level credits any chunk that holds the answer, which
+  favours coarse cutting.
+- The README states what was measured: a "How well it finds things" section
+  with the benchmark's numbers for both models, the hashing backend and
+  ripgrep, and what it does not show; the 86% of the retrieval-quality suite
+  is said to be 73 file-level questions; the GPU is about three times faster
+  than the CPU (axum: 17 s against 61 s, a mid-range GPU against a 6-core
+  CPU), not four; and changing `chunk_lines`, `chunk_overlap` or
+  `max_chunk_lines` cuts every file again but embeds only the chunks whose
+  text changed (axum, `chunk_lines` 40 to 30: 50 of 4,213).
+- A function or method is now a record of its own however small it is, where
+  its neighbours used to share one chunk of up to 50 lines. A class, `impl`,
+  trait or module is cut into its members: one record per member, and the lines
+  from the container's first line to its first member, when there are more than
+  two of them, as a record that opens it (two lines or fewer, such as
+  `impl Road {`, open the first member's record instead). Declarations that are
+  not functions (a constant, an alias, a signature without a body) stay grouped
+  with their neighbours unless they take three lines or more, and a function
+  inside a function stays inside it. A doc comment or decorator above a
+  declaration is still the first lines of its record. The cause was dilution:
+  in a sample of 40 misses, 25 on the doc-comment queries and 5 of 35 on the
+  hand-written ones were a small function inside a much larger chunk. On the
+  benchmark in `eval/` with the default model, region-level MRR@10 goes from
+  0.391 to 0.423 on the doc-comment queries (recall@10 0.649 to 0.722; pooled
+  difference +0.025, 95% interval +0.008 to +0.042) and from 0.414 to 0.388 on
+  the hand-written ones (recall@10 0.690 to 0.650; -0.026, -0.076 to +0.025:
+  100 queries cannot tell). File-level MRR@10 goes from 0.689 to 0.703 and from
+  0.616 to 0.585. On the hashing backend region MRR@10 goes from 0.369 to 0.352
+  (-0.024, -0.039 to -0.009) and from 0.322 to 0.320, and the file level stays
+  at 0.654 on the first set. Region level counts any chunk that holds the
+  answer, so it also credited the large chunk around a small answer; counting
+  only hits at most three times as long as the answer plus ten lines (the
+  tight level), the default model goes from 0.309 to 0.418 and from 0.396 to
+  0.388, and the hashing backend from 0.282 to 0.344 and from 0.305 to 0.320.
+  The `nest` project, whose answers are often accessors of two or three lines,
+  loses at region level on the doc-comment queries (hashing backend 0.231 to
+  0.168, default model 0.254 to 0.227), is level at file level (0.477 to 0.476,
+  0.513 to 0.504) and gains at tight level (0.144 to 0.157 and 0.189 to
+  0.227). The four projects hold 50,527 records instead of 35,382 (+43%), and
+  their indexes are 30% larger. The chunk revision goes to 10. The numbers of this
+  and of the next two changes are each measured with the path alone on the
+  embedded line. All three together, against the cutting before them and with
+  the default model: clearly better on the doc-comment queries (region MRR@10
+  0.391 to 0.425, +0.025, 95% interval +0.008 to +0.042), level within noise on
+  the hand-written ones (0.414 to 0.397, -0.018, -0.064 to +0.031), and hits
+  much closer to the size of the answer (tight level 0.309 to 0.420 and 0.396
+  to 0.395); the hashing backend is slightly lower at region level on the
+  doc-comment queries (0.369 to 0.349, -0.027, -0.042 to -0.011) and the same at
+  file level (0.654 to 0.652), because a large chunk counted as a hit for every
+  function in it and the smaller records no longer do (tight level 0.282 to
+  0.341).
+- The line above a chunk that the model reads now also names the declaration
+  the chunk is cut from, `src/io.ts: fn IoAdapter::mapPayload`, where it was
+  the path alone (a chunk that declares nothing keeps the path alone). A method
+  cut out of its class says little of the class, and a description of it names
+  the class. Only the embedding input changes: the snippet, the stored text and
+  the keyword terms are what they were, and the hashing backend, which ranks by
+  words, does not change. On the benchmark in `eval/` with the default model
+  and the chunking above, region-level MRR@10 goes from 0.374 to 0.397 on the
+  hand-written queries (+0.023, 95% interval -0.018 to +0.062) and from 0.423 to
+  0.425 on the doc-comment ones (+0.001, -0.006 to +0.007); file-level from
+  0.567 to 0.587 and from 0.703 to 0.703. Neither interval excludes zero; the
+  line costs a few tokens per chunk and it is kept for what it restores, a
+  method's class, and not for what the numbers can tell. The chunk revision goes to 11, so
+  existing indexes are embedded again.
 - `ripsem search` takes `-e`/`--regex` and the MCP `search` tool a `regex`
   argument, to keep only the hits whose code matches a regular expression:
   the place that does one thing and also mentions a name. The pattern is

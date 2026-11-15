@@ -34,6 +34,10 @@ CORPORA = json.loads((HERE / "corpora.json").read_text())
 SEED = 20261114
 CAP = 300
 DEPTH = 10
+# A "tight" hit overlaps the answer and is at most TIGHT_FACTOR times as long
+# as the answer, plus TIGHT_EXTRA lines.
+TIGHT_FACTOR = 3
+TIGHT_EXTRA = 10
 BACKENDS = ["hash", "fastembed"]
 # name -> (kind, backend, arm)
 SYSTEMS = {
@@ -427,6 +431,10 @@ def rank_of(hits, targets, level, depth=DEPTH):
             if level == "file":
                 if h[0] == t["path"]:
                     return n
+            elif level == "tight":
+                size = h[2] - h[1] + 1
+                if overlaps(h, t) and size <= TIGHT_FACTOR * (t["end"] - t["start"] + 1) + TIGHT_EXTRA:
+                    return n
             elif level == "line" and len(h) > 3:
                 if h[0] == t["path"] and any(t["start"] <= l <= t["end"] for l in h[3]):
                     return n
@@ -461,6 +469,7 @@ def load_ranks(ctx, system, qset, name):
             "id": row["id"], "leaks": q.get("leaks_name", False),
             "file": rank_of(hits, q["targets"], "file"),
             "region": rank_of(hits, q["targets"], region),
+            "tight": rank_of(hits, q["targets"], "line" if kind == "rg" else "tight"),
             "seconds": row.get("seconds"), "peak_rss": row.get("peak_rss"),
         })
     return out
@@ -486,7 +495,7 @@ def cmd_report(ctx):
     systems = [s for s in ctx.args.systems if any(ctx.raw(s, q, c["name"]).exists() for q in SETS for c in ctx.repos)]
     digest = {}
     for qset in ctx.args.sets:
-        for level in ("region", "file"):
+        for level in ("region", "tight", "file"):
             print(f"\n### Query set `{qset}`, {level} level (MRR@10, R@1, R@5, R@10)\n")
             print("| system | " + " | ".join(c["name"] for c in ctx.repos) + " | all (mean of repos) |")
             print("|---|" + "---|" * (len(ctx.repos) + 1))

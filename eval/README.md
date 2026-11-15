@@ -119,6 +119,12 @@ them (ripsem returns distinct places, ripgrep distinct files).
 - region level: a hit counts when it is in the answer's file and its line
   range overlaps the answer's. For ripgrep a file counts when one of its
   matching lines is inside the answer.
+- tight level: a region hit that is also at most three times as long as the
+  answer, plus ten lines (`TIGHT_FACTOR` and `TIGHT_EXTRA` in `bench.py`). At
+  region level a 50-line chunk counts for any answer inside it, so a system
+  that cuts coarsely scores as well as one that points at the function. This
+  level counts only hits a reader would not have to search through. For
+  ripgrep it is the line level.
 - file level: a hit counts when it is in the answer's file.
 - MRR@10 and recall at 1, 5 and 10, from the first hit that counts.
 - Latency is the wall time of one `search` process, start to exit, over every

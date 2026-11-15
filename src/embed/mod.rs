@@ -17,12 +17,18 @@ pub trait Embedder: Send + Sync {
 
 /// What a chunk is embedded as: its path on a line of its own, then its code.
 /// A chunk rarely says which file or module it belongs to, and a question often
-/// does (`how does routing match a path`). Only the vector sees the line; the
-/// snippet, the lexical terms and the chunk text keep the code alone. A change
-/// here is a change to every stored vector, so it comes with a new
-/// `chunk::REVISION`, which makes an index embed its chunks again.
-pub fn document_input(path: &str, text: &str) -> String {
-    format!("{path}\n{text}")
+/// does (`how does routing match a path`). When the chunk is cut from a
+/// declaration, the line also carries its label (`src/auth/session.rs: fn
+/// Session::refresh`): a method cut out of its class has little else that names
+/// the class. Only the vector sees the line; the snippet, the lexical terms and
+/// the chunk text keep the code alone. A change here is a change to every
+/// stored vector, so it comes with a new `chunk::REVISION`, which makes an
+/// index embed its chunks again.
+pub fn document_input(path: &str, label: Option<&str>, text: &str) -> String {
+    match label {
+        Some(label) => format!("{path}: {label}\n{text}"),
+        None => format!("{path}\n{text}"),
+    }
 }
 
 /// Chunks waiting for vectors from which [`build_for`] puts the model on the
@@ -81,5 +87,19 @@ pub fn backend_warning(backend: Backend) -> Option<&'static str> {
              reinstall with `--features fastembed`, \
              then run `ripsem model backend fastembed` and `ripsem index --force`",
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::document_input;
+
+    #[test]
+    fn the_line_above_the_code_is_the_path_and_the_label_when_there_is_one() {
+        assert_eq!(
+            document_input("src/auth/session.rs", Some("fn Session::refresh"), "code"),
+            "src/auth/session.rs: fn Session::refresh\ncode"
+        );
+        assert_eq!(document_input("README.md", None, "text"), "README.md\ntext");
     }
 }

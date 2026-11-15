@@ -111,7 +111,7 @@ fn every_record_keeps_its_own_vector_when_embedded_out_of_order() {
     let index = Index::load(&config.index_path()).unwrap();
     assert_eq!(index.records.len(), 50);
     for record in &index.records {
-        let input = ripsem::embed::document_input(&record.path, &record.snippet);
+        let input = ripsem::embed::document_input(&record.path, None, &record.snippet);
         let own = embedder.embed_query(&input).unwrap();
         let similarity = ripsem::quant::dot(&record.vector, &own);
         assert!(similarity > 0.99, "{} got {similarity}", record.path);
@@ -1120,7 +1120,7 @@ fn a_huge_result_count_is_not_reserved_up_front() {
 fn a_named_block_does_not_hide_the_methods_inside_it() {
     let dir = TempDir::new();
     let mut src = String::from("impl Searcher {\n");
-    for i in 0..20 {
+    for i in 0..3 {
         src.push_str(&format!(
             "    fn helper{i}(&self) -> u32 {{\n        {i}\n    }}\n\n"
         ));

@@ -320,7 +320,12 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
                 let pending = chunks
                     .into_iter()
                     .map(|c| {
-                        let input = embed::document_input(&rel, &c.text);
+                        let label = c
+                            .symbol
+                            .as_ref()
+                            .filter(|s| !s.is_heading())
+                            .map(|s| s.label());
+                        let input = embed::document_input(&rel, label.as_deref(), &c.text);
                         let text_hash = fingerprint::content_hash(input.as_bytes());
                         let pending = Pending {
                             path: rel.clone(),
@@ -1535,7 +1540,7 @@ mod tests {
     }
 
     #[test]
-    fn a_vector_is_made_from_the_path_and_the_code_but_the_snippet_keeps_the_code() {
+    fn a_vector_is_made_from_the_path_the_label_and_the_code_but_nothing_else_is() {
         let dir = crate::testutil::TempDir::new();
         let code = "fn refresh(token: &str) -> bool {\n    token.len() > 3\n}\n";
         dir.write("src/auth/session.rs", code);
@@ -1554,10 +1559,23 @@ mod tests {
             crate::quant::dequantize(&crate::quant::quantize(&vector[0]))
         };
         let stored = crate::quant::dequantize(&record.vector);
-        assert_eq!(stored, embed(&format!("src/auth/session.rs\n{code}")));
+        // Without the treesitter feature a chunk names no declaration.
+        let header = if cfg!(feature = "treesitter") {
+            "src/auth/session.rs: fn refresh"
+        } else {
+            "src/auth/session.rs"
+        };
+        assert_eq!(stored, embed(&format!("{header}\n{code}")));
         assert_ne!(stored, embed(code));
         assert_eq!(record.snippet.to_string(), code.trim_end());
         assert!(!record.snippet.to_string().contains("session.rs"));
+        // The terms are those of the code, its path and its name: the label
+        // adds none of its own.
+        let terms = crate::lexical::query_terms("refresh token session auth fn");
+        let name = cfg!(feature = "treesitter").then_some("refresh");
+        let plain = crate::lexical::TermVector::new(code, "src/auth/session.rs", name);
+        assert_eq!(record.terms.length(), plain.length());
+        assert_eq!(record.terms.presence(&terms), plain.presence(&terms));
     }
 
     #[test]

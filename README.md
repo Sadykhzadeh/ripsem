@@ -138,12 +138,15 @@ ranks by the words of the query alone, as the lexical arm does.
 
 The `treesitter` feature, also on by default, chunks code on function and type
 boundaries instead of fixed line windows, and names each chunk after the
-declaration it belongs to. Results look like `src/auth/session.rs:40-72 fn
-Session::refresh`, so a caller can tell a definition from a call site without
-opening the file. A function too large for one chunk passes its name to every
-piece. It covers Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, C#,
-Ruby, PHP, Scala, Kotlin, Bash, HTML, CSS and JSON; other files are cut into
-line windows.
+declaration it belongs to. A function or method is a chunk of its own however
+small; a class or `impl` is cut into its members; other small declarations and
+the lines between declarations are grouped, and a fragment of a line or two
+joins its neighbour. Results look like
+`src/auth/session.rs:40-72 fn Session::refresh`, so a caller can tell a
+definition from a call site without opening the file. A function too large for
+one chunk passes its name to every piece. It covers Rust, Python, JavaScript,
+TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Scala, Kotlin, Bash, HTML, CSS and
+JSON; other files are cut into line windows.
 
 The `hnsw` feature adds an approximate-nearest-neighbour graph for indexes above
 500 000 chunks. It changes only how the vector arm gathers candidates; the
@@ -249,24 +252,24 @@ ripsem index                      # rebuilds the index for the new model
 
 | Model | Dims | Disk | Merged MRR@10, automatic / hand-written | Notes |
 | --- | --- | --- | --- | --- |
-| bge-small-en-v1.5 | 384 | ~133 MB | 0.391 / 0.414 | default |
+| bge-small-en-v1.5 | 384 | ~133 MB | 0.425 / 0.397 | default |
 | all-MiniLM-L6-v2 | 384 | ~90 MB | not measured | smallest and fastest to embed |
 | bge-base-en-v1.5 | 768 | ~436 MB | not measured | larger English model |
 | multilingual-e5-small | 384 | ~470 MB | not measured | queries and comments in other languages |
 | nomic-embed-text-v1.5 | 768 | ~550 MB | not measured | larger English model, the most memory to index |
-| jina-embeddings-v2-base-code | 768 | ~644 MB | 0.412 / 0.479 | trained on code in 30 languages; the best results measured, at the largest download and about twice the time and memory to index |
+| jina-embeddings-v2-base-code | 768 | ~644 MB | 0.464 / 0.493 | trained on code in 30 languages; the best results measured, at the largest download and more time and memory to index |
 
 The numbers are region-level MRR@10 of the merged ranking on the benchmark in
 [`eval/`](eval/README.md): four projects (axum, scrapy, nest, caddy), 1,043
 queries made from doc comments and 100 written by hand, averaged over the four
-projects. The code model gains +0.025 (95% interval +0.013 to +0.037) on the
-automatic queries and +0.065 (+0.005 to +0.129) on the hand-written ones over
-the default, and its dense retriever alone goes from 0.305 to 0.343 and from
-0.300 to 0.438. It costs more: a 644 MB download against 128 MB, an index
-that takes about twice as long on a GPU (1.9 to 2.2 times on the four
-projects) and 3 times as long on a CPU (axum: 223 s against 75 s), 940 MB of
-memory while indexing on a GPU against 380 MB, and 890 MB against 230 MB for
-each search. The
+projects. The code model gains +0.043 (95% interval +0.032 to +0.054) on the
+automatic queries and +0.096 (+0.040 to +0.158) on the hand-written ones over
+the default, and its dense retriever alone goes from 0.478 to 0.649 and from
+0.297 to 0.493. It costs more: a 644 MB download against 128 MB, an index
+that takes about twice as long on a GPU (1.3 to 3 times in two runs here, axum
+37 s against 18 s in the latest), 940 MB of memory while indexing on a GPU
+against 460 MB, and 890 MB against 240 MB for each search, which takes about
+0.75 s at the median against 0.4 s. The
 default stays small; set the code model when the repository is large enough
 for results to matter more than the first index.
 
@@ -360,11 +363,13 @@ exclude = []
 `chunk_lines` and `chunk_overlap` size the line windows used for plain-text
 files and languages without a parser. `max_chunk_lines` caps a single semantic
 chunk; larger functions are split. After changing any of the three, the next
-`ripsem index` chunks and embeds every file again. Files larger than
-`max_file_kb` are skipped. `exclude` takes gitignore-style globs, on top of
-`.gitignore` and an optional `.ripsemignore`. `backend = "hash"` matches words
-instead of meaning; builds without the `fastembed` feature start with it. A key
-ripsem does not know is reported as an error.
+`ripsem index` cuts every file again and embeds only the chunks whose text
+changed (on axum, `chunk_lines` from 40 to 30 embedded 50 of 4,213 chunks).
+Files larger than `max_file_kb` are skipped. `exclude` takes gitignore-style
+globs, on top of `.gitignore` and an optional `.ripsemignore`.
+`backend = "hash"` matches words instead of meaning; builds without the
+`fastembed` feature start with it. A key ripsem does not know is reported as an
+error.
 
 `skip_generated` leaves out files that are committed but written by a machine:
 lock files, `go.sum`, `*.min.js`, `*.min.css` and source maps. `.gitignore`
@@ -385,15 +390,21 @@ anyway.
    gitignore and `.ripsemignore` apply, and binary files, files above
    `max_file_kb` and machine-written files are left out.
 2. **Chunk.** tree-sitter cuts each file at function and type boundaries and
-   names every chunk after its declaration. A doc comment or docstring becomes a
-   second record for the same declaration, because an author describes code in
-   words the code itself rarely uses. Markdown is cut at its headings, so a hit
-   starts at the heading that says what the text is about and a code block in
-   it stays whole.
-3. **Embed and tokenise.** Each chunk gets a vector from the local model,
-   made from the file's path and the code, stored as int8, and a set of terms in which identifiers are kept whole and
-   also split at `snake_case` and `camelCase` boundaries. Every chunk also
-   lists the declarations it holds, with their lines.
+   names every chunk after its declaration. A function or method is a chunk
+   of its own however few lines it has, a class or `impl` is cut into one
+   chunk per member, and what is no declaration is grouped up to
+   `max_chunk_lines`. A doc comment or docstring becomes a second record for
+   the same declaration, because an author describes code in words the code
+   itself rarely uses. Markdown is cut at its headings, so a hit starts at
+   the heading that says what the text is about and a code block in it stays
+   whole.
+3. **Embed and tokenise.** Each chunk gets a vector from the local model, read
+   under its file's path and its declaration's qualified name (`src/io.ts: fn
+   IoAdapter::mapPayload`), so a method cut out of its class still says what it
+   belongs to. The vector is stored as int8, next to a set of terms in which
+   identifiers are kept whole and also split at `snake_case` and `camelCase`
+   boundaries. Every chunk also lists the declarations it holds, with their
+   lines.
 4. **Search.** The query runs through both arms and their rankings are merged
    by reciprocal rank fusion. With the hashing backend the vectors do not
    vote, since they only record which words occur: the lexical arm ranks, and
@@ -439,8 +450,9 @@ lists the servers it has connected to.
 **The first index takes a while.** It downloads the model once and embeds every
 file, showing the chunks embedded so far and an estimate of the time left.
 Every later run embeds only the code that changed. On Windows a job of 256
-chunks or more runs on the GPU through DirectML, about four times faster than
-on the CPU; `RIPSEM_NO_GPU=1` keeps it on the CPU, for example when a graphics
+chunks or more runs on the GPU through DirectML, about three times faster than
+on the CPU (indexing axum took 17 s against 61 s, on a mid-range GPU against a
+6-core CPU); `RIPSEM_NO_GPU=1` keeps it on the CPU, for example when a graphics
 driver misbehaves. The model is cached in
 `~/.cache/ripsem` on Linux, `~/Library/Caches/ripsem` on macOS and
 `%LOCALAPPDATA%\ripsem\cache` on Windows; `RIPSEM_MODEL_DIR` names another
@@ -451,6 +463,44 @@ directory for it.
 `winget install Microsoft.VCRedist.2015+.x64` adds it. A missing `DirectML.dll`
 means it was not kept next to `ripsem.exe` when the archive was unpacked.
 
+## How well it finds things
+
+The benchmark in [`eval/`](eval/README.md) runs the real `ripsem search`
+against four pinned projects (axum, scrapy, nest and caddy), with 1,043
+questions made from the first sentence of a function's doc comment (the comment
+is cut out of the indexed copy) and 100 written by hand, without naming the
+answer. A result counts when it is in the file of the answer (file) or covers
+the answer's lines (place). The table is MRR@10, which is 1.0 when the answer
+is always first and 0.5 when it is second on average, and in brackets the share
+of questions with the answer in the first ten results, averaged over the four
+projects.
+
+| | Hand-written, place | Hand-written, file | Automatic, place | Automatic, file |
+| --- | --- | --- | --- | --- |
+| Default model | 0.397 (68%) | 0.587 (86%) | 0.425 (74%) | 0.703 (91%) |
+| Code model (`jina-embeddings-v2-base-code`) | 0.493 (77%) | 0.673 (87%) | 0.464 (80%) | 0.715 (93%) |
+| Hash backend (words only) | 0.326 (47%) | 0.478 (70%) | 0.349 (59%) | 0.652 (87%) |
+| ripgrep on the question's words | 0.103 (29%) | 0.103 (29%) | 0.168 (41%) | 0.169 (42%) |
+
+In plain words: with the default model the right file is among the first ten
+results for about nine automatic questions in ten and about eight and a half
+hand-written ones in ten, and the right lines for about three in four and two
+in three. The right file is usually, not always, the first or second one. The
+code model finds clearly more of the hand-written questions, the ones that read
+like a person asking, and a little more of the automatic ones. The hash backend
+matches words only and is behind on both; ripgrep with the same words, which is
+what a keyword search does with a question, is far behind. Searching takes
+about 0.4 s with the default model, and building an index takes 18 s for axum
+(487 files) and 78 s for nest (2,798 files) on a GPU.
+
+What it does not show: four projects in four languages, 100 hand-written
+questions (their 95% interval is about 0.08 wide on either side, so a gap of
+0.05 between two rows is not a difference), and questions written by one person
+or taken from comments, not from the questions your team asks. Counting a hit
+by the lines it covers favours large chunks, so the file columns are the ones
+to compare across versions of ripsem. To run it yourself, see
+[`eval/README.md`](eval/README.md).
+
 ## Quality
 
 Ranking is held to a benchmark of labelled questions over four real projects in
@@ -458,8 +508,9 @@ four languages (Rust, Python, Go and TypeScript), each pinned at a release tag.
 The questions come in the four shapes people actually search with: a
 description in their own words, an identifier, a message seen in output, and a
 name remembered wrong. The merged ranking has to beat either retriever alone,
-put the answer in the top five for at least 86% of the questions, and cost less
-to read up to the answer than the file the answer is in. A second test searches
+put the answer's file in the top five for at least 86% of its 73 questions,
+and cost less to read up to the answer than the file the answer is in. Those
+are file-level questions over a small set; the section above measures more. A second test searches
 for every name declared once in those projects: the first hit has to be that
 declaration, under its own name, for at least 95% of them, and no hit on a
 declaration's lines may carry another name.
