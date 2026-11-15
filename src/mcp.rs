@@ -100,7 +100,7 @@ fn serve_on(
                         continue;
                     };
                     if dir != config.root
-                        && let Ok(fresh) = Config::load(&dir)
+                        && let Ok(fresh) = Config::load_again(&dir, &config)
                     {
                         config = fresh;
                         session = None;
@@ -274,7 +274,7 @@ fn hold_the_index(
         if searcher.refresh().is_ok() {
             return;
         }
-        match Config::load(&config.root) {
+        match Config::load_again(&config.root, config) {
             Ok(fresh) if fresh.backend != config.backend || fresh.model != config.model => {
                 *config = fresh;
                 *session = None;
@@ -289,7 +289,7 @@ fn hold_the_index(
         return;
     }
     *tried = Some(stamps);
-    if let Ok(fresh) = Config::load(&config.root) {
+    if let Ok(fresh) = Config::load_again(&config.root, config) {
         *config = fresh;
     }
     *session = pipeline::open(config).ok();
@@ -966,6 +966,48 @@ mod tests {
         let behind = report(&config);
         assert_eq!(behind["index"]["drift"]["added"], 1);
         assert!(behind["updating"].is_boolean(), "{behind}");
+    }
+
+    /// The drift an agent is told is what a search would update: a file whose
+    /// size and time are what the index stored is not read, unless the server
+    /// was started to hash every file.
+    #[test]
+    fn index_status_trusts_a_stat_as_a_search_does() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("auth.rs", "alpha bravo charlie");
+        let path = dir.path().join("auth.rs");
+        let set_modified = |time| {
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(time)
+                .unwrap();
+        };
+        let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+        set_modified(aged);
+        let config = Config {
+            backend: crate::config::Backend::Hash,
+            root: dir.path().canonicalize().unwrap(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+
+        dir.write("auth.rs", "omega bravo charlie");
+        set_modified(aged);
+        let modified = |config: &Config| -> u64 {
+            let resp = call_tool(config, "index_status", json!({}));
+            let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+            let report: Value = serde_json::from_str(text).unwrap();
+            report["index"]["drift"]["modified"].as_u64().unwrap()
+        };
+        assert_eq!(modified(&config), 0);
+        let hashing = Config {
+            hash_all: true,
+            ..config
+        };
+        assert_eq!(modified(&hashing), 1);
     }
 
     #[test]

@@ -73,7 +73,7 @@ fn keep_current(mut config: Config, strict: bool, report: impl Fn(String)) -> Re
         }
         // `ripsem model set` and a rebuild may have happened since the last
         // burst. Indexing under the old settings would overwrite that index.
-        match Config::load(&config.root) {
+        match Config::load_again(&config.root, &config) {
             Ok(fresh) => config = fresh,
             Err(e) => report(format!(
                 "config unreadable, keeping the previous one: {e:#}"

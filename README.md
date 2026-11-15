@@ -179,8 +179,8 @@ writes the file when it is missing and never changes an existing one.
 `status` also reports how far the index has drifted from the files. Hits carry
 the line range their file had when it was indexed, so `tree: out of date: 3
 changed, 1 new` tells you when a result may no longer point at the right lines.
-Drift is measured with the same content hash the incremental index uses, so it
-counts exactly what a rebuild would touch. The JSON carries it as `index.drift`
+Drift is measured the way the incremental index finds changes, so it counts
+exactly what a rebuild would touch. The JSON carries it as `index.drift`
 (`added`/`modified`/`removed`).
 
 Results print as `path:start-end` with the declaration's name and a snippet, in
@@ -420,6 +420,13 @@ the index takes in. A file is left out when `.gitignore`, `.ripsemignore` or
 `ripsem search` updates the index before it searches, and `ripsem watch` or a
 running MCP server keeps it current; `ripsem status` shows how far it has
 drifted.
+
+**An edited file is not picked up.** A file whose size and modification time
+are what they were when it was indexed is not read again, by `index`, `search`,
+`watch`, the MCP server or `status`, so a file rewritten with different
+contents, the same size and the same modification time is not seen as changed.
+Set `RIPSEM_HASH_ALL=1` for a run (`RIPSEM_HASH_ALL=1 ripsem status` shows what
+is out of date) or run `ripsem index --force` to read every file.
 
 **Search says the index was built with another model.** The config names a
 different model or backend than the index. `ripsem index` rebuilds it for the
