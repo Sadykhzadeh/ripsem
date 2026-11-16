@@ -200,6 +200,17 @@ pub struct SearchOpts {
     /// of the hits. Like `--count-by-file` it reads the top `-k` places.
     #[arg(short = 'l', long, conflicts_with = "count_by_file")]
     files_with_matches: bool,
+    /// The order of the hits: `score`, the ranking, or `path`, by file and then
+    /// by line. `path` orders the hits of the page shown; `--offset` still
+    /// reads the ranking by score.
+    #[arg(long, value_enum, default_value_t = SortBy::Score, value_name = "ORDER")]
+    sort: SortBy,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SortBy {
+    Score,
+    Path,
 }
 
 #[derive(Subcommand)]
@@ -763,9 +774,12 @@ fn scope_for(config: &Config, opts: &SearchOpts) -> Result<Option<Scope>> {
 /// `--min-score` have had their say.
 fn show(page: pipeline::Page, opts: &SearchOpts, context: usize, words: &[String]) -> Result<()> {
     let more = page.more(opts.min_score);
-    let hits = apply_min_score(page.hits, opts.min_score);
+    let mut hits = apply_min_score(page.hits, opts.min_score);
     if opts.quiet {
         std::process::exit(i32::from(hits.is_empty()));
+    }
+    if opts.sort == SortBy::Path {
+        hits.sort_by(|a, b| a.path.cmp(&b.path).then(a.start_line.cmp(&b.start_line)));
     }
     let next = more.then_some(opts.offset + hits.len());
     print_hits(

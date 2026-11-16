@@ -248,6 +248,9 @@ asks the same as `ripsem search "where is auth set up"`.
 - `-l, --files-with-matches` lists each file with a hit once, in the order of
   its best hit, instead of the hits. It cannot be combined with
   `--count-by-file`.
+- `--sort path` shows the hits of the page ordered by file and then by line,
+  instead of by score. `--offset` still reads the ranking by score, so the
+  page is the same set of hits either way.
 
 `ripsem similar <path>[:LINE[-LINE]]` finds the code nearest to a place
 already in the index: `ripsem similar src/auth.rs:40-72`, one line

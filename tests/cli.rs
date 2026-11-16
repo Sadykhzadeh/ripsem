@@ -884,6 +884,38 @@ fn similar_refreshes_the_index_before_it_reads_a_changed_file() {
 }
 
 #[test]
+fn sort_by_path_orders_the_page_by_path_then_line() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    let rows = |args: &[&str]| -> Vec<(String, u64)> {
+        let mut all = vec!["search", query, "-k", "50", "--json"];
+        all.extend_from_slice(args);
+        let found: Vec<serde_json::Value> =
+            serde_json::from_str(&stdout(&ripsem(&dir.path, &all))).unwrap();
+        found
+            .iter()
+            .map(|r| {
+                (
+                    r["path"].as_str().unwrap().to_string(),
+                    r["start_line"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let by_path = rows(&["--sort", "path"]);
+    assert_eq!(by_path.len(), 10);
+    let mut sorted = by_path.clone();
+    sorted.sort();
+    assert_eq!(by_path, sorted);
+    let mut by_score = rows(&[]);
+    by_score.sort();
+    assert_eq!(by_path, by_score);
+
+    let bad = ripsem(&dir.path, &["search", query, "--sort", "size"]);
+    assert_eq!(bad.status.code(), Some(2), "{}", stderr(&bad));
+}
+
+#[test]
 fn a_query_piped_on_stdin_is_searched_like_one_typed() {
     let dir = paged_tree();
     let query = "verify password create session token";
