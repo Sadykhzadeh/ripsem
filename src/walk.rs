@@ -249,7 +249,11 @@ pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
         [0xFF, 0xFE, rest @ ..] => Cow::Owned(units(u16::from_le_bytes, rest)),
         [0xFE, 0xFF, rest @ ..] => Cow::Owned(units(u16::from_be_bytes, rest)),
         [0xEF, 0xBB, 0xBF, rest @ ..] => utf8_or_windows_1252(rest),
-        _ => utf8_or_windows_1252(bytes),
+        _ => match utf16_without_mark(&bytes[..bytes.len().min(SNIFF_BYTES as usize)]) {
+            Some(Order::Little) => Cow::Owned(units(u16::from_le_bytes, bytes)),
+            Some(Order::Big) => Cow::Owned(units(u16::from_be_bytes, bytes)),
+            None => utf8_or_windows_1252(bytes),
+        },
     }
 }
 
@@ -277,9 +281,63 @@ fn reads_as_text(prefix: &[u8]) -> bool {
         | content_inspector::ContentType::UTF_16BE
         | content_inspector::ContentType::UTF_32LE
         | content_inspector::ContentType::UTF_32BE => true,
-        content_inspector::ContentType::BINARY => false,
+        content_inspector::ContentType::BINARY => {
+            !BINARY_HEADERS
+                .iter()
+                .any(|header| prefix.starts_with(header))
+                && utf16_without_mark(prefix).is_some()
+        }
         _ => !prefix.contains(&0),
     }
+}
+
+/// Formats whose header shows what they are, whatever bytes follow it.
+const BINARY_HEADERS: &[&[u8]] = &[b"\x7fELF", b"\x89PNG", b"%PDF", b"MZ", b"PK\x03\x04"];
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Order {
+    Little,
+    Big,
+}
+
+/// The byte order of UTF-16 text that has no byte order mark, as Windows tools
+/// sometimes write it. ASCII in UTF-16 has a zero beside every character, on
+/// the second byte of each unit when little-endian and on the first when
+/// big-endian. So the zeros of a sample must sit on one side, and the units
+/// decoded that way must be printable: a binary with zeros in every other byte
+/// (sixteen-bit samples, say) fails the second test. `None` for anything else,
+/// including a sample without a zero.
+fn utf16_without_mark(sample: &[u8]) -> Option<Order> {
+    let sample = &sample[..sample.len() & !1];
+    let units = sample.len() / 2;
+    if units < 8 || !sample.contains(&0) {
+        return None;
+    }
+    let (first, second) = sample
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .fold((0, 0), |(f, s), pair| {
+            (f + usize::from(pair[0] == 0), s + usize::from(pair[1] == 0))
+        });
+    let (order, zeros, other) = match second >= first {
+        true => (Order::Little, second, first),
+        false => (Order::Big, first, second),
+    };
+    if zeros * 10 < units * 4 || other * 20 > units {
+        return None;
+    }
+    let printable = sample
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| match order {
+            Order::Little => u16::from_le_bytes([pair[0], pair[1]]),
+            Order::Big => u16::from_be_bytes([pair[0], pair[1]]),
+        })
+        .filter(|&unit| matches!(unit, 0x09 | 0x0A | 0x0D) || unit >= 0x20)
+        .count();
+    (printable * 100 >= units * 99).then_some(order)
 }
 
 #[cfg(test)]
@@ -602,6 +660,48 @@ mod tests {
             "caf\u{e9} costs \u{20ac} 5\u{201d}\n"
         );
         assert_eq!(decode_text(b"plain \xC3\xA9\n"), "plain \u{e9}\n");
+    }
+
+    #[test]
+    fn utf16_without_a_byte_order_mark_is_text_in_either_order() {
+        let text = "fn a() {}\r\nfn b() { \"caf\u{e9}\" }\r\n";
+        let le: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let be: Vec<u8> = text.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("le.ps1"), &le).unwrap();
+        std::fs::write(dir.path().join("be.reg"), &be).unwrap();
+
+        assert_eq!(names(&collect(&config_at(dir.path())).unwrap()).len(), 2);
+        assert_eq!(
+            decode_text(&le),
+            "fn a() {}\r\nfn b() { \"caf\u{e9}\" }\r\n"
+        );
+        assert_eq!(
+            decode_text(&be),
+            "fn a() {}\r\nfn b() { \"caf\u{e9}\" }\r\n"
+        );
+    }
+
+    #[test]
+    fn binary_files_with_a_header_are_still_skipped() {
+        let dir = TempDir::new();
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend([0, 0, 0, 16, 0, 0, 0, 16, 8, 6, 0, 0, 0]);
+        let mut elf = b"\x7fELF\x02\x01\x01\0".to_vec();
+        elf.extend([0u8; 56]);
+        let mut int16 = Vec::new();
+        for n in 0u16..4000 {
+            int16.extend((n % 300).to_le_bytes());
+        }
+        std::fs::write(dir.path().join("icon.png"), &png).unwrap();
+        std::fs::write(dir.path().join("prog.elf"), &elf).unwrap();
+        std::fs::write(dir.path().join("samples.raw"), &int16).unwrap();
+        dir.write("keep.rs", "fn main() {}\n");
+
+        assert_eq!(
+            names(&collect(&config_at(dir.path())).unwrap()),
+            ["keep.rs"]
+        );
     }
 
     #[test]
