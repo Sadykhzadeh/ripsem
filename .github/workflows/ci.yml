@@ -100,7 +100,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
-      - uses: taiki-e/install-action@375b74606b681357a78b6488a4828b3b84bdd155 # cargo-audit
+      - uses: taiki-e/install-action@375b74606b681357a78b6488a4828b3b84bdd155 # cargo-deny
         with:
           tool: cargo-deny
       - run: cargo deny check

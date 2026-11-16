@@ -7,10 +7,12 @@ targets = [
 ]
 
 [advisories]
+yanked = "deny"
 ignore = [
-    # paste is pulled in by tokenizers and fastembed; no maintained replacement is
-    # a drop-in for it yet, and the crate has no known vulnerability.
-    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, required transitively via tokenizers and fastembed" },
+    # Dated 2026-11-17. paste (unmaintained, no known vulnerability) reaches
+    # this crate only through tokenizers, which fastembed uses. Remove this entry
+    # when fastembed or tokenizers no longer pull it in.
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, required transitively via tokenizers (fastembed), 2026-11-17" },
 ]
 
 [licenses]
@@ -38,3 +40,4 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
