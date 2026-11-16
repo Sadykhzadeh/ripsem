@@ -248,6 +248,10 @@ asks the same as `ripsem search "where is auth set up"`.
 - `-l, --files-with-matches` lists each file with a hit once, in the order of
   its best hit, instead of the hits. It cannot be combined with
   `--count-by-file`.
+- `--since <REV>` keeps only hits in files that differ from a git revision,
+  as the working tree has them: committed, staged and unstaged changes, and
+  untracked files. `ripsem search --since main 'retry on failure'` reviews a
+  branch. It needs a git repository and reads git with its own arguments.
 - `--sort path` shows the hits of the page ordered by file and then by line,
   instead of by score. `--offset` still reads the ranking by score, so the
   page is the same set of hits either way.

@@ -884,6 +884,72 @@ fn similar_refreshes_the_index_before_it_reads_a_changed_file() {
 }
 
 #[test]
+fn since_limits_a_search_to_the_files_changed_since_a_revision() {
+    let dir = paged_tree();
+    git(&dir.path, &["init", "-q"]);
+    git(&dir.path, &["add", "-A"]);
+    git(
+        &dir.path,
+        &[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "base",
+        ],
+    );
+    dir.write(
+        "src/auth0.rs",
+        "fn auth0() { verify password create session token }\nfn more() {}\n",
+    );
+    dir.write("docs/fresh.md", "verify password, written after the commit");
+
+    let query = "verify password create session token";
+    let out = ripsem(
+        &dir.path,
+        &["search", query, "--since", "HEAD", "--json", "-k", "50"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&stdout(&out)).unwrap();
+    let paths: Vec<&str> = rows.iter().map(|r| r["path"].as_str().unwrap()).collect();
+    assert!(!paths.is_empty(), "{}", stdout(&out));
+    assert!(
+        paths
+            .iter()
+            .all(|p| *p == "src/auth0.rs" || *p == "docs/fresh.md"),
+        "{paths:?}"
+    );
+    assert!(paths.contains(&"src/auth0.rs"), "{paths:?}");
+
+    let unknown = ripsem(&dir.path, &["search", query, "--since", "no-such-rev"]);
+    assert_eq!(unknown.status.code(), Some(1));
+    assert!(
+        stderr(&unknown).contains("unknown revision 'no-such-rev'"),
+        "{}",
+        stderr(&unknown)
+    );
+
+    let flag = ripsem(&dir.path, &["search", query, "--since=--output=x"]);
+    assert_eq!(flag.status.code(), Some(1));
+    assert!(
+        stderr(&flag).contains("is not a revision"),
+        "{}",
+        stderr(&flag)
+    );
+
+    let plain = paged_tree();
+    let outside = ripsem(&plain.path, &["search", query, "--since", "HEAD"]);
+    assert_eq!(outside.status.code(), Some(1));
+    assert!(
+        stderr(&outside).contains("not in a git repository"),
+        "{}",
+        stderr(&outside)
+    );
+}
+
+#[test]
 fn sort_by_path_orders_the_page_by_path_then_line() {
     let dir = paged_tree();
     let query = "verify password create session token";

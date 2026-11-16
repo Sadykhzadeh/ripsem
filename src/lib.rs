@@ -5,6 +5,7 @@ pub mod cli;
 pub mod config;
 pub mod embed;
 pub mod fingerprint;
+pub mod git;
 pub mod index;
 pub mod lang;
 pub mod lexical;

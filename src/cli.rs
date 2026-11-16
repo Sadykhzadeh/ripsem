@@ -205,6 +205,11 @@ pub struct SearchOpts {
     /// reads the ranking by score.
     #[arg(long, value_enum, default_value_t = SortBy::Score, value_name = "ORDER")]
     sort: SortBy,
+    /// Keep only hits in files that differ from this git revision, as the
+    /// working tree has them: committed, staged and unstaged changes and
+    /// untracked files. Useful for reviewing a branch, e.g. `--since main`.
+    #[arg(long, value_name = "REV")]
+    since: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -767,7 +772,14 @@ fn scope_for(config: &Config, opts: &SearchOpts) -> Result<Option<Scope>> {
         Some(raw) => mcp::scope_prefix(&from_here(raw, &config.root), &config.root)?,
         None => None,
     };
-    Scope::new(prefix.as_deref(), &opts.lang, &opts.glob)
+    let scope = Scope::new(prefix.as_deref(), &opts.lang, &opts.glob)?;
+    Ok(match &opts.since {
+        Some(rev) => {
+            let changed = crate::git::changed_since(&config.root, rev)?;
+            Some(Scope::changed_since(scope, rev, changed))
+        }
+        None => scope,
+    })
 }
 
 /// Prints one page of results as the options ask, after `-q` and
