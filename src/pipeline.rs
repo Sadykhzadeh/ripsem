@@ -905,7 +905,7 @@ pub struct Searcher {
     // Decoded on the first query that needs the graph, so a query the words
     // answer alone does not pay for it.
     #[cfg(feature = "hnsw")]
-    ann_map: OnceLock<Option<instant_distance::HnswMap<crate::ann::Embedding, u32>>>,
+    ann_map: OnceLock<Option<crate::ann::Graph>>,
 }
 
 pub fn open(config: &Config) -> Result<Searcher> {
@@ -1167,11 +1167,14 @@ impl Searcher {
         if scope.is_none() && self.index.ann.is_some() {
             let depth = crate::index::candidate_depth(k);
             return self.index.search_fused_with(
-                || match self
-                    .ann_map
-                    .get_or_init(|| self.index.ann.as_deref().and_then(crate::ann::load))
-                {
-                    Some(map) => match crate::ann::search_map(map, qv, depth) {
+                || match self.ann_map.get_or_init(|| {
+                    self.index
+                        .ann
+                        .as_deref()
+                        .and_then(crate::ann::load)
+                        .map(crate::ann::Graph::new)
+                }) {
+                    Some(graph) => match graph.search(qv, depth) {
                         Some(found) => found
                             .into_iter()
                             .map(|(record_idx, score)| crate::index::Hit { score, record_idx })
@@ -2082,6 +2085,31 @@ mod tests {
             assert_eq!(shape(&hits), shape(&expected));
             assert!(searcher.ann_map.get().is_some_and(Option::is_none));
         }
+    }
+
+    #[cfg(feature = "hnsw")]
+    #[test]
+    fn a_graph_that_fails_is_left_out_of_later_queries() {
+        let dir = crate::testutil::TempDir::new();
+        many_files(&dir, 40);
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        index_repo(&config, false).unwrap();
+        let expected = exhaustive(&config).query("zephyr", 5).unwrap();
+
+        let mut index = Index::load(&config.index_path()).unwrap();
+        index.ann = Some(crate::ann::tests::a_graph_blob_that_panics_on_search());
+        let searcher =
+            searcher_over(&config, index, Arc::new(LazyEmbedder::new(&config)), None).unwrap();
+        let first = searcher.query("zephyr", 5).unwrap();
+        let second = searcher.query("zephyr", 5).unwrap();
+
+        assert_eq!(shape(&first), shape(&expected));
+        assert_eq!(shape(&second), shape(&expected));
+        let graph = searcher.ann_map.get().unwrap().as_ref().unwrap();
+        assert_eq!(graph.entered(), 1);
     }
 
     #[test]
