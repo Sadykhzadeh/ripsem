@@ -1,3 +1,9 @@
+use std::cell::Cell;
+use std::sync::Once;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use instant_distance::{Builder, HnswMap, Point, Search};
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +40,26 @@ pub fn load(blob: &[u8]) -> Option<HnswMap<Embedding, u32>> {
     bitcode::deserialize(blob).ok()
 }
 
+thread_local! {
+    static CONTAINED: Cell<bool> = const { Cell::new(false) };
+}
+
+static HOOK: Once = Once::new();
+
+/// Installs, once, a hook that stays silent for a panic raised while
+/// `search_map` contains it on this thread, and passes every other panic to the
+/// hook that was there before. Panics elsewhere are reported as they were.
+fn silence_contained_panics() {
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !CONTAINED.with(Cell::get) {
+                previous(info);
+            }
+        }));
+    });
+}
+
 /// `None` when the graph is inconsistent: a blob can decode and still point past
 /// its own nodes, which makes the search panic. The search is contained so the
 /// caller can fall back to the exact scan, as it does for a blob that does not
@@ -44,15 +70,60 @@ pub fn search_map(
     query: &[f32],
     k: usize,
 ) -> Option<Vec<(usize, f32)>> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    silence_contained_panics();
+    CONTAINED.with(|c| c.set(true));
+    let found = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut search = Search::default();
         let point = Embedding(query.to_vec());
         map.search(&point, &mut search)
             .take(k)
             .map(|item| (*item.value as usize, 1.0 - item.distance))
             .collect()
-    }))
-    .ok()
+    }));
+    CONTAINED.with(|c| c.set(false));
+    found.ok()
+}
+
+/// A decoded graph that remembers when a search failed on it. Once one search
+/// has failed, the graph is not entered again by this process: every later
+/// query gets `None` at once and the caller takes the exact scan.
+pub struct Graph {
+    map: HnswMap<Embedding, u32>,
+    broken: AtomicBool,
+    #[cfg(test)]
+    entered: AtomicUsize,
+}
+
+impl Graph {
+    pub fn new(map: HnswMap<Embedding, u32>) -> Self {
+        Self {
+            map,
+            broken: AtomicBool::new(false),
+            #[cfg(test)]
+            entered: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn search(&self, query: &[f32], k: usize) -> Option<Vec<(usize, f32)>> {
+        if self.broken.load(Ordering::Relaxed) {
+            return None;
+        }
+        #[cfg(test)]
+        self.entered.fetch_add(1, Ordering::Relaxed);
+        let found = search_map(&self.map, query, k);
+        if found.is_none() && !self.broken.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "warning: the nearest-neighbour graph in the index is damaged; \
+                 searching every chunk instead. Run `ripsem index --force` to rebuild it"
+            );
+        }
+        found
+    }
+
+    #[cfg(test)]
+    pub(crate) fn entered(&self) -> usize {
+        self.entered.load(Ordering::Relaxed)
+    }
 }
 
 pub fn search(blob: &[u8], query: &[f32], k: usize) -> Option<Vec<(usize, f32)>> {
@@ -61,7 +132,7 @@ pub fn search(blob: &[u8], query: &[f32], k: usize) -> Option<Vec<(usize, f32)>>
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn unit(dims: usize, hot: usize) -> Vec<f32> {
@@ -98,6 +169,39 @@ mod tests {
         // search() wrapper must produce the same top result
         let hits2 = search(&blob, &unit(40, 7), 3).unwrap();
         assert_eq!(hits[0].0, hits2[0].0);
+    }
+
+    /// A blob that decodes and panics when searched: the first window of eight
+    /// bytes set to all ones that makes a decodable graph fail.
+    pub(crate) fn a_graph_blob_that_panics_on_search() -> Vec<u8> {
+        let vectors: Vec<Vec<f32>> = (0..40).map(|i| unit(40, i)).collect();
+        let blob = build(vectors).unwrap();
+        let query = unit(40, 3);
+        for width in [1, 2, 4, 8] {
+            for pattern in [0xff_u8, 0x7f, 0x80, 0x40] {
+                for at in 0..blob.len() - width {
+                    let mut bytes = blob.clone();
+                    bytes[at..at + width].fill(pattern);
+                    let panics =
+                        load(&bytes).is_some_and(|map| search_map(&map, &query, 3).is_none());
+                    if panics {
+                        return bytes;
+                    }
+                }
+            }
+        }
+        panic!("no window of the graph blob makes a decodable graph panic");
+    }
+
+    #[test]
+    fn a_graph_that_fails_once_is_not_entered_again() {
+        let blob = a_graph_blob_that_panics_on_search();
+        let graph = Graph::new(load(&blob).unwrap());
+        let query = unit(40, 3);
+
+        assert!(graph.search(&query, 3).is_none());
+        assert!(graph.search(&query, 3).is_none());
+        assert_eq!(graph.entered(), 1);
     }
 
     #[test]

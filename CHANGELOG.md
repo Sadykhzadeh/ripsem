@@ -70,6 +70,10 @@
 - A `backend = "fastembed"` in `config.toml` in a build without the model
   runtime is reported with the config file's path, as the other config errors
   are, instead of the bare backend message.
+- A nearest-neighbour graph in the index that a search cannot use is reported
+  once, with the `ripsem index --force` fix, and no panic message is printed.
+  Later queries in the same run go straight to the exact scan instead of
+  trying the graph again.
 
 ## 0.3.0 (2026-11-15)
 
