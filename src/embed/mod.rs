@@ -63,7 +63,8 @@ fn build_with(config: &Config, chunks: usize, queries_only: bool) -> Result<Box<
             {
                 let _ = (chunks, queries_only);
                 anyhow::bail!(
-                    "backend 'fastembed' needs a build with the model runtime: cargo build --features fastembed"
+                    "in {}: backend 'fastembed' needs a build with the model runtime: cargo build --features fastembed",
+                    crate::cli::show_path(&config.config_path())
                 )
             }
         }

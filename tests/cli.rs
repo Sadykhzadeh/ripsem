@@ -1480,6 +1480,20 @@ fn a_config_naming_an_unknown_model_stops_index_and_names_the_file() {
     assert!(err.contains("no-such-model"), "{err}");
 }
 
+#[cfg(not(feature = "fastembed"))]
+#[test]
+fn a_fastembed_backend_in_a_build_without_it_names_the_config_file() {
+    let dir = TempDir::new();
+    dir.write("src/lib.rs", "fn main() {}\n");
+    dir.write(".ripsem/config.toml", "backend = \"fastembed\"\n");
+
+    let out = ripsem(&dir.path, &["index"]);
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("config.toml"), "{err}");
+    assert!(err.contains("backend 'fastembed'"), "{err}");
+}
+
 #[test]
 fn a_dry_run_lists_one_path_per_line() {
     let dir = TempDir::new();

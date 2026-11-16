@@ -67,6 +67,9 @@
 - The MCP server refuses a message whose `jsonrpc` member is missing, not only
   one that names another version. JSON-RPC 2.0 requires it, and the server
   answered such a request as if it were valid.
+- A `backend = "fastembed"` in `config.toml` in a build without the model
+  runtime is reported with the config file's path, as the other config errors
+  are, instead of the bare backend message.
 
 ## 0.3.0 (2026-11-15)
 
