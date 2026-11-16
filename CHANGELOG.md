@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The MCP `search` tool returns its hits as `structuredContent` and advertises
+  an `outputSchema` to clients of MCP revision 2025-06-18 and later. Older
+  revisions get the same text as before and no new fields.
 - A piece of a line too long for one chunk is read only from a file inside the
   repository, and only when the file still matches its hash, as the other
   snippets are. An index that named a path outside the root could make a search

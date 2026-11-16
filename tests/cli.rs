@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use serde_json::json;
+
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 struct TempDir {
@@ -173,43 +175,117 @@ fn git_sees_the_config_but_not_the_index() {
     );
 }
 
-/// One session over stdio, as a client of the 2025-06-18 revision runs it.
-#[test]
-fn the_mcp_server_answers_a_session_from_handshake_to_search() {
+/// Runs `ripsem mcp` in `dir` over stdio with each line as one message, and
+/// returns the responses the server wrote, one per line.
+fn mcp_over_stdio(dir: &Path, messages: &[&str]) -> Vec<serde_json::Value> {
     use std::io::Write;
     use std::process::Stdio;
 
+    let mut server = Command::new(env!("CARGO_BIN_EXE_ripsem"))
+        .arg("mcp")
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = server.stdin.take().unwrap();
+    for line in messages {
+        writeln!(stdin, "{line}").unwrap();
+    }
+    drop(stdin);
+    let output = server.wait_with_output().unwrap();
+    assert!(output.status.success());
+    stdout(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+/// A repository with one indexed file, for the MCP tests that search it.
+fn indexed_repository() -> TempDir {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn authenticate(user) { verify password }");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+    dir
+}
+
+/// A client of a revision that has structured output gets the hits as data as
+/// well as text, and the tool advertises the shape it returns.
+#[test]
+fn a_client_of_a_revision_with_structured_output_gets_the_hits_as_data() {
+    let dir = indexed_repository();
+    let responses = mcp_over_stdio(
+        &dir.path,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search","arguments":{"query":"verify password"}}}"#,
+        ],
+    );
+    let search = &responses[1]["result"]["tools"][0];
+    assert_eq!(search["name"], "search");
+    assert_eq!(
+        search["outputSchema"]["required"],
+        json!(["hits", "next_offset"])
+    );
+
+    let result = &responses[2]["result"];
+    assert_eq!(result["isError"], false);
+    let hit = &result["structuredContent"]["hits"][0];
+    assert_eq!(hit["path"], "src/auth.rs");
+    assert_eq!(hit["start_line"], 1);
+    assert_eq!(hit["end_line"], 1);
+    assert!(result["structuredContent"]["next_offset"].is_null());
+    assert!(
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("src/auth.rs:1-1")
+    );
+}
+
+/// A client of an older revision is not sent a shape it does not know, so the
+/// schema and the structured result are left out for it.
+#[test]
+fn a_client_of_an_older_revision_gets_no_structured_output() {
+    let dir = indexed_repository();
+    let responses = mcp_over_stdio(
+        &dir.path,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search","arguments":{"query":"verify password"}}}"#,
+        ],
+    );
+    assert!(
+        responses[1]["result"]["tools"][0]
+            .get("outputSchema")
+            .is_none()
+    );
+    assert!(responses[2]["result"].get("structuredContent").is_none());
+    assert_eq!(responses[2]["result"]["isError"], false);
+}
+
+/// One session over stdio, as a client of the 2025-06-18 revision runs it.
+#[test]
+fn the_mcp_server_answers_a_session_from_handshake_to_search() {
     let dir = TempDir::new();
     dir.write("src/auth.rs", "fn authenticate(user) { verify password }");
     ripsem(&dir.path, &["init"]);
     ripsem(&dir.path, &["model", "backend", "hash"]);
     assert!(ripsem(&dir.path, &["index"]).status.success());
 
-    let session = [
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
-        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
-        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search","arguments":{"query":"verify password"}}}"#,
-    ];
-    let mut server = Command::new(env!("CARGO_BIN_EXE_ripsem"))
-        .arg("mcp")
-        .current_dir(&dir.path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdin = server.stdin.take().unwrap();
-    for line in session {
-        writeln!(stdin, "{line}").unwrap();
-    }
-    drop(stdin);
-    let output = server.wait_with_output().unwrap();
-    assert!(output.status.success());
-
-    let responses: Vec<serde_json::Value> = stdout(&output)
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
+    let responses = mcp_over_stdio(
+        &dir.path,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search","arguments":{"query":"verify password"}}}"#,
+        ],
+    );
     assert_eq!(responses.len(), 3, "the notification gets no answer");
     assert_eq!(responses[0]["id"], 1);
     assert_eq!(responses[0]["result"]["protocolVersion"], "2025-06-18");

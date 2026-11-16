@@ -10,8 +10,9 @@ use crate::scope::Scope;
 
 /// Protocol revisions this server speaks, newest first. Between them they
 /// change transports, authorization and client features, and add optional
-/// tool fields (structured output, titles, annotations, icons). Structured
-/// output and icons stay out, as a text-returning tool has no need for them.
+/// tool fields (structured output, titles, annotations, icons). Icons stay out.
+/// Structured output goes to the revisions that define it, see
+/// [`STRUCTURED_OUTPUT`].
 /// A title and annotations are sent, because a client that is told nothing
 /// about a tool asks the user before every call. They sit in fields a client
 /// of the 2024-11-05 revision does not know and ignores, and nothing in the
@@ -23,6 +24,10 @@ use crate::scope::Scope;
 /// revision probes with `server/discover` first, and the method-not-found
 /// answer tells it to fall back to `initialize`.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// The first revision with `outputSchema` and `structuredContent`. Older
+/// revisions never see either.
+const STRUCTURED_OUTPUT: &str = "2025-06-18";
 
 /// What an agent is told about the `search` tool, so it reaches for it before
 /// guessing names with grep. Sent as the server instructions, which reach the
@@ -71,6 +76,7 @@ fn serve_on(
     };
     let mut session = None;
     let mut tried = None;
+    let mut revision = PROTOCOL_VERSIONS[0];
 
     let mut line = Vec::new();
     while let Some(cut) = read_request(&mut reader, &mut line, MAX_REQUEST_BYTES)? {
@@ -88,7 +94,7 @@ fn serve_on(
             continue;
         }
         let mut ask = None;
-        let response = match serde_json::from_str::<Value>(trimmed) {
+        let mut response = match serde_json::from_str::<Value>(trimmed) {
             Ok(request) => {
                 let messages = match &request {
                     Value::Array(batch) => batch.iter().collect(),
@@ -116,6 +122,16 @@ fn serve_on(
             }
             Err(_) => Some(error(Value::Null, -32700, "parse error")),
         };
+        if let Some(agreed) = response
+            .as_ref()
+            .and_then(|r| r.pointer("/result/protocolVersion"))
+            .and_then(Value::as_str)
+        {
+            revision = negotiate(Some(agreed));
+        }
+        if let Some(message) = response.as_mut() {
+            fit_revision(revision, message);
+        }
         for message in response.into_iter().chain(ask) {
             writeln!(writer, "{}", serde_json::to_string(&message)?)?;
             writer.flush()?;
@@ -316,6 +332,33 @@ fn reply(config: &Config, session: Option<&pipeline::Searcher>, message: &Value)
     }
 }
 
+/// Takes out what the negotiated revision predates: `outputSchema` on a tool
+/// and `structuredContent` on a result, both added in 2025-06-18.
+fn fit_revision(revision: &str, message: &mut Value) {
+    if revision >= STRUCTURED_OUTPUT {
+        return;
+    }
+    if let Value::Array(batch) = message {
+        for item in batch {
+            fit_revision(revision, item);
+        }
+        return;
+    }
+    if let Some(tools) = message
+        .pointer_mut("/result/tools")
+        .and_then(Value::as_array_mut)
+    {
+        for tool in tools {
+            if let Some(tool) = tool.as_object_mut() {
+                tool.remove("outputSchema");
+            }
+        }
+    }
+    if let Some(result) = message.get_mut("result").and_then(Value::as_object_mut) {
+        result.remove("structuredContent");
+    }
+}
+
 /// The client's revision when this server speaks it. Otherwise the newest one,
 /// which the client either accepts or disconnects on.
 fn negotiate(requested: Option<&str>) -> &'static str {
@@ -388,6 +431,28 @@ fn tool_schema() -> Value {
         "name": "search",
         "title": "Search the code",
         "annotations": read_only("Search the code"),
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "hits": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string" },
+                            "start_line": { "type": "integer", "minimum": 1 },
+                            "end_line": { "type": "integer", "minimum": 1 },
+                            "score": { "type": "number" },
+                            "symbol": { "type": ["string", "null"] },
+                            "snippet": { "type": "string" }
+                        },
+                        "required": ["path", "start_line", "end_line", "score", "symbol", "snippet"]
+                    }
+                },
+                "next_offset": { "type": ["integer", "null"], "minimum": 0 }
+            },
+            "required": ["hits", "next_offset"]
+        },
         "description": "Find code in this repository. Handles both exact terms (identifiers, error strings, constants) and plain-language descriptions of behaviour in the same call, and returns ranked snippets with file paths and line ranges. Prefer this over grepping and reading whole files: it costs one call instead of guessing at the author's wording.",
         "inputSchema": {
             "type": "object",
@@ -474,8 +539,12 @@ fn handle_call(
                 _ if hits.is_empty() && offset > 0 => nothing_further(offset),
                 _ => tool_result(&hits),
             };
-            if more {
-                say_more(&mut result, offset + hits.len());
+            let next_offset = more.then_some(offset + hits.len());
+            if let Some(next) = next_offset {
+                say_more(&mut result, next);
+            }
+            if let Some(object) = result.as_object_mut() {
+                object.insert("structuredContent".into(), structured(&hits, next_offset));
             }
             ok(id, result)
         }
@@ -743,6 +812,25 @@ fn below_threshold(min: f32, found: usize) -> Value {
     })
 }
 
+/// The hits as data, for a revision with structured output: the fields the text
+/// shows, and where the next page starts, `null` when there is none.
+fn structured(hits: &[pipeline::SearchHit], next_offset: Option<usize>) -> Value {
+    let hits: Vec<Value> = hits
+        .iter()
+        .map(|h| {
+            json!({
+                "path": h.path,
+                "start_line": h.start_line,
+                "end_line": h.end_line,
+                "score": h.score,
+                "symbol": h.symbol.as_ref().map(|s| s.label()),
+                "snippet": h.snippet,
+            })
+        })
+        .collect();
+    json!({ "hits": hits, "next_offset": next_offset })
+}
+
 fn tool_result(hits: &[pipeline::SearchHit]) -> Value {
     if hits.is_empty() {
         return json!({
@@ -928,11 +1016,12 @@ mod tests {
                 .map(String::as_str)
                 .collect();
             fields.sort_unstable();
-            assert_eq!(
-                fields,
-                ["annotations", "description", "inputSchema", "name", "title"],
-                "{name}"
-            );
+            let mut expected = vec!["annotations", "description", "inputSchema", "name", "title"];
+            if name == "search" {
+                expected.push("outputSchema");
+            }
+            expected.sort_unstable();
+            assert_eq!(fields, expected, "{name}");
         }
     }
 

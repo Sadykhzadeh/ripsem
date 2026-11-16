@@ -308,7 +308,11 @@ string or a list, as `--lang` and `--glob`), a `regex` (only hits whose code
 matches it, as `--regex`; an invalid pattern is a tool error), a `limit` (default 5, at most
 50), an `offset` (default 0) to skip results and read the next page, and a
 `min_score`. When more results follow, the text ends with the line `More
-results below this; pass offset=5 to see them.` An `offset` past the last
+results below this; pass offset=5 to see them.` A client on MCP revision
+2025-06-18 or later also gets the hits as `structuredContent` (`hits` with
+`path`, `start_line`, `end_line`, `score`, `symbol`, `snippet`, and
+`next_offset`, `null` on the last page), described by the tool's
+`outputSchema`. An `offset` past the last
 result is an answer, not an error: `No further results`. An argument outside the schema comes back as a tool
 error that names what is expected, so the agent can correct the call. The
 `index_status` tool, which takes no arguments, returns what `ripsem status
