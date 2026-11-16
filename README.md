@@ -81,6 +81,13 @@ repository. Every search after that first embeds whatever changed since, so
 results never point at code that has moved. On Windows the first index runs on
 the GPU through DirectML when there is one.
 
+To try it without the download, switch to the hashing backend before the first
+index. It matches the words of a query rather than its meaning:
+
+```bash
+ripsem model backend hash && ripsem index --force
+```
+
 ### Why not grep?
 
 grep answers "where does this string occur". That is the right question when you
