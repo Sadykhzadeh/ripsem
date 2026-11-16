@@ -36,9 +36,10 @@
   upgrading reads every file once, and reuses the stored vectors for chunks
   whose text did not change, so only the chunks that changed are embedded
   again.
-- The MCP `search` tool returns its hits as `structuredContent` and advertises
-  an `outputSchema` to clients of MCP revision 2025-06-18 and later. Older
-  revisions get the same text as before and no new fields.
+- The MCP `search`, `find_similar` and `index_status` tools return their results
+  as `structuredContent` and advertise an `outputSchema` to clients of MCP
+  revision 2025-06-18 and later. Older revisions get the same text as before
+  and no new fields.
 - A piece of a line too long for one chunk is read only from a file inside the
   repository, and only when the file still matches its hash, as the other
   snippets are. An index that named a path outside the root could make a search
