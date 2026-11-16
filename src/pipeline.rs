@@ -902,8 +902,10 @@ pub struct Searcher {
     // The model the index was opened with. A reload under a different model
     // or backend is refused even when the dimensions match.
     model: String,
+    // Decoded on the first query that needs the graph, so a query the words
+    // answer alone does not pay for it.
     #[cfg(feature = "hnsw")]
-    ann_map: Option<instant_distance::HnswMap<crate::ann::Embedding, u32>>,
+    ann_map: OnceLock<Option<instant_distance::HnswMap<crate::ann::Embedding, u32>>>,
 }
 
 pub fn open(config: &Config) -> Result<Searcher> {
@@ -942,8 +944,6 @@ fn searcher_over(
         );
     }
     let model = index.model.clone();
-    #[cfg(feature = "hnsw")]
-    let ann_map = index.ann.as_deref().and_then(crate::ann::load);
     Ok(Searcher {
         index,
         root: config.root.clone(),
@@ -952,7 +952,7 @@ fn searcher_over(
         index_mtime,
         model,
         #[cfg(feature = "hnsw")]
-        ann_map,
+        ann_map: OnceLock::new(),
     })
 }
 
@@ -981,7 +981,7 @@ impl Searcher {
         }
         #[cfg(feature = "hnsw")]
         {
-            self.ann_map = index.ann.as_deref().and_then(crate::ann::load);
+            self.ann_map = OnceLock::new();
         }
         self.index = index;
         Ok(true)
@@ -1164,15 +1164,24 @@ impl Searcher {
         scope: Option<&Scope>,
     ) -> Vec<crate::index::Hit> {
         #[cfg(feature = "hnsw")]
-        if scope.is_none()
-            && let Some(map) = &self.ann_map
-        {
+        if scope.is_none() && self.index.ann.is_some() {
             let depth = crate::index::candidate_depth(k);
-            let dense: Vec<crate::index::Hit> = crate::ann::search_map(map, qv, depth)
-                .into_iter()
-                .map(|(record_idx, score)| crate::index::Hit { score, record_idx })
-                .collect();
-            return self.index.search_fused_with(&dense, qv, terms, names, k);
+            return self.index.search_fused_with(
+                || match self
+                    .ann_map
+                    .get_or_init(|| self.index.ann.as_deref().and_then(crate::ann::load))
+                {
+                    Some(map) => crate::ann::search_map(map, qv, depth)
+                        .into_iter()
+                        .map(|(record_idx, score)| crate::index::Hit { score, record_idx })
+                        .collect(),
+                    None => self.index.dense_ranking(qv, depth, None),
+                },
+                qv,
+                terms,
+                names,
+                k,
+            );
         }
         self.index.search_fused(qv, terms, names, k, scope)
     }
@@ -1787,7 +1796,7 @@ mod tests {
             index_mtime: None,
             model: config.model.clone(),
             #[cfg(feature = "hnsw")]
-            ann_map: None,
+            ann_map: OnceLock::new(),
         };
         let inside = record("inside.txt", b"one\ntwo\n");
         assert_eq!(searcher.lines(&inside, 2, 2, 100).as_deref(), Some("two"));
@@ -1838,7 +1847,7 @@ mod tests {
             index_mtime: None,
             model: config.model.clone(),
             #[cfg(feature = "hnsw")]
-            ann_map: None,
+            ann_map: OnceLock::new(),
         };
         let hit = SearchHit {
             path: "../secret.txt".into(),
@@ -1894,7 +1903,7 @@ mod tests {
             index_mtime: None,
             model: config.model.clone(),
             #[cfg(feature = "hnsw")]
-            ann_map: None,
+            ann_map: OnceLock::new(),
         };
         let hit = SearchHit {
             path: record.path.to_string(),

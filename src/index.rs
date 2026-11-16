@@ -337,9 +337,11 @@ impl Index {
     /// Fuses a dense ranking from the nearest-neighbour graph with a full
     /// lexical scan, so the graph changes how candidates are found, not how
     /// results rank.
+    /// `dense` is asked for only when the vector arm is needed, so a caller
+    /// whose nearest-neighbour graph is costly to load pays for it only then.
     pub fn search_fused_with(
         &self,
-        dense: &[Hit],
+        dense: impl FnOnce() -> Vec<Hit>,
         query: &[f32],
         terms: &[TermHash],
         names: &[TermHash],
@@ -348,10 +350,10 @@ impl Index {
         let depth = candidate_depth(k);
         let lexical = self.lexical_ranking(terms, depth, None);
         let dense = match self.needs_vectors(&lexical, depth) {
-            true => dense,
-            false => &[],
+            true => dense(),
+            false => Vec::new(),
         };
-        self.fuse(dense, &lexical, query, names, k)
+        self.fuse(&dense, &lexical, query, names, k)
     }
 
     pub fn dense_ranking(&self, query: &[f32], depth: usize, scope: Option<&Scope>) -> Vec<Hit> {
