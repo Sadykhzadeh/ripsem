@@ -362,7 +362,9 @@ exclude = []
 
 `chunk_lines` and `chunk_overlap` size the line windows used for plain-text
 files and languages without a parser. `max_chunk_lines` caps a single semantic
-chunk; larger functions are split. After changing any of the three, the next
+chunk; larger functions are split. A `chunk_overlap` set in the file must be
+below both windows, or the config is refused; one left at its default is cut
+to half of a smaller window, so `max_chunk_lines = 5` on its own works. After changing any of the three, the next
 `ripsem index` cuts every file again and embeds only the chunks whose text
 changed (on axum, `chunk_lines` from 40 to 30 embedded 50 of 4,213 chunks).
 Files larger than `max_file_kb` are skipped. `exclude` takes gitignore-style

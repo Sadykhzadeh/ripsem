@@ -159,9 +159,12 @@ impl Config {
                 .with_context(|| format!("reading {}", show_path(&path)))?;
             let mut parsed: Config =
                 toml::from_str(&text).with_context(|| format!("parsing {}", show_path(&path)))?;
+            let overlap_given = toml::from_str::<toml::Table>(&text)
+                .is_ok_and(|table| table.contains_key("chunk_overlap"));
             parsed.root = root.to_path_buf();
             parsed
                 .check_sizes()
+                .and_then(|()| parsed.check_overlap(overlap_given))
                 .with_context(|| format!("in {}", show_path(&path)))?;
             cfg = parsed;
         }
@@ -188,10 +191,21 @@ impl Config {
         ] {
             anyhow::ensure!(value > 0, "{key} must be 1 or more");
         }
-        anyhow::ensure!(
-            self.chunk_overlap < self.chunk_lines.min(self.max_chunk_lines),
-            "chunk_overlap must be less than chunk_lines and max_chunk_lines"
-        );
+        Ok(())
+    }
+
+    /// An overlap the file names must be below the window. One left at its
+    /// default is scaled down to half a small window instead, so a window the
+    /// user chose still works.
+    fn check_overlap(&mut self, given: bool) -> Result<()> {
+        let window = self.chunk_lines.min(self.max_chunk_lines);
+        match given {
+            true => anyhow::ensure!(
+                self.chunk_overlap < window,
+                "chunk_overlap must be less than chunk_lines and max_chunk_lines"
+            ),
+            false => self.chunk_overlap = self.chunk_overlap.min(window / 2),
+        }
         Ok(())
     }
 
@@ -302,16 +316,16 @@ mod tests {
         assert_eq!(cfg.model, DEFAULT_MODEL);
     }
 
-    /// The overlap is how far each window steps back over the last. At or above
-    /// the window the walk advances a line at a time and joins a window for each,
-    /// so a config file a repository ships could make indexing quadratic.
+    /// An overlap the user wrote is refused when it is not below the window. At
+    /// or above it the walk advances a line at a time and joins a window for
+    /// each, so a config file a repository ships could make indexing quadratic.
     #[test]
-    fn an_overlap_that_is_not_below_the_window_is_refused() {
+    fn an_explicit_overlap_that_is_not_below_the_window_is_refused() {
         let dir = TempDir::new();
         for text in [
             "chunk_lines = 10\nchunk_overlap = 10\n",
             "chunk_lines = 100\nchunk_overlap = 99\nmax_chunk_lines = 10\n",
-            "max_chunk_lines = 5\n",
+            "max_chunk_lines = 5\nchunk_overlap = 8\n",
         ] {
             dir.write(".ripsem/config.toml", text);
             assert!(Config::load(dir.path()).is_err(), "{text}");
@@ -320,7 +334,32 @@ mod tests {
             ".ripsem/config.toml",
             "chunk_lines = 10\nchunk_overlap = 9\n",
         );
-        assert!(Config::load(dir.path()).is_ok());
+        assert_eq!(Config::load(dir.path()).unwrap().chunk_overlap, 9);
+    }
+
+    /// The default overlap is scaled down to fit a small window the user chose,
+    /// so such a window still indexes, and linearly: each step moves by at least
+    /// half a window.
+    #[test]
+    fn a_default_overlap_is_scaled_down_to_a_small_window() {
+        let dir = TempDir::new();
+        dir.write(
+            ".ripsem/config.toml",
+            "chunk_lines = 5\nmax_chunk_lines = 5\n",
+        );
+        let config = Config::load(dir.path()).unwrap();
+        assert_eq!(config.chunk_overlap, 2);
+        let text: String = (0..1000).map(|i| format!("line {i}\n")).collect();
+        let chunks = crate::chunk::chunk_source(Path::new("notes.txt"), &text, &config);
+        assert!(chunks.len() <= 1000 / 3 + 1, "{}", chunks.len());
+    }
+
+    #[test]
+    fn the_default_overlap_is_kept_for_the_default_window() {
+        let dir = TempDir::new();
+        assert_eq!(Config::load(dir.path()).unwrap().chunk_overlap, 8);
+        dir.write(".ripsem/config.toml", "chunk_lines = 40\n");
+        assert_eq!(Config::load(dir.path()).unwrap().chunk_overlap, 8);
     }
 
     #[test]

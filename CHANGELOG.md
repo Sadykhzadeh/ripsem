@@ -6,10 +6,12 @@
   repository, and only when the file still matches its hash, as the other
   snippets are. An index that named a path outside the root could make a search
   show a stretch of that file.
-- A `chunk_overlap` at or above `chunk_lines` or `max_chunk_lines` is refused
-  when the config is read. The walk stepped back one line at a time and joined
-  a window for every line, so a config file in a repository could make
-  indexing that file quadratic.
+- A `chunk_overlap` written in the config that is not below `chunk_lines` and
+  `max_chunk_lines` is refused when the config is read. The walk stepped back
+  one line at a time and joined a window for every line, so a config file in a
+  repository could make indexing that file quadratic. An overlap left at its
+  default is instead scaled down to half of a small window, so a window such as
+  `max_chunk_lines = 5` still works.
 - The MCP server refuses a message whose `jsonrpc` member is missing, not only
   one that names another version. JSON-RPC 2.0 requires it, and the server
   answered such a request as if it were valid.
