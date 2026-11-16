@@ -397,10 +397,21 @@ to half of a smaller window, so `max_chunk_lines = 5` on its own works. After ch
 `ripsem index` cuts every file again and embeds only the chunks whose text
 changed (on axum, `chunk_lines` from 40 to 30 embedded 50 of 4,213 chunks).
 Files larger than `max_file_kb` are skipped. `exclude` takes gitignore-style
-globs, on top of `.gitignore` and an optional `.ripsemignore`.
+globs, on top of `.gitignore` and an optional `.ripsemignore`. Globs are
+relative to the project root: `vendor` excludes the top-level directory, and
+`/vendor` and `./vendor` mean the same, and `src/sub/` with a trailing slash
+excludes that directory too. On Windows a backslash is a separator too, so
+`vendor\third_party` is `vendor/third_party`. A glob cannot start with `!`;
+put negations in `.ripsemignore`.
 `backend = "hash"` matches words instead of meaning; builds without the
-`fastembed` feature start with it. A key ripsem does not know is reported as an
-error.
+`fastembed` feature start with it.
+
+The file may start with a UTF-8 byte order mark and may use CRLF line endings.
+An unknown key, a value of the wrong type, a size of 0 and a `model` that is
+not in `ripsem model list` are all errors, and the message names the file and
+the key. No environment variable sets a key in the file; `--path` picks the
+project. The variables that change a run are `RIPSEM_HASH_ALL`,
+`RIPSEM_NO_GPU` and `RIPSEM_MODEL_DIR`, each described where it applies.
 
 `skip_generated` leaves out files that are committed but written by a machine:
 lock files, `go.sum`, `*.min.js`, `*.min.css` and source maps. `.gitignore`
