@@ -6,7 +6,7 @@ use ignore::overrides::{Override, OverrideBuilder};
 use regex::{Regex, RegexBuilder};
 
 use crate::index::path_in_scope;
-use crate::walk::slashed;
+use crate::walk::glob_text;
 
 /// What a search is limited to: a path prefix, the languages of the files and
 /// globs on the path, all of which a hit's file must satisfy. Built once per
@@ -50,7 +50,7 @@ impl Globs {
                 bail!("'{glob}' is not a glob");
             }
             set.0
-                .add(&slashed(pattern))
+                .add(&glob_text(pattern, cfg!(windows)))
                 .map_err(|e| anyhow!("invalid glob '{glob}': {e}"))?;
             set.1 = true;
         }

@@ -116,7 +116,7 @@ fn builder(config: &Config) -> Result<WalkBuilder> {
                 "exclude pattern '{pattern}' cannot start with '!'; put a negation in .ripsemignore"
             );
             overrides
-                .add(&format!("!{}", slashed(pattern)))
+                .add(&format!("!{}", glob_text(pattern, cfg!(windows))))
                 .with_context(|| format!("invalid exclude pattern '{pattern}'"))?;
         }
         builder.overrides(overrides.build().context("building exclude overrides")?);
@@ -127,11 +127,14 @@ fn builder(config: &Config) -> Result<WalkBuilder> {
 
 /// Globs treat a backslash as an escape, but on Windows it is the separator
 /// and cannot be part of a name, so `vendor\third_party` means `vendor/third_party`.
-pub(crate) fn slashed(pattern: &str) -> Cow<'_, str> {
-    match cfg!(windows) && pattern.contains('\\') {
-        true => Cow::Owned(pattern.replace('\\', "/")),
-        false => Cow::Borrowed(pattern),
-    }
+/// A leading `./` names the root, where a glob is anchored already, so it is
+/// dropped; left in, it would match nothing.
+pub(crate) fn glob_text(pattern: &str, windows: bool) -> String {
+    let text = match windows && pattern.contains('\\') {
+        true => pattern.replace('\\', "/"),
+        false => pattern.to_string(),
+    };
+    text.strip_prefix("./").unwrap_or(&text).to_string()
 }
 
 /// Whether a change at any of these paths can alter what [`collect`] returns:
@@ -420,6 +423,29 @@ mod tests {
         let mut found = names(&collect(&config).unwrap());
         found.sort();
         assert_eq!(found, ["keep.rs", "own.rs"]);
+    }
+
+    #[test]
+    fn a_leading_dot_slash_in_an_exclude_names_the_same_path() {
+        let dir = TempDir::new();
+        dir.write("keep.rs", "fn main() {}\n");
+        dir.write("vendor/skip.rs", "fn main() {}\n");
+        let mut config = config_at(dir.path());
+        config.exclude = vec!["./vendor".into()];
+
+        assert_eq!(names(&collect(&config).unwrap()), ["keep.rs"]);
+    }
+
+    #[test]
+    fn a_glob_reads_its_separators_as_the_platform_does() {
+        assert_eq!(glob_text("vendor\\third_party", true), "vendor/third_party");
+        assert_eq!(glob_text("vendor\\", true), "vendor/");
+        assert_eq!(glob_text(".\\vendor\\x", true), "vendor/x");
+        assert_eq!(glob_text("vendor\\x", false), "vendor\\x");
+        assert_eq!(glob_text("./vendor/x", false), "vendor/x");
+        assert_eq!(glob_text("./vendor/x", true), "vendor/x");
+        assert_eq!(glob_text("src/**/*.rs", true), "src/**/*.rs");
+        assert_eq!(glob_text("my dir/a b.rs", true), "my dir/a b.rs");
     }
 
     #[test]
