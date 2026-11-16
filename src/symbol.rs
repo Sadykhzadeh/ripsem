@@ -185,7 +185,9 @@ fn bound_function_name(node: &tree_sitter::Node, text: &str) -> Option<String> {
 
 #[cfg(feature = "treesitter")]
 fn declared_name(node: &tree_sitter::Node, text: &str) -> Option<String> {
-    ["name", "type", "declarator"]
+    // A C or C++ function's `type` is its return type, so its declarator comes
+    // first, and a typedef's `type` is what it aliases.
+    ["name", "declarator", "type"]
         .into_iter()
         .filter_map(|field| node.child_by_field_name(field))
         .find_map(|child| identifier_text(&child, text))

@@ -17,7 +17,7 @@ pub struct Chunk {
 
 /// Changes whenever the same file and settings would give other chunks, so an
 /// index cut by an older ripsem is cut again. A test pins it to the output.
-const REVISION: u32 = 13;
+const REVISION: u32 = 14;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -257,7 +257,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (13, expected),
+            (14, expected),
             "{seen}"
         );
     }
@@ -552,5 +552,14 @@ mod cutting {
             .filter(|t| t.ends_with("byte.") || t.ends_with("starts."))
             .collect();
         assert_eq!(prose, ["Doubles a byte."]);
+    }
+
+    #[test]
+    fn a_c_function_is_named_by_its_declarator_not_its_return_type() {
+        let make = "Point make(int x) {\n  return Point{x};\n}\n";
+        assert!(has(&cut_code("a.cpp", make), 1, 3, "fn make"));
+        let twice = "template <typename T>\nT twice(T x) {\n  return x + x;\n}\n";
+        let cut = cut_code("a.cpp", twice);
+        assert!(has(&cut, 1, 4, "fn twice"), "{cut:?}");
     }
 }
