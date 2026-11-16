@@ -271,6 +271,16 @@ more results below this; pass --offset 2 to see them
   break, so `ripsem search --files-with-matches -0 'retry' | xargs -0 wc -l`
   reads paths with spaces or newlines whole. It needs `-l` and cannot be
   combined with `--json`.
+- `--vimgrep` prints one `path:line:column:text` line per hit, the format
+  quickfix lists and grep tools read. Column is 1 and text is the hit's first
+  non-blank line. It cannot be combined with `--json`, `-l`, `-q` or
+  `--count-by-file`. In Vim or Neovim:
+
+  ```vim
+  " load the hits into the quickfix list
+  :cexpr system('ripsem search --vimgrep -k 50 retry on failure')
+  :copen
+  ```
 - `--since <REV>` keeps only hits in files that differ from a git revision,
   as the working tree has them: committed, staged and unstaged changes, and
   untracked files. `ripsem search --since main 'retry on failure'` reviews a
