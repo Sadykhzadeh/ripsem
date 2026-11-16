@@ -341,10 +341,15 @@ results below this; pass offset=5 to see them.` A client on MCP revision
 `outputSchema`. An `offset` past the last
 result is an answer, not an error: `No further results`. An argument outside the schema comes back as a tool
 error that names what is expected, so the agent can correct the call. The
-`index_status` tool, which takes no arguments, returns what `ripsem status
+`find_similar` tool is `ripsem similar` for the agent: a `path`, and optionally
+`line` and `end_line` (the whole file when `line` is absent), returns the code
+nearest to that place, with `limit`, `offset`, `min_score`, `lang`, `glob` and
+`regex` as `search` takes them. Its errors are the CLI's messages, such as a
+file that is not in the index or a line past its end. The `index_status` tool,
+which takes no arguments, returns what `ripsem status
 --json` prints plus `updating`, whether the server is indexing right now, so an
 agent that finds nothing it expects can see whether the index exists and how
-many files have changed since it was built. Both tools carry the standard
+many files have changed since it was built. All the tools carry the standard
 MCP annotations (`readOnlyHint` and `idempotentHint` true, `destructiveHint`
 and `openWorldHint` false) and a title, so a client can run them without asking each
 time. `search` refreshes ripsem's own index under `.ripsem/` before it

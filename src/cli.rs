@@ -781,13 +781,18 @@ fn parse_target(raw: &str) -> Result<(&str, Option<(usize, usize)>)> {
         s.parse::<usize>()
             .map_err(|_| anyhow::anyhow!("'{s}' is not a line number"))
     };
-    let (first, last) = (number(first)?, number(last)?);
+    let (first, last) = line_range(raw, number(first)?, number(last)?)?;
+    Ok((path, Some((first, last))))
+}
+
+/// A 1-based line range as `similar` takes it, from `raw` as the user wrote it.
+pub(crate) fn line_range(raw: &str, first: usize, last: usize) -> Result<(usize, usize)> {
     anyhow::ensure!(first >= 1, "line numbers start at 1, not 0");
     anyhow::ensure!(
         last >= first,
         "line {last} comes before line {first} in '{raw}'"
     );
-    Ok((path, Some((first, last))))
+    Ok((first, last))
 }
 
 /// The filters the options ask for, as one scope. `None` when nothing limits

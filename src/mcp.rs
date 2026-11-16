@@ -404,7 +404,7 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
         )),
         "tools/list" => Some(ok(
             id?,
-            json!({ "tools": [tool_schema(), status_schema()] }),
+            json!({ "tools": [tool_schema(), similar_schema(), status_schema()] }),
         )),
         "tools/call" => Some(handle_call(config, session, id?, request)),
         "ping" => Some(ok(id?, json!({}))),
@@ -431,28 +431,7 @@ fn tool_schema() -> Value {
         "name": "search",
         "title": "Search the code",
         "annotations": read_only("Search the code"),
-        "outputSchema": {
-            "type": "object",
-            "properties": {
-                "hits": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string" },
-                            "start_line": { "type": "integer", "minimum": 1 },
-                            "end_line": { "type": "integer", "minimum": 1 },
-                            "score": { "type": "number" },
-                            "symbol": { "type": ["string", "null"] },
-                            "snippet": { "type": "string" }
-                        },
-                        "required": ["path", "start_line", "end_line", "score", "symbol", "snippet"]
-                    }
-                },
-                "next_offset": { "type": ["integer", "null"], "minimum": 0 }
-            },
-            "required": ["hits", "next_offset"]
-        },
+        "outputSchema": hits_schema(),
         "description": "Find code in this repository. Handles both exact terms (identifiers, error strings, constants) and plain-language descriptions of behaviour in the same call, and returns ranked snippets with file paths and line ranges. Prefer this over grepping and reading whole files: it costs one call instead of guessing at the author's wording.",
         "inputSchema": {
             "type": "object",
@@ -467,6 +446,69 @@ fn tool_schema() -> Value {
                 "min_score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Drop hits scoring below this (0–1). 0 is no closer than unrelated text in this repository, 1 is every query term found literally; scores fall with rank, so this keeps the top results. Default: no filter." }
             },
             "required": ["query"],
+            "additionalProperties": false
+        }
+    })
+}
+
+/// The shape of the hits a search or a similarity query returns as structured
+/// content.
+fn hits_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "hits": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "start_line": { "type": "integer", "minimum": 1 },
+                        "end_line": { "type": "integer", "minimum": 1 },
+                        "score": { "type": "number" },
+                        "symbol": { "type": ["string", "null"] },
+                        "snippet": { "type": "string" }
+                    },
+                    "required": ["path", "start_line", "end_line", "score", "symbol", "snippet"]
+                }
+            },
+            "next_offset": { "type": ["integer", "null"], "minimum": 0 }
+        },
+        "required": ["hits", "next_offset"]
+    })
+}
+
+fn similar_schema() -> Value {
+    let search = tool_schema();
+    let mut properties = json!({
+        "path": {
+            "type": "string",
+            "description": "The file to look from, relative to the repository, e.g. 'src/auth.rs'."
+        },
+        "line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "First line of the place to look from, 1-based. Absent, the whole file."
+        },
+        "end_line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Last line of that place, inclusive. Default: the same as `line`."
+        }
+    });
+    for key in ["lang", "glob", "regex", "limit", "offset", "min_score"] {
+        properties[key] = search["inputSchema"]["properties"][key].clone();
+    }
+    json!({
+        "name": "find_similar",
+        "title": "Find similar code",
+        "annotations": read_only("Find similar code"),
+        "outputSchema": hits_schema(),
+        "description": "Find the code in this repository that does what a given place does: give a file, and optionally a line range, and get the nearest places back as ranked snippets. Reach for it after finding one relevant place, to find the other places that do the same thing, such as a second handler or a copied check.",
+        "inputSchema": {
+            "type": "object",
+            "properties": properties,
+            "required": ["path"],
             "additionalProperties": false
         }
     })
@@ -498,10 +540,14 @@ fn handle_call(
         .and_then(|n| n.as_str())
     {
         Some("search") => {}
+        Some("find_similar") => {
+            return find_similar(config, session, id, &call_arguments(request));
+        }
         Some("index_status") => return index_status(config, id, &call_arguments(request)),
         Some(other) => {
-            let message =
-                format!("unknown tool '{other}'; the tools are 'search' and 'index_status'");
+            let message = format!(
+                "unknown tool '{other}'; the tools are 'search', 'find_similar' and 'index_status'"
+            );
             return error(id, -32602, &message);
         }
         None => return error(id, -32602, "missing tool name"),
@@ -530,26 +576,148 @@ fn handle_call(
     };
 
     match result {
-        Ok(page) => {
-            let more = page.more(min_score);
-            let found = page.hits.len();
-            let hits = apply_min_score(page.hits, min_score);
-            let mut result = match min_score {
-                Some(min) if hits.is_empty() && found > 0 => below_threshold(min, found),
-                _ if hits.is_empty() && offset > 0 => nothing_further(offset),
-                _ => tool_result(&hits),
-            };
-            let next_offset = more.then_some(offset + hits.len());
-            if let Some(next) = next_offset {
-                say_more(&mut result, next);
-            }
-            if let Some(object) = result.as_object_mut() {
-                object.insert("structuredContent".into(), structured(&hits, next_offset));
-            }
-            ok(id, result)
-        }
+        Ok(page) => ok(id, search_result(page, min_score, offset)),
         Err(e) => failed(id, &e),
     }
+}
+
+/// What one page of places answers: its text, where the next page starts, and
+/// the same hits as data for a revision that has structured output.
+fn search_result(page: pipeline::Page, min_score: Option<f32>, offset: usize) -> Value {
+    let more = page.more(min_score);
+    let found = page.hits.len();
+    let hits = apply_min_score(page.hits, min_score);
+    let mut result = match min_score {
+        Some(min) if hits.is_empty() && found > 0 => below_threshold(min, found),
+        _ if hits.is_empty() && offset > 0 => nothing_further(offset),
+        _ => tool_result(&hits),
+    };
+    let next_offset = more.then_some(offset + hits.len());
+    if let Some(next) = next_offset {
+        say_more(&mut result, next);
+    }
+    if let Some(object) = result.as_object_mut() {
+        object.insert("structuredContent".into(), structured(&hits, next_offset));
+    }
+    result
+}
+
+/// `find_similar`: the places nearest to a place already in the index. The
+/// searcher answers it through the same function the CLI's `similar` uses.
+fn find_similar(
+    config: &Config,
+    session: Option<&pipeline::Searcher>,
+    id: Value,
+    args: &Value,
+) -> Value {
+    let similar = match parse_similar(args, &config.root) {
+        Ok(similar) => similar,
+        Err(e) => return tool_error(id, &e),
+    };
+    let Similar {
+        target,
+        filters:
+            Filters {
+                limit,
+                offset,
+                min_score,
+                text,
+                ..
+            },
+        scope,
+    } = similar;
+    let found = match session {
+        Some(s) => s.similar_page(&target, limit, offset, scope.as_ref(), text.as_ref()),
+        None if crate::watch::indexing() => Err(anyhow!(
+            "the index is being built in the background; search again shortly"
+        )),
+        None => pipeline::open(config)
+            .and_then(|s| s.similar_page(&target, limit, offset, scope.as_ref(), text.as_ref())),
+    };
+    match found {
+        Ok(page) => ok(id, search_result(page, min_score, offset)),
+        Err(e) => tool_error(id, &e),
+    }
+}
+
+/// A failure the model should read as its own words, as the CLI prints them.
+fn tool_error(id: Value, e: &anyhow::Error) -> Value {
+    ok(
+        id,
+        json!({
+            "content": [{ "type": "text", "text": format!("{e}") }],
+            "isError": true
+        }),
+    )
+}
+
+/// The arguments of `find_similar`: the place to look from, and the filters
+/// `search` takes. `scope` holds the language and glob filters.
+struct Similar {
+    target: pipeline::Target,
+    filters: Filters,
+    scope: Option<Scope>,
+}
+
+const SIMILAR_ARGUMENTS: [&str; 9] = [
+    "path",
+    "line",
+    "end_line",
+    "lang",
+    "glob",
+    "regex",
+    "limit",
+    "offset",
+    "min_score",
+];
+
+fn parse_similar(args: &Value, root: &Path) -> Result<Similar> {
+    let args = args
+        .as_object()
+        .ok_or_else(|| anyhow!("the arguments must be an object with a 'path'"))?;
+    if let Some(name) = args
+        .keys()
+        .find(|k| !SIMILAR_ARGUMENTS.contains(&k.as_str()))
+    {
+        bail!(
+            "unknown argument '{name}'; the arguments are path, line, end_line, lang, glob, regex, limit, offset and min_score"
+        );
+    }
+    let given = |name: &str| args.get(name).filter(|v| !v.is_null());
+
+    let raw = match given("path") {
+        None => bail!("missing 'path'"),
+        Some(Value::String(p)) => p.as_str(),
+        Some(other) => bail!("'path' must be a string, not {other}"),
+    };
+    let path = scope_prefix(raw, root)?.ok_or_else(|| anyhow!("'{raw}' names no file"))?;
+    let line = |name: &str| -> Result<Option<usize>> {
+        match given(name) {
+            None => Ok(None),
+            Some(v) => v
+                .as_u64()
+                .filter(|n| *n >= 1)
+                .and_then(|n| usize::try_from(n).ok())
+                .map(Some)
+                .ok_or_else(|| anyhow!("'{name}' must be a whole number from 1, not {v}")),
+        }
+    };
+    let lines = match (line("line")?, line("end_line")?) {
+        (None, None) => None,
+        (None, Some(_)) => bail!("'end_line' needs 'line'"),
+        (Some(first), last) => {
+            let last = last.unwrap_or(first);
+            let raw = format!("{raw}:{first}-{last}");
+            Some(crate::cli::line_range(&raw, first, last)?)
+        }
+    };
+    let filters = filters(&given)?;
+    let scope = Scope::new(None, &filters.langs, &filters.globs)?;
+    Ok(Similar {
+        target: pipeline::Target { path, lines },
+        filters,
+        scope,
+    })
 }
 
 /// An offset past the last hit the search ranks is an answer, not a mistake:
@@ -651,6 +819,41 @@ fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
         Some(Value::String(q)) => q.as_str(),
         Some(other) => bail!("'query' must be a string, not {other}"),
     };
+    let Filters {
+        limit,
+        offset,
+        min_score,
+        langs,
+        globs,
+        text,
+    } = filters(&given)?;
+    let prefix = match given("path") {
+        None => None,
+        Some(Value::String(raw)) => scope_prefix(raw, root)?,
+        Some(other) => bail!("'path' must be a string, not {other}"),
+    };
+    Ok(Call {
+        query,
+        limit,
+        offset,
+        min_score,
+        scope: Scope::new(prefix.as_deref(), &langs, &globs)?,
+        text,
+    })
+}
+
+/// The arguments every search-shaped tool takes besides its own: how many
+/// places, where to start, which score to keep, and the filters.
+struct Filters {
+    limit: usize,
+    offset: usize,
+    min_score: Option<f32>,
+    langs: Vec<String>,
+    globs: Vec<String>,
+    text: Option<regex::Regex>,
+}
+
+fn filters<'a>(given: &dyn Fn(&str) -> Option<&'a Value>) -> Result<Filters> {
     let limit = match given("limit") {
         None => DEFAULT_LIMIT,
         Some(v) => v
@@ -683,24 +886,17 @@ fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
                 as f32,
         ),
     };
-    let prefix = match given("path") {
-        None => None,
-        Some(Value::String(raw)) => scope_prefix(raw, root)?,
-        Some(other) => bail!("'path' must be a string, not {other}"),
-    };
-    let langs = strings("lang", given("lang"))?;
-    let globs = strings("glob", given("glob"))?;
     let text = match given("regex") {
         None => None,
         Some(Value::String(pattern)) => Some(crate::scope::text_pattern(pattern)?),
         Some(other) => bail!("'regex' must be a string, not {other}"),
     };
-    Ok(Call {
-        query,
+    Ok(Filters {
         limit,
         offset,
         min_score,
-        scope: Scope::new(prefix.as_deref(), &langs, &globs)?,
+        langs: strings("lang", given("lang"))?,
+        globs: strings("glob", given("glob"))?,
         text,
     })
 }
@@ -985,8 +1181,8 @@ mod tests {
         let resp = handle(&cfg, None, &req("tools/list", json!({}))).unwrap();
         let tools = resp["result"]["tools"].as_array().unwrap();
         let names: Vec<&Value> = tools.iter().map(|t| &t["name"]).collect();
-        assert_eq!(names, ["search", "index_status"]);
-        let status = &tools[1]["inputSchema"];
+        assert_eq!(names, ["search", "find_similar", "index_status"]);
+        let status = &tools[2]["inputSchema"];
         assert_eq!(status["type"], "object");
         assert_eq!(status["additionalProperties"], false);
         assert!(status.get("required").is_none());
@@ -1017,7 +1213,7 @@ mod tests {
                 .collect();
             fields.sort_unstable();
             let mut expected = vec!["annotations", "description", "inputSchema", "name", "title"];
-            if name == "search" {
+            if name == "search" || name == "find_similar" {
                 expected.push("outputSchema");
             }
             expected.sort_unstable();

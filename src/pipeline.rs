@@ -1073,7 +1073,7 @@ impl Searcher {
     /// what it is about, where its single best chunk would be one of its
     /// neighbours' near-copies. The chunks it covers are left out of the
     /// answer, and so is anything else on the same lines.
-    fn similar_page(
+    pub(crate) fn similar_page(
         &self,
         target: &Target,
         limit: usize,
