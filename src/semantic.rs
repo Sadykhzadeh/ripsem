@@ -518,8 +518,7 @@ impl Emitter<'_> {
         }
         let scope = declared.as_ref().or(enclosing);
         let mut cursor = node.walk();
-        let children: Vec<Node> = node.named_children(&mut cursor).collect();
-        for child in children {
+        for child in node.named_children(&mut cursor) {
             self.declarations_within(child, scope, out);
         }
     }
@@ -551,10 +550,8 @@ impl Emitter<'_> {
             return Some(found);
         }
         let mut cursor = node.walk();
-        let children: Vec<Node> = node.named_children(&mut cursor).collect();
-        children
-            .iter()
-            .find_map(|child| self.declaration_within(child, enclosing))
+        node.named_children(&mut cursor)
+            .find_map(|child| self.declaration_within(&child, enclosing))
     }
 
     /// Indexes a declaration's documentation as a record of its own. It spans the
@@ -582,8 +579,7 @@ impl Emitter<'_> {
         }
         let scope = declared.as_ref().or(enclosing);
         let mut cursor = node.walk();
-        let children: Vec<Node> = node.named_children(&mut cursor).collect();
-        for child in children {
+        for child in node.named_children(&mut cursor) {
             self.documentation(child, scope);
         }
     }
