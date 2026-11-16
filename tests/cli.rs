@@ -268,6 +268,21 @@ fn a_client_of_an_older_revision_gets_no_structured_output() {
     assert_eq!(responses[2]["result"]["isError"], false);
 }
 
+// Lenient on purpose: the spec only asks clients to hold back before initialize, and refusing would break one that does not.
+#[test]
+fn a_request_before_initialize_is_answered() {
+    let dir = TempDir::new();
+    let responses = mcp_over_stdio(
+        &dir.path,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+        ],
+    );
+    assert_eq!(responses[0]["result"]["tools"][0]["name"], "search");
+    assert_eq!(responses[1]["result"]["protocolVersion"], "2025-06-18");
+}
+
 /// One session over stdio, as a client of the 2025-06-18 revision runs it.
 #[test]
 fn the_mcp_server_answers_a_session_from_handshake_to_search() {
