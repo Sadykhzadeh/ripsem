@@ -200,6 +200,17 @@ pub struct SearchOpts {
     /// of the hits. Like `--count-by-file` it reads the top `-k` places.
     #[arg(short = 'l', long, conflicts_with = "count_by_file")]
     files_with_matches: bool,
+    /// With `-l`, end each path with a NUL byte instead of a line break, for
+    /// `xargs -0` and other readers of NUL-separated names, so a path with a
+    /// space or a newline stays whole. Prints nothing when no file has a hit.
+    /// Requires `-l` and cannot be combined with `--json`.
+    #[arg(
+        short = '0',
+        long = "null",
+        requires = "files_with_matches",
+        conflicts_with = "json"
+    )]
+    null: bool,
     /// The order of the hits: `score`, the ranking, or `path`, by file and then
     /// by line. `path` orders the hits of the page shown; `--offset` still
     /// reads the ranking by score.
@@ -840,6 +851,7 @@ fn show(page: pipeline::Page, opts: &SearchOpts, context: usize, words: &[String
         words,
         opts.count_by_file,
         opts.files_with_matches,
+        opts.null,
         opts.offset,
         next,
     )
@@ -879,6 +891,7 @@ fn print_hits(
     words: &[String],
     count_by_file: bool,
     files_with_matches: bool,
+    null: bool,
     offset: usize,
     next: Option<usize>,
 ) -> Result<()> {
@@ -891,6 +904,14 @@ fn print_hits(
             .collect();
         if as_json {
             out!("{}", serde_json::to_string_pretty(&paths)?);
+        } else if null {
+            let bytes: Vec<u8> = paths
+                .iter()
+                .flat_map(|path| path.bytes().chain(std::iter::once(0)))
+                .collect();
+            if let Err(e) = std::io::stdout().write_all(&bytes) {
+                stdout_failed(&e);
+            }
         } else if paths.is_empty() {
             out!("{}", no_hits_message(offset));
         } else {

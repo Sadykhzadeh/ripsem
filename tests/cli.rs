@@ -927,6 +927,54 @@ fn files_with_matches_lists_each_file_once_in_ranking_order() {
 }
 
 #[test]
+fn null_ends_each_listed_path_with_a_nul_byte() {
+    let dir = TempDir::new();
+    dir.write("src/my file.rs", "fn login(user: &str) { verify password }");
+    dir.write("src/other.rs", "fn logout(user: &str) { end session }");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let out = ripsem(&dir.path, &["search", "verify password", "-l", "-0"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let plain = ripsem(&dir.path, &["search", "verify password", "-l"]);
+    let mut lines: Vec<String> = stdout(&plain).lines().map(str::to_string).collect();
+    let mut paths: Vec<String> = out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8(p.to_vec()).unwrap())
+        .collect();
+    lines.sort();
+    paths.sort();
+    assert!(paths.contains(&"src/my file.rs".to_string()), "{paths:?}");
+    assert_eq!(paths, lines);
+    assert!(out.stdout.ends_with(&[0]));
+
+    let none = ripsem(
+        &dir.path,
+        &[
+            "search",
+            "quantum entanglement",
+            "-l",
+            "-0",
+            "--min-score",
+            "0.5",
+        ],
+    );
+    assert!(none.status.success());
+    assert!(none.stdout.is_empty(), "{}", stdout(&none));
+
+    let bare = ripsem(&dir.path, &["search", "verify password", "-0"]);
+    assert_eq!(bare.status.code(), Some(2), "{}", stderr(&bare));
+    let json = ripsem(
+        &dir.path,
+        &["search", "verify password", "-l", "-0", "--json"],
+    );
+    assert_eq!(json.status.code(), Some(2), "{}", stderr(&json));
+}
+
+#[test]
 fn similar_finds_the_places_nearest_to_a_location_and_leaves_its_own_out() {
     let dir = paged_tree();
     let found = ripsem(&dir.path, &["similar", "src/auth0.rs"]);
