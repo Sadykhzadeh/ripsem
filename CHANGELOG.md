@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- A piece of a line too long for one chunk is read only from a file inside the
+  repository, and only when the file still matches its hash, as the other
+  snippets are. An index that named a path outside the root could make a search
+  show a stretch of that file.
+
 ## 0.3.0 (2026-11-15)
 
 - A `ripsem index` that finds nothing to do, the update every `ripsem search`

@@ -1180,10 +1180,7 @@ impl Searcher {
         {
             return None;
         }
-        let bytes = std::fs::read(self.root.join(record.path.as_str())).ok()?;
-        if fingerprint::content_hash(&bytes) != record.file_hash {
-            return None;
-        }
+        let bytes = self.indexed_bytes(record)?;
         let text = walk::decode_text(&bytes);
         let line = text.lines().nth(record.start_line.checked_sub(1)?)?;
         if line.len() <= chunk::MAX_CHUNK_BYTES {
@@ -1683,6 +1680,55 @@ mod tests {
             searcher.lines(&record(&absolute, b"classified\n"), 1, 1, 100),
             None
         );
+    }
+
+    #[test]
+    fn a_piece_naming_a_file_outside_the_root_reads_nothing() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("project/inside.txt", "x\n");
+        let long = format!("needle {}", "a ".repeat(chunk::MAX_CHUNK_BYTES));
+        let secret = format!("{long}\n");
+        dir.write("secret.txt", &secret);
+        let config = Config {
+            root: dir.path().join("project"),
+            ..hash_config()
+        };
+        let record = Record {
+            path: "../secret.txt".into(),
+            start_line: 1,
+            end_line: 1,
+            snippet: "fn a() {…".into(),
+            file_hash: fingerprint::content_hash(secret.as_bytes()),
+            stat: FileStat::UNKNOWN,
+            text_hash: 0,
+            vector: crate::quant::quantize(&[]),
+            terms: Default::default(),
+            symbol: None,
+            declarations: Default::default(),
+        };
+        let searcher = Searcher {
+            index: Index {
+                records: vec![record],
+                ..Index::new(0, Backend::Hash, config.model.clone())
+            },
+            root: config.root.clone(),
+            embedder: Arc::new(LazyEmbedder::new(&config)),
+            index_path: config.index_path(),
+            index_mtime: None,
+            model: config.model.clone(),
+            #[cfg(feature = "hnsw")]
+            ann_map: None,
+        };
+        let hit = SearchHit {
+            path: "../secret.txt".into(),
+            start_line: 1,
+            end_line: 1,
+            score: 1.0,
+            snippet: String::new(),
+            symbol: None,
+        };
+        let words = ["needle".to_string()];
+        assert_eq!(searcher.piece(0, &hit, &words), None);
     }
 
     #[test]
