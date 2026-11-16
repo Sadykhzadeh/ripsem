@@ -486,7 +486,7 @@ anyway.
 ## Troubleshooting
 
 **A file never shows up in results.** `ripsem index --dry-run` lists every file
-the index takes in. A file is left out when `.gitignore`, `.ripsemignore` or
+the index takes in, and says how many it left out and why. A file is left out when `.gitignore`, `.ripsemignore` or
 `exclude` matches it, when it is binary, a minified bundle (at least 8 KiB with
 lines averaging 4 KiB or more), or larger than `max_file_kb`, or when
 `skip_generated` treats it as machine-written.
