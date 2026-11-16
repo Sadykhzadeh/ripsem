@@ -271,8 +271,9 @@ more results below this; pass --offset 2 to see them
 `ripsem similar <path>[:LINE[-LINE]]` finds the code nearest to a place
 already in the index: `ripsem similar src/auth.rs:40-72`, one line
 `src/auth.rs:40`, or a bare path for the whole file. It reads the vectors the
-index stores, so it runs no model and works offline. The lines asked about are
-left out of the answer. A whole file, or a range covering several chunks, is
+index stores, so it runs no model and works offline. Its time is mostly loading
+the index, not the search: 1.15 s at the fastest of five runs on 978 794 chunks
+with the hashing backend. The lines asked about are left out of the answer. A whole file, or a range covering several chunks, is
 looked for by the average of its chunks, so the query reads as what that code
 is about rather than as its single best chunk. It takes the options of
 `search` and refreshes the index first, as `search` does; an unknown path, a
