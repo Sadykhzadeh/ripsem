@@ -1410,6 +1410,41 @@ fn a_dry_run_lists_one_path_per_line() {
 }
 
 #[test]
+fn a_dry_run_says_why_each_file_it_reaches_was_left_out() {
+    let dir = TempDir::new();
+    dir.write("keep.rs", "fn main() {}\n");
+    dir.write("bundle.js", &"var a=1;".repeat(1200));
+    dir.write("big.rs", &"fn a() {}\n".repeat(2000));
+    std::fs::write(dir.path.join("blob.dat"), b"\0\x01\x02 binary\n").unwrap();
+    dir.write("generated.rs", "fn g() {}\n");
+    assert!(
+        ripsem(&dir.path, &["model", "backend", "hash"])
+            .status
+            .success()
+    );
+    let config = dir.path.join(".ripsem/config.toml");
+    let existing = std::fs::read_to_string(&config).unwrap();
+    assert!(existing.contains("max_file_kb = 1024"), "{existing}");
+    assert!(existing.contains("exclude = []"), "{existing}");
+    let edited = existing
+        .replace("max_file_kb = 1024", "max_file_kb = 16")
+        .replace("exclude = []", "exclude = [\"generated.rs\"]");
+    std::fs::write(&config, edited).unwrap();
+
+    let out = ripsem(&dir.path, &["index", "--dry-run"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("1 file would be indexed"), "{text}");
+    assert!(
+        text.contains(
+            "5 files seen, left out: 1 binary, 1 minified, 1 over max_file_kb, \
+             1 excluded by pattern"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
 fn status_says_when_the_index_was_built_in_both_outputs() {
     let dir = TempDir::new();
     dir.write("src/lib.rs", "fn main() {}\n");
