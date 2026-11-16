@@ -86,63 +86,23 @@ pub enum Command {
     /// Find code by an identifier, an error message or a description.
     Search {
         /// What to look for, in any of those shapes. Several words need no
-        /// quotes: `ripsem search where is auth set up` is one query.
-        #[arg(required = true, num_args = 1..)]
+        /// quotes: `ripsem search where is auth set up` is one query. `-`, or
+        /// no words with stdin piped, reads the query from stdin instead, so a
+        /// long question or an editor selection can be piped in.
+        #[arg(num_args = 0..)]
         query: Vec<String>,
-        /// Number of results.
-        #[arg(short = 'k', long, default_value_t = 10, value_parser = limit)]
-        limit: usize,
-        /// Skip this many results, taken from the ranking after every filter,
-        /// to read the next page: the output says when more follow and what
-        /// to pass.
-        #[arg(long, default_value_t = 0, value_name = "N")]
-        offset: usize,
-        /// Print the results as JSON.
-        #[arg(long)]
-        json: bool,
-        /// Limit results to a subdirectory, e.g. `--in src/embed`. A relative
-        /// path starts from the current directory, as in the shell, so `.`
-        /// is the directory you are in; a path outside the repository is an
-        /// error.
-        #[arg(long = "in", value_name = "PREFIX")]
-        within: Option<String>,
-        /// Keep only hits in files of this language, by name or extension:
-        /// `--lang rust`, `--lang py`, `--lang toml`. Repeat the flag or
-        /// separate values with commas for several.
-        #[arg(long, value_name = "LANG")]
-        lang: Vec<String>,
-        /// Keep only hits whose path matches this glob, as with ripgrep's
-        /// `-g`; a leading `!` leaves matching paths out. `-g '*.rs' -g
-        /// '!*_test.rs'`. Repeat for several; a path counts when it or a
-        /// directory above it matches.
-        #[arg(short = 'g', long, value_name = "GLOB")]
-        glob: Vec<String>,
-        /// Keep only hits whose code matches this regular expression, to find
-        /// the place that does something and also mentions a name: `-e
-        /// 'retry|backoff'`, `-e '(?i)argon2'`. It is matched against each
-        /// hit's whole chunk and tried on the best 200 places of the ranking,
-        /// so it narrows an answer; to find every occurrence use grep.
-        #[arg(short = 'e', long, value_name = "PATTERN")]
-        regex: Option<String>,
-        /// Number of snippet lines to print per hit in the human output: 3 in
-        /// a terminal, and the whole snippet when the output goes to another
-        /// program, such as an agent's shell tool. `0` prints just the
-        /// location header with no snippet body. Ignored by `--json`, which
-        /// always returns the whole snippet.
-        #[arg(long, value_name = "LINES")]
-        context: Option<usize>,
-        /// Drop hits scoring below this, keeping only strong matches. A score
-        /// runs from 0, no closer than unrelated text in this repository, to
-        /// 1, every term of the query found literally or an identical text,
-        /// and falls with rank, so this keeps the top of the ranking. Absent
-        /// means no filtering. Applies to both the human and `--json` output.
-        #[arg(long, value_name = "SCORE", value_parser = score)]
-        min_score: Option<f32>,
-        /// Summarise as one line per file with its hit count (sorted by count),
-        /// instead of listing each hit. Aggregates the top-`k` matches, so pair
-        /// it with a larger `-k` for a wider view. Honoured by `--json` too.
-        #[arg(long)]
-        count_by_file: bool,
+        #[command(flatten)]
+        opts: SearchOpts,
+    },
+    /// Find the code nearest to a location already in the index, such as
+    /// `src/auth.rs:40-72`, or a whole file. It uses the stored vectors, so no
+    /// model runs.
+    Similar {
+        /// `path`, `path:LINE` or `path:START-END`, relative to the current
+        /// directory. The lines are 1-based.
+        target: String,
+        #[command(flatten)]
+        opts: SearchOpts,
     },
     /// Index and keep the index in sync as files change.
     Watch,
@@ -171,6 +131,91 @@ pub enum Command {
         /// bash, zsh, fish, powershell or elvish.
         shell: clap_complete::Shell,
     },
+}
+
+/// The options `search` and `similar` share: how many places, which filters
+/// and how they are printed.
+#[derive(clap::Args)]
+pub struct SearchOpts {
+    /// Number of results.
+    #[arg(short = 'k', long, default_value_t = 10, value_parser = limit)]
+    limit: usize,
+    /// Skip this many results, taken from the ranking after every filter,
+    /// to read the next page: the output says when more follow and what
+    /// to pass.
+    #[arg(long, default_value_t = 0, value_name = "N")]
+    offset: usize,
+    /// Print the results as JSON.
+    #[arg(long)]
+    json: bool,
+    /// Limit results to a subdirectory, e.g. `--in src/embed`. A relative
+    /// path starts from the current directory, as in the shell, so `.`
+    /// is the directory you are in; a path outside the repository is an
+    /// error.
+    #[arg(long = "in", value_name = "PREFIX")]
+    within: Option<String>,
+    /// Keep only hits in files of this language, by name or extension:
+    /// `--lang rust`, `--lang py`, `--lang toml`. Repeat the flag or
+    /// separate values with commas for several.
+    #[arg(long, value_name = "LANG")]
+    lang: Vec<String>,
+    /// Keep only hits whose path matches this glob, as with ripgrep's
+    /// `-g`; a leading `!` leaves matching paths out. `-g '*.rs' -g
+    /// '!*_test.rs'`. Repeat for several; a path counts when it or a
+    /// directory above it matches.
+    #[arg(short = 'g', long, value_name = "GLOB")]
+    glob: Vec<String>,
+    /// Keep only hits whose code matches this regular expression, to find
+    /// the place that does something and also mentions a name: `-e
+    /// 'retry|backoff'`, `-e '(?i)argon2'`. It is matched against each
+    /// hit's whole chunk and tried on the best 200 places of the ranking,
+    /// so it narrows an answer; to find every occurrence use grep.
+    #[arg(short = 'e', long, value_name = "PATTERN")]
+    regex: Option<String>,
+    /// Number of snippet lines to print per hit in the human output: 3 in
+    /// a terminal, and the whole snippet when the output goes to another
+    /// program, such as an agent's shell tool. `0` prints just the
+    /// location header with no snippet body. Ignored by `--json`, which
+    /// always returns the whole snippet.
+    #[arg(long, value_name = "LINES")]
+    context: Option<usize>,
+    /// Drop hits scoring below this, keeping only strong matches. A score
+    /// runs from 0, no closer than unrelated text in this repository, to
+    /// 1, every term of the query found literally or an identical text,
+    /// and falls with rank, so this keeps the top of the ranking. Absent
+    /// means no filtering. Applies to both the human and `--json` output.
+    #[arg(long, value_name = "SCORE", value_parser = score)]
+    min_score: Option<f32>,
+    /// Summarise as one line per file with its hit count (sorted by count),
+    /// instead of listing each hit. Aggregates the top-`k` matches, so pair
+    /// it with a larger `-k` for a wider view. Honoured by `--json` too.
+    #[arg(long)]
+    count_by_file: bool,
+    /// Print nothing. The exit status says whether a hit is left after the
+    /// filters and `--min-score`: 0 when one is, 1 when none is, so a
+    /// script can branch on a match as with `grep -q`.
+    #[arg(short = 'q', long)]
+    quiet: bool,
+    /// List each file with a hit once, in the order of its best hit, instead
+    /// of the hits. Like `--count-by-file` it reads the top `-k` places.
+    #[arg(short = 'l', long, conflicts_with = "count_by_file")]
+    files_with_matches: bool,
+    /// The order of the hits: `score`, the ranking, or `path`, by file and then
+    /// by line. `path` orders the hits of the page shown; `--offset` still
+    /// reads the ranking by score.
+    #[arg(long, value_enum, default_value_t = SortBy::Score, value_name = "ORDER")]
+    sort: SortBy,
+    /// Keep only hits in files that differ from this git revision, as the
+    /// working tree has them: committed, staged and unstaged changes and
+    /// untracked files. Useful for reviewing a branch, e.g. `--since main`.
+    #[arg(long, value_name = "REV")]
+    since: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SortBy {
+    Score,
+    Path,
 }
 
 #[derive(Subcommand)]
@@ -225,32 +270,8 @@ pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Init => cmd_init(&root),
         Command::Index { force, dry_run } => cmd_index(&root, force, dry_run),
-        Command::Search {
-            query,
-            limit,
-            offset,
-            json,
-            within,
-            lang,
-            glob,
-            regex,
-            context,
-            min_score,
-            count_by_file,
-        } => cmd_search(
-            &root,
-            &query.join(" "),
-            limit,
-            offset,
-            json,
-            within.as_deref(),
-            &lang,
-            &glob,
-            regex.as_deref(),
-            context,
-            min_score,
-            count_by_file,
-        ),
+        Command::Search { query, opts } => cmd_search(&root, &query, &opts),
+        Command::Similar { target, opts } => cmd_similar(&root, &target, &opts),
         Command::Watch => watch::run(load_config(&root)?),
         Command::Status { json } => cmd_status(&root, json),
         Command::Mcp => mcp::serve(load_config(&root)?, cli.path.is_some()),
@@ -632,48 +653,157 @@ fn file_hit_counts(hits: &[pipeline::SearchHit]) -> Vec<(String, usize)> {
     pairs
 }
 
-#[allow(clippy::too_many_arguments)]
-fn cmd_search(
-    root: &Path,
-    query: &str,
-    limit: usize,
-    offset: usize,
-    as_json: bool,
-    within: Option<&str>,
-    langs: &[String],
-    globs: &[String],
-    regex: Option<&str>,
-    context: Option<usize>,
-    min_score: Option<f32>,
-    count_by_file: bool,
-) -> Result<()> {
-    let text = regex.map(crate::scope::text_pattern).transpose()?;
-    let context = context.unwrap_or(match std::io::stdout().is_terminal() {
-        true => 3,
-        false => usize::MAX,
-    });
-    let config = load_config(root)?;
-    // Same normalisation as the MCP `search` tool.
-    let prefix = match within {
-        Some(raw) => mcp::scope_prefix(&from_here(raw, &config.root), &config.root)?,
-        None => None,
+/// The query as the words given, or as stdin when it is `-` or absent and
+/// stdin is not a terminal. One trailing line break is not part of it.
+fn query_text(words: &[String]) -> Result<String> {
+    let from_stdin = match words {
+        [dash] => dash == "-",
+        [] => !std::io::stdin().is_terminal(),
+        _ => false,
     };
-    let scope = Scope::new(prefix.as_deref(), langs, globs)?;
-    let page = pipeline::search_page(&config, query, limit, offset, scope.as_ref(), text.as_ref())?;
-    let more = page.more(min_score);
-    let hits = apply_min_score(page.hits, min_score);
-    let next = more.then_some(offset + hits.len());
-    print_hits(
-        &hits,
-        as_json,
-        context,
-        &pipeline::query_words(query),
-        count_by_file,
-        offset,
-        next,
+    if from_stdin {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+            .context("reading the query from stdin")?;
+        if let Some(line) = text.strip_suffix('\n') {
+            text = line.strip_suffix('\r').unwrap_or(line).to_string();
+        }
+        return Ok(text);
+    }
+    if words.is_empty() {
+        anyhow::bail!("no query: give the words after `search`, or pipe one in on stdin");
+    }
+    Ok(words.join(" "))
+}
+
+fn context_lines(opts: &SearchOpts) -> usize {
+    opts.context
+        .unwrap_or(match std::io::stdout().is_terminal() {
+            true => 3,
+            false => usize::MAX,
+        })
+}
+
+fn cmd_search(root: &Path, words: &[String], opts: &SearchOpts) -> Result<()> {
+    let query = query_text(words)?;
+    let text = opts
+        .regex
+        .as_deref()
+        .map(crate::scope::text_pattern)
+        .transpose()?;
+    let config = load_config(root)?;
+    let scope = scope_for(&config, opts)?;
+    let page = pipeline::search_page(
+        &config,
+        &query,
+        opts.limit,
+        opts.offset,
+        scope.as_ref(),
+        text.as_ref(),
+    )?;
+    show(
+        page,
+        opts,
+        context_lines(opts),
+        &pipeline::query_words(&query),
     )?;
     warn_about_backend(&config);
     Ok(())
+}
+
+fn cmd_similar(root: &Path, target: &str, opts: &SearchOpts) -> Result<()> {
+    let config = load_config(root)?;
+    let (raw, lines) = parse_target(target)?;
+    let path = mcp::scope_prefix(&from_here(raw, &config.root), &config.root)?
+        .ok_or_else(|| anyhow::anyhow!("'{target}' names no file"))?;
+    let text = opts
+        .regex
+        .as_deref()
+        .map(crate::scope::text_pattern)
+        .transpose()?;
+    let scope = scope_for(&config, opts)?;
+    let target = pipeline::Target { path, lines };
+    let page = pipeline::similar_page(
+        &config,
+        &target,
+        opts.limit,
+        opts.offset,
+        scope.as_ref(),
+        text.as_ref(),
+    )?;
+    show(page, opts, context_lines(opts), &[])?;
+    warn_about_backend(&config);
+    Ok(())
+}
+
+/// Splits `path`, `path:LINE` or `path:START-END`. A colon that is not
+/// followed by line numbers belongs to the path.
+fn parse_target(raw: &str) -> Result<(&str, Option<(usize, usize)>)> {
+    let line_numbers = |spec: &str| {
+        let parts: Vec<&str> = spec.split('-').collect();
+        parts.len() <= 2
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    };
+    let (path, spec) = match raw.rsplit_once(':') {
+        Some((path, spec)) if !path.is_empty() && line_numbers(spec) => (path, spec),
+        _ => return Ok((raw, None)),
+    };
+    let (first, last) = spec.split_once('-').unwrap_or((spec, spec));
+    let number = |s: &str| {
+        s.parse::<usize>()
+            .map_err(|_| anyhow::anyhow!("'{s}' is not a line number"))
+    };
+    let (first, last) = (number(first)?, number(last)?);
+    anyhow::ensure!(first >= 1, "line numbers start at 1, not 0");
+    anyhow::ensure!(
+        last >= first,
+        "line {last} comes before line {first} in '{raw}'"
+    );
+    Ok((path, Some((first, last))))
+}
+
+/// The filters the options ask for, as one scope. `None` when nothing limits
+/// the search.
+fn scope_for(config: &Config, opts: &SearchOpts) -> Result<Option<Scope>> {
+    // Same normalisation as the MCP `search` tool.
+    let prefix = match &opts.within {
+        Some(raw) => mcp::scope_prefix(&from_here(raw, &config.root), &config.root)?,
+        None => None,
+    };
+    let scope = Scope::new(prefix.as_deref(), &opts.lang, &opts.glob)?;
+    Ok(match &opts.since {
+        Some(rev) => {
+            let changed = crate::git::changed_since(&config.root, rev)?;
+            Some(Scope::changed_since(scope, rev, changed))
+        }
+        None => scope,
+    })
+}
+
+/// Prints one page of results as the options ask, after `-q` and
+/// `--min-score` have had their say.
+fn show(page: pipeline::Page, opts: &SearchOpts, context: usize, words: &[String]) -> Result<()> {
+    let more = page.more(opts.min_score);
+    let mut hits = apply_min_score(page.hits, opts.min_score);
+    if opts.quiet {
+        std::process::exit(i32::from(hits.is_empty()));
+    }
+    if opts.sort == SortBy::Path {
+        hits.sort_by(|a, b| a.path.cmp(&b.path).then(a.start_line.cmp(&b.start_line)));
+    }
+    let next = more.then_some(opts.offset + hits.len());
+    print_hits(
+        &hits,
+        opts.json,
+        context,
+        words,
+        opts.count_by_file,
+        opts.files_with_matches,
+        opts.offset,
+        next,
+    )
 }
 
 /// A relative `--in` read from the current directory, as the shell and git
@@ -691,17 +821,47 @@ fn from_here(raw: &str, root: &Path) -> String {
     }
 }
 
+/// What a search with no hits to show says: a page past the last one has
+/// matches behind it, so it is not "no matches".
+fn no_hits_message(offset: usize) -> &'static str {
+    match offset > 0 {
+        true => "no further matches",
+        false => "no matches",
+    }
+}
+
 /// Prints search results in the shape the flags ask for. `next` is the offset
 /// of the page that follows, when there is one.
+#[allow(clippy::too_many_arguments)]
 fn print_hits(
     hits: &[pipeline::SearchHit],
     as_json: bool,
     context: usize,
     words: &[String],
     count_by_file: bool,
+    files_with_matches: bool,
     offset: usize,
     next: Option<usize>,
 ) -> Result<()> {
+    if files_with_matches {
+        let mut seen = std::collections::HashSet::new();
+        let paths: Vec<&str> = hits
+            .iter()
+            .map(|h| h.path.as_str())
+            .filter(|path| seen.insert(*path))
+            .collect();
+        if as_json {
+            out!("{}", serde_json::to_string_pretty(&paths)?);
+        } else if paths.is_empty() {
+            out!("{}", no_hits_message(offset));
+        } else {
+            for path in paths {
+                out!("{path}");
+            }
+        }
+        return Ok(());
+    }
+
     if count_by_file {
         let counts = file_hit_counts(hits);
         if as_json {
@@ -711,7 +871,7 @@ fn print_hits(
                 .collect();
             out!("{}", serde_json::to_string_pretty(&rows)?);
         } else if counts.is_empty() {
-            out!("no matches");
+            out!("{}", no_hits_message(offset));
         } else {
             for (path, count) in counts {
                 out!("{count:>5}  {path}");
@@ -740,14 +900,7 @@ fn print_hits(
     }
 
     if hits.is_empty() {
-        out!(
-            "{}",
-            if offset > 0 {
-                "no further matches"
-            } else {
-                "no matches"
-            }
-        );
+        out!("{}", no_hits_message(offset));
         return Ok(());
     }
     for h in hits {

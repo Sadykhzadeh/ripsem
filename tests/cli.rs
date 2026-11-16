@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,6 +38,24 @@ fn ripsem(cwd: &Path, args: &[&str]) -> Output {
         .current_dir(cwd)
         .output()
         .unwrap()
+}
+
+fn ripsem_with_stdin(cwd: &Path, args: &[&str], input: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ripsem"))
+        .args(args)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
 }
 
 fn stdout(output: &Output) -> String {
@@ -751,6 +770,251 @@ fn an_offset_reads_the_next_page_and_says_when_more_follow() {
     let past = page("4", "10", &[]);
     assert!(past.status.success(), "{}", stderr(&past));
     assert_eq!(stdout(&past).trim(), "no further matches");
+}
+
+#[test]
+fn a_count_past_the_last_page_says_no_further_matches() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    let past = ripsem(
+        &dir.path,
+        &["search", query, "--count-by-file", "--offset", "40"],
+    );
+    assert!(past.status.success(), "{}", stderr(&past));
+    assert_eq!(stdout(&past).trim(), "no further matches");
+}
+
+#[test]
+fn files_with_matches_lists_each_file_once_in_ranking_order() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    let out = ripsem(&dir.path, &["search", query, "-k", "50", "-l"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    let listed: Vec<&str> = text.lines().collect();
+    assert_eq!(listed.len(), 10, "{text}");
+    let mut unique = listed.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), 10, "{text}");
+
+    let json = ripsem(&dir.path, &["search", query, "-k", "50", "-l", "--json"]);
+    let paths: Vec<String> = serde_json::from_str(&stdout(&json)).unwrap();
+    assert_eq!(paths, listed);
+
+    let none = ripsem(
+        &dir.path,
+        &["search", "quantum entanglement", "-l", "--min-score", "0.5"],
+    );
+    assert_eq!(stdout(&none).trim(), "no matches");
+
+    let clash = ripsem(&dir.path, &["search", query, "-l", "--count-by-file"]);
+    assert_eq!(clash.status.code(), Some(2), "{}", stderr(&clash));
+}
+
+#[test]
+fn similar_finds_the_places_nearest_to_a_location_and_leaves_its_own_out() {
+    let dir = paged_tree();
+    let found = ripsem(&dir.path, &["similar", "src/auth0.rs"]);
+    assert!(found.status.success(), "{}", stderr(&found));
+    let shown = heads(&found);
+    assert!(!shown.is_empty(), "{}", stdout(&found));
+    assert!(
+        shown.iter().all(|h| !h.starts_with("src/auth0.rs:")),
+        "{shown:?}"
+    );
+    assert!(
+        shown.iter().any(|h| h.starts_with("src/auth1.rs:")),
+        "{shown:?}"
+    );
+
+    let by_line = ripsem(&dir.path, &["similar", "src/auth0.rs:1-1", "--json"]);
+    assert!(by_line.status.success(), "{}", stderr(&by_line));
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&stdout(&by_line)).unwrap();
+    assert!(!rows.is_empty());
+    assert!(rows.iter().all(|r| r["path"] != "src/auth0.rs"));
+}
+
+#[test]
+fn similar_names_its_errors() {
+    let dir = paged_tree();
+    for (target, expected) in [
+        ("src/nothere.rs", "is not in the index"),
+        ("src/auth0.rs:9", "has 1 lines, so line 9 is out of range"),
+        ("src/auth0.rs:3-2", "comes before line 3"),
+        ("src/auth0.rs:0", "line numbers start at 1"),
+    ] {
+        let out = ripsem(&dir.path, &["similar", target]);
+        assert_eq!(out.status.code(), Some(1), "{target}: {}", stdout(&out));
+        assert!(
+            stderr(&out).contains(expected),
+            "{target}: {}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
+fn similar_takes_the_filters_and_output_of_search() {
+    let dir = paged_tree();
+    let docs = ripsem(
+        &dir.path,
+        &["similar", "src/auth0.rs", "--lang", "md", "-l"],
+    );
+    assert!(docs.status.success(), "{}", stderr(&docs));
+    let listed = stdout(&docs);
+    assert!(
+        !listed.is_empty() && listed.lines().all(|l| l.ends_with(".md")),
+        "{listed}"
+    );
+
+    let none = ripsem(
+        &dir.path,
+        &["similar", "src/auth0.rs", "--min-score", "1", "-q"],
+    );
+    assert_eq!(none.status.code(), Some(1), "{}", stderr(&none));
+}
+
+#[test]
+fn similar_refreshes_the_index_before_it_reads_a_changed_file() {
+    let dir = paged_tree();
+    dir.write("src/auth0.rs", "fn auth0() {}\nfn extra() {}\n");
+    let out = ripsem(&dir.path, &["similar", "src/auth0.rs:2"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn since_limits_a_search_to_the_files_changed_since_a_revision() {
+    let dir = paged_tree();
+    git(&dir.path, &["init", "-q"]);
+    git(&dir.path, &["add", "-A"]);
+    git(
+        &dir.path,
+        &[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "base",
+        ],
+    );
+    dir.write(
+        "src/auth0.rs",
+        "fn auth0() { verify password create session token }\nfn more() {}\n",
+    );
+    dir.write("docs/fresh.md", "verify password, written after the commit");
+
+    let query = "verify password create session token";
+    let out = ripsem(
+        &dir.path,
+        &["search", query, "--since", "HEAD", "--json", "-k", "50"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&stdout(&out)).unwrap();
+    let paths: Vec<&str> = rows.iter().map(|r| r["path"].as_str().unwrap()).collect();
+    assert!(!paths.is_empty(), "{}", stdout(&out));
+    assert!(
+        paths
+            .iter()
+            .all(|p| *p == "src/auth0.rs" || *p == "docs/fresh.md"),
+        "{paths:?}"
+    );
+    assert!(paths.contains(&"src/auth0.rs"), "{paths:?}");
+
+    let unknown = ripsem(&dir.path, &["search", query, "--since", "no-such-rev"]);
+    assert_eq!(unknown.status.code(), Some(1));
+    assert!(
+        stderr(&unknown).contains("unknown revision 'no-such-rev'"),
+        "{}",
+        stderr(&unknown)
+    );
+
+    let flag = ripsem(&dir.path, &["search", query, "--since=--output=x"]);
+    assert_eq!(flag.status.code(), Some(1));
+    assert!(
+        stderr(&flag).contains("is not a revision"),
+        "{}",
+        stderr(&flag)
+    );
+
+    let plain = paged_tree();
+    let outside = ripsem(&plain.path, &["search", query, "--since", "HEAD"]);
+    assert_eq!(outside.status.code(), Some(1));
+    assert!(
+        stderr(&outside).contains("not in a git repository"),
+        "{}",
+        stderr(&outside)
+    );
+}
+
+#[test]
+fn sort_by_path_orders_the_page_by_path_then_line() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    let rows = |args: &[&str]| -> Vec<(String, u64)> {
+        let mut all = vec!["search", query, "-k", "50", "--json"];
+        all.extend_from_slice(args);
+        let found: Vec<serde_json::Value> =
+            serde_json::from_str(&stdout(&ripsem(&dir.path, &all))).unwrap();
+        found
+            .iter()
+            .map(|r| {
+                (
+                    r["path"].as_str().unwrap().to_string(),
+                    r["start_line"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let by_path = rows(&["--sort", "path"]);
+    assert_eq!(by_path.len(), 10);
+    let mut sorted = by_path.clone();
+    sorted.sort();
+    assert_eq!(by_path, sorted);
+    let mut by_score = rows(&[]);
+    by_score.sort();
+    assert_eq!(by_path, by_score);
+
+    let bad = ripsem(&dir.path, &["search", query, "--sort", "size"]);
+    assert_eq!(bad.status.code(), Some(2), "{}", stderr(&bad));
+}
+
+#[test]
+fn a_query_piped_on_stdin_is_searched_like_one_typed() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    let typed = ripsem(&dir.path, &["search", query, "--json"]);
+    let dash = ripsem_with_stdin(&dir.path, &["search", "-", "--json"], &format!("{query}\n"));
+    assert!(dash.status.success(), "{}", stderr(&dash));
+    assert_eq!(stdout(&dash), stdout(&typed));
+    let bare = ripsem_with_stdin(&dir.path, &["search", "--json"], &format!("{query}\r\n"));
+    assert_eq!(stdout(&bare), stdout(&typed));
+
+    let empty = ripsem_with_stdin(&dir.path, &["search", "-"], "\n");
+    assert_eq!(empty.status.code(), Some(1));
+    assert!(
+        stderr(&empty).contains("the query is empty"),
+        "{}",
+        stderr(&empty)
+    );
+}
+
+#[test]
+fn quiet_search_prints_nothing_and_exits_by_whether_a_hit_is_left() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    let found = ripsem(&dir.path, &["search", query, "-q"]);
+    assert!(found.status.success(), "{}", stderr(&found));
+    assert!(stdout(&found).is_empty(), "{}", stdout(&found));
+
+    let none = ripsem(
+        &dir.path,
+        &["search", "quantum entanglement", "--min-score", "0.5", "-q"],
+    );
+    assert_eq!(none.status.code(), Some(1), "{}", stderr(&none));
+    assert!(stdout(&none).is_empty(), "{}", stdout(&none));
 }
 
 #[test]

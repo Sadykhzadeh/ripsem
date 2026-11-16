@@ -167,6 +167,7 @@ ripsem completions powershell >> $PROFILE
 ripsem init                       # write .ripsem/config.toml
 ripsem index                      # build the index (incremental on re-runs)
 ripsem search "where is auth set up?"   # updates the index first
+ripsem similar src/auth.rs:40-72  # the code nearest to a location, no model run
 ripsem status                     # index size, counts, model, drift from the tree
 ripsem status --json              # the same as JSON (schema ripsem/status/v1)
 ripsem watch                      # keep the index in sync as files change
@@ -241,6 +242,30 @@ asks the same as `ripsem search "where is auth set up"`.
   the locations).
 - `--min-score <SCORE>` keeps only strong matches, in both human and JSON output.
 - `--count-by-file` prints hit counts per file instead of the hits.
+- `-q, --quiet` prints nothing and sets the exit status: 0 when a hit is left
+  after the filters and `--min-score`, 1 when none is, so a script can branch
+  on a match. Without it a search with no hits still exits 0.
+- `-l, --files-with-matches` lists each file with a hit once, in the order of
+  its best hit, instead of the hits. It cannot be combined with
+  `--count-by-file`.
+- `--since <REV>` keeps only hits in files that differ from a git revision,
+  as the working tree has them: committed, staged and unstaged changes, and
+  untracked files. `ripsem search --since main 'retry on failure'` reviews a
+  branch. It needs a git repository and reads git with its own arguments.
+- `--sort path` shows the hits of the page ordered by file and then by line,
+  instead of by score. `--offset` still reads the ranking by score, so the
+  page is the same set of hits either way.
+
+`ripsem similar <path>[:LINE[-LINE]]` finds the code nearest to a place
+already in the index: `ripsem similar src/auth.rs:40-72`, one line
+`src/auth.rs:40`, or a bare path for the whole file. It reads the vectors the
+index stores, so it runs no model and works offline. The lines asked about are
+left out of the answer. A whole file, or a range covering several chunks, is
+looked for by the average of its chunks, so the query reads as what that code
+is about rather than as its single best chunk. It takes the options of
+`search` and refreshes the index first, as `search` does; an unknown path, a
+line past the end of the file and a range that holds no indexed code are
+errors.
 
 ## Models
 

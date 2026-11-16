@@ -17,7 +17,7 @@ pub struct Chunk {
 
 /// Changes whenever the same file and settings would give other chunks, so an
 /// index cut by an older ripsem is cut again. A test pins it to the output.
-const REVISION: u32 = 12;
+const REVISION: u32 = 15;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -257,7 +257,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (12, expected),
+            (15, expected),
             "{seen}"
         );
     }
@@ -552,5 +552,26 @@ mod cutting {
             .filter(|t| t.ends_with("byte.") || t.ends_with("starts."))
             .collect();
         assert_eq!(prose, ["Doubles a byte."]);
+    }
+
+    #[test]
+    fn a_c_function_is_named_by_its_declarator_not_its_return_type() {
+        let make = "Point make(int x) {\n  return Point{x};\n}\n";
+        assert!(has(&cut_code("a.cpp", make), 1, 3, "fn make"));
+        let twice = "template <typename T>\nT twice(T x) {\n  return x + x;\n}\n";
+        let cut = cut_code("a.cpp", twice);
+        assert!(has(&cut, 1, 4, "fn twice"), "{cut:?}");
+    }
+
+    #[test]
+    fn files_with_the_extensions_of_a_language_are_cut_as_that_language() {
+        let ruby = "def build(x)\n  x + 1\nend\n";
+        assert!(has(&cut_code("Tasks.rake", ruby), 1, 3, "fn build"));
+        assert!(has(&cut_code("ripsem.gemspec", ruby), 1, 3, "fn build"));
+        let python = "def load(path):\n    return path\n";
+        assert!(has(&cut_code("setup.pyw", python), 1, 2, "fn load"));
+        let cpp = "template <typename T>\nT twice(T x) {\n  return x + x;\n}\n";
+        assert!(has(&cut_code("util.ipp", cpp), 1, 4, "fn twice"));
+        assert!(has(&cut_code("util.tpp", cpp), 1, 4, "fn twice"));
     }
 }

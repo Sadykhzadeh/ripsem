@@ -24,7 +24,7 @@ const LANGS: &[Lang] = &[
     Lang {
         name: "python",
         aliases: &["py"],
-        exts: &["py", "pyi"],
+        exts: &["py", "pyi", "pyw"],
     },
     Lang {
         name: "javascript",
@@ -59,12 +59,12 @@ const LANGS: &[Lang] = &[
     Lang {
         name: "cpp",
         aliases: &["c++"],
-        exts: &["cc", "cpp", "cxx", "hpp", "hh", "hxx"],
+        exts: &["cc", "cpp", "cxx", "hpp", "hh", "hxx", "ipp", "tpp"],
     },
     Lang {
         name: "ruby",
         aliases: &["rb"],
-        exts: &["rb"],
+        exts: &["rb", "rake", "gemspec"],
     },
     Lang {
         name: "csharp",
@@ -89,7 +89,7 @@ const LANGS: &[Lang] = &[
     Lang {
         name: "bash",
         aliases: &["sh", "shell"],
-        exts: &["sh", "bash"],
+        exts: &["sh", "bash", "zsh"],
     },
     Lang {
         name: "json",
@@ -161,12 +161,12 @@ mod tests {
     fn a_name_or_alias_gives_the_languages_extensions() {
         assert_eq!(extensions("rust"), ["rs"]);
         assert_eq!(extensions("rs"), ["rs"]);
-        assert_eq!(extensions("python"), ["py", "pyi"]);
+        assert_eq!(extensions("python"), ["py", "pyi", "pyw"]);
         assert_eq!(extensions("ts"), ["ts", "mts", "cts"]);
         assert_eq!(extensions("tsx"), ["tsx"]);
         assert_eq!(extensions("c++"), extensions("cpp"));
         assert_eq!(extensions("c#"), ["cs"]);
-        assert_eq!(extensions("shell"), ["sh", "bash"]);
+        assert_eq!(extensions("shell"), ["sh", "bash", "zsh"]);
         assert_eq!(extensions("kt"), ["kt", "kts"]);
     }
 

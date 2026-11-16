@@ -116,8 +116,17 @@ fn declared_kind(node_kind: &str) -> Option<&'static str> {
     }
     KINDS
         .iter()
-        .find(|(needle, _)| node_kind.contains(needle))
+        .find(|(needle, _)| kind_contains(node_kind, needle))
         .map(|&(_, kind)| kind)
+}
+
+/// `str::contains` for a needle of a few bytes. Every std call first builds its
+/// search tables, and this runs for each node of a file, so the scan is cheaper.
+#[cfg(feature = "treesitter")]
+fn kind_contains(node_kind: &str, needle: &str) -> bool {
+    let (kind, needle) = (node_kind.as_bytes(), needle.as_bytes());
+    kind.windows(needle.len())
+        .any(|window| window.iter().zip(needle).all(|(a, b)| a == b))
 }
 
 /// Types, expressions, patterns and parameters name something without declaring
@@ -176,7 +185,9 @@ fn bound_function_name(node: &tree_sitter::Node, text: &str) -> Option<String> {
 
 #[cfg(feature = "treesitter")]
 fn declared_name(node: &tree_sitter::Node, text: &str) -> Option<String> {
-    ["name", "type", "declarator"]
+    // A C or C++ function's `type` is its return type, so its declarator comes
+    // first, and a typedef's `type` is what it aliases.
+    ["name", "declarator", "type"]
         .into_iter()
         .filter_map(|field| node.child_by_field_name(field))
         .find_map(|child| identifier_text(&child, text))
@@ -199,4 +210,33 @@ fn identifier_text(node: &tree_sitter::Node, text: &str) -> Option<String> {
 #[cfg(feature = "treesitter")]
 fn is_name_leaf(kind: &str) -> bool {
     kind.ends_with("identifier") || matches!(kind, "word" | "name")
+}
+
+#[cfg(all(test, feature = "treesitter"))]
+mod tests {
+    use super::kind_contains;
+
+    #[test]
+    fn kind_contains_agrees_with_str_contains() {
+        let kinds = [
+            "",
+            "fn",
+            "function_item",
+            "modifiers",
+            "impl_item",
+            "type_identifier",
+        ];
+        let needles = [
+            "", "fn", "mod", "def", "type", "function", "module", "x_item",
+        ];
+        for kind in kinds {
+            for needle in needles.iter().filter(|n| !n.is_empty()) {
+                assert_eq!(
+                    kind_contains(kind, needle),
+                    kind.contains(needle),
+                    "{kind} {needle}"
+                );
+            }
+        }
+    }
 }

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{Result, anyhow, bail};
@@ -16,6 +17,8 @@ pub struct Scope {
     /// Lowercase extensions, with the languages as given for messages.
     langs: Option<(Vec<String>, Vec<String>)>,
     globs: Option<Globs>,
+    /// The revision the files were changed since, and those files.
+    changed: Option<(String, HashSet<String>)>,
 }
 
 /// A glob without `!` includes, one with it excludes. A path counts when it
@@ -132,7 +135,22 @@ impl Scope {
             prefix: prefix.map(str::to_string),
             langs,
             globs,
+            changed: None,
         }))
+    }
+
+    /// `scope`, further limited to `paths`, the files changed since `rev`.
+    pub fn changed_since(scope: Option<Scope>, rev: &str, paths: HashSet<String>) -> Scope {
+        let changed = Some((rev.to_string(), paths));
+        match scope {
+            Some(scope) => Scope { changed, ..scope },
+            None => Scope {
+                prefix: None,
+                langs: None,
+                globs: None,
+                changed,
+            },
+        }
     }
 
     pub fn under(prefix: &str) -> Scope {
@@ -140,6 +158,7 @@ impl Scope {
             prefix: Some(prefix.to_string()),
             langs: None,
             globs: None,
+            changed: None,
         }
     }
 
@@ -157,13 +176,18 @@ impl Scope {
                 return false;
             }
         }
+        if let Some((_, paths)) = &self.changed
+            && !paths.contains(path)
+        {
+            return false;
+        }
         self.globs.as_ref().is_none_or(|globs| globs.admits(path))
     }
 
     /// The report for a scope no indexed file satisfies.
     pub fn nothing_matches(&self) -> String {
-        match (&self.prefix, &self.langs, &self.globs) {
-            (Some(prefix), None, None) => format!("nothing is indexed under '{prefix}'"),
+        match (&self.prefix, &self.langs, &self.globs, &self.changed) {
+            (Some(prefix), None, None, None) => format!("nothing is indexed under '{prefix}'"),
             _ => {
                 let mut parts = Vec::new();
                 if let Some(prefix) = &self.prefix {
@@ -174,6 +198,9 @@ impl Scope {
                 }
                 if let Some(globs) = &self.globs {
                     parts.push(format!("glob {}", globs.given.join(",")));
+                }
+                if let Some((rev, _)) = &self.changed {
+                    parts.push(format!("changed since {rev}"));
                 }
                 format!("no indexed file matches {}", parts.join(" and "))
             }

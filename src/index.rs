@@ -369,6 +369,62 @@ impl Index {
         ranked
     }
 
+    /// The places nearest to `query` among the records `skip` leaves out and
+    /// `scope` admits, scored as a search scores them. Records covering the
+    /// same lines, and the pieces of one declaration, are reported once.
+    pub fn similar(
+        &self,
+        query: &[f32],
+        k: usize,
+        skip: impl Fn(&Record) -> bool + Sync,
+        scope: Option<&Scope>,
+    ) -> Vec<Hit> {
+        let mut ranked: Vec<Hit> = self
+            .records
+            .par_iter()
+            .enumerate()
+            .filter(|(_, r)| !skip(r) && scope.is_none_or(|s| s.admits(&r.path)))
+            .map(|(i, r)| Hit {
+                score: quant::dot(&r.vector, query),
+                record_idx: i,
+            })
+            .collect();
+        sort_and_truncate(&mut ranked, candidate_depth(k));
+        let floor = self.noise_floor.unwrap_or(0.0);
+        let mut taken: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+        let mut split: std::collections::HashSet<(&str, &Symbol)> =
+            std::collections::HashSet::new();
+        let mut out: Vec<Hit> = Vec::with_capacity(k.min(ranked.len()));
+        for hit in ranked {
+            if out.len() == k {
+                break;
+            }
+            let record = &self.records[hit.record_idx];
+            let places = taken.entry(record.path.as_str()).or_default();
+            if places
+                .iter()
+                .any(|&(start, end)| record.start_line <= end && record.end_line >= start)
+            {
+                continue;
+            }
+            if let Some(symbol) = record.piece_of()
+                && !split.insert((record.path.as_str(), symbol))
+            {
+                continue;
+            }
+            places.push((record.start_line, record.end_line));
+            let reported = reported_score(hit.score, floor);
+            let score = out
+                .last()
+                .map_or(reported, |above: &Hit| reported.min(above.score));
+            out.push(Hit {
+                score,
+                record_idx: hit.record_idx,
+            });
+        }
+        out
+    }
+
     pub fn lexical_ranking(
         &self,
         terms: &[TermHash],
@@ -522,6 +578,12 @@ impl Index {
 
 const COMPLETE_COVERAGE: f32 = 0.999;
 
+/// A cosine as a score: how far it rises above the noise floor, towards 1.
+fn reported_score(cosine: f32, floor: f32) -> f32 {
+    let floor = floor.clamp(0.0, 0.99);
+    ((cosine - floor) / (1.0 - floor)).clamp(0.0, 1.0)
+}
+
 static TEST_WORDS: std::sync::LazyLock<Vec<TermHash>> =
     std::sync::LazyLock::new(|| crate::lexical::query_terms("test tests testing spec specs"));
 
@@ -563,9 +625,7 @@ impl Candidate {
     /// literally, whichever is higher. A hit never shows more than the one
     /// above it, so a threshold keeps a prefix of the ranking.
     fn reported(&self, floor: f32) -> f32 {
-        let floor = floor.clamp(0.0, 0.99);
-        let above = ((self.cosine - floor) / (1.0 - floor)).clamp(0.0, 1.0);
-        above.max(self.share)
+        reported_score(self.cosine, floor).max(self.share)
     }
 
     /// Below an exact match, a chunk that belongs to a declaration outranks one
