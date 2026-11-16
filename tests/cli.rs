@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,6 +38,24 @@ fn ripsem(cwd: &Path, args: &[&str]) -> Output {
         .current_dir(cwd)
         .output()
         .unwrap()
+}
+
+fn ripsem_with_stdin(cwd: &Path, args: &[&str], input: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ripsem"))
+        .args(args)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
 }
 
 fn stdout(output: &Output) -> String {
@@ -862,6 +881,26 @@ fn similar_refreshes_the_index_before_it_reads_a_changed_file() {
     dir.write("src/auth0.rs", "fn auth0() {}\nfn extra() {}\n");
     let out = ripsem(&dir.path, &["similar", "src/auth0.rs:2"]);
     assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn a_query_piped_on_stdin_is_searched_like_one_typed() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    let typed = ripsem(&dir.path, &["search", query, "--json"]);
+    let dash = ripsem_with_stdin(&dir.path, &["search", "-", "--json"], &format!("{query}\n"));
+    assert!(dash.status.success(), "{}", stderr(&dash));
+    assert_eq!(stdout(&dash), stdout(&typed));
+    let bare = ripsem_with_stdin(&dir.path, &["search", "--json"], &format!("{query}\r\n"));
+    assert_eq!(stdout(&bare), stdout(&typed));
+
+    let empty = ripsem_with_stdin(&dir.path, &["search", "-"], "\n");
+    assert_eq!(empty.status.code(), Some(1));
+    assert!(
+        stderr(&empty).contains("the query is empty"),
+        "{}",
+        stderr(&empty)
+    );
 }
 
 #[test]

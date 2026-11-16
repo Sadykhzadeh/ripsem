@@ -86,8 +86,10 @@ pub enum Command {
     /// Find code by an identifier, an error message or a description.
     Search {
         /// What to look for, in any of those shapes. Several words need no
-        /// quotes: `ripsem search where is auth set up` is one query.
-        #[arg(required = true, num_args = 1..)]
+        /// quotes: `ripsem search where is auth set up` is one query. `-`, or
+        /// no words with stdin piped, reads the query from stdin instead, so a
+        /// long question or an editor selection can be piped in.
+        #[arg(num_args = 0..)]
         query: Vec<String>,
         #[command(flatten)]
         opts: SearchOpts,
@@ -635,6 +637,29 @@ fn file_hit_counts(hits: &[pipeline::SearchHit]) -> Vec<(String, usize)> {
     pairs
 }
 
+/// The query as the words given, or as stdin when it is `-` or absent and
+/// stdin is not a terminal. One trailing line break is not part of it.
+fn query_text(words: &[String]) -> Result<String> {
+    let from_stdin = match words {
+        [dash] => dash == "-",
+        [] => !std::io::stdin().is_terminal(),
+        _ => false,
+    };
+    if from_stdin {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+            .context("reading the query from stdin")?;
+        if let Some(line) = text.strip_suffix('\n') {
+            text = line.strip_suffix('\r').unwrap_or(line).to_string();
+        }
+        return Ok(text);
+    }
+    if words.is_empty() {
+        anyhow::bail!("no query: give the words after `search`, or pipe one in on stdin");
+    }
+    Ok(words.join(" "))
+}
+
 fn context_lines(opts: &SearchOpts) -> usize {
     opts.context
         .unwrap_or(match std::io::stdout().is_terminal() {
@@ -644,7 +669,7 @@ fn context_lines(opts: &SearchOpts) -> usize {
 }
 
 fn cmd_search(root: &Path, words: &[String], opts: &SearchOpts) -> Result<()> {
-    let query = words.join(" ");
+    let query = query_text(words)?;
     let text = opts
         .regex
         .as_deref()
