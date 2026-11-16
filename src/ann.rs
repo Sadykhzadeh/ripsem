@@ -4,7 +4,12 @@ use serde::{Deserialize, Serialize};
 /// The lexical arm scans every chunk regardless, so the graph can only save the
 /// vector half of a query, and it is rebuilt on every changing reindex. Measured,
 /// the flat scan stays as cheap as the graph past 200 000 chunks.
+#[cfg(not(test))]
 pub const MIN_RECORDS: usize = 500_000;
+
+/// Low enough that a few dozen small files build a graph in the unit tests.
+#[cfg(test)]
+pub const MIN_RECORDS: usize = 32;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Embedding(pub Vec<f32>);

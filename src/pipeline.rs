@@ -1954,6 +1954,133 @@ mod tests {
         assert_eq!(updated.unwrap().encode_body().unwrap(), on_disk());
     }
 
+    #[cfg(feature = "hnsw")]
+    fn many_files(dir: &crate::testutil::TempDir, count: usize) {
+        for i in 0..count {
+            dir.write(
+                &format!("f{i:02}.rs"),
+                &format!("fn item_{i}() {{ gravel }}\n"),
+            );
+        }
+    }
+
+    #[cfg(feature = "hnsw")]
+    fn shape(hits: &[SearchHit]) -> Vec<(String, usize, usize, u32)> {
+        hits.iter()
+            .map(|h| (h.path.clone(), h.start_line, h.end_line, h.score.to_bits()))
+            .collect()
+    }
+
+    #[cfg(feature = "hnsw")]
+    fn exhaustive(config: &Config) -> Searcher {
+        let mut index = Index::load(&config.index_path()).unwrap();
+        index.ann = None;
+        searcher_over(config, index, Arc::new(LazyEmbedder::new(config)), None).unwrap()
+    }
+
+    #[cfg(feature = "hnsw")]
+    #[test]
+    fn a_query_the_words_answer_does_not_load_the_graph() {
+        let dir = crate::testutil::TempDir::new();
+        many_files(&dir, 90);
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        index_repo(&config, false).unwrap();
+
+        let searcher = open(&config).unwrap();
+        assert!(searcher.index.ann.is_some());
+        assert_eq!(searcher.query("gravel", 5).unwrap().len(), 5);
+        assert!(searcher.ann_map.get().is_none());
+    }
+
+    #[cfg(feature = "hnsw")]
+    #[test]
+    fn a_query_the_words_miss_loads_the_graph_once_and_ranks_as_the_exhaustive_scan_does() {
+        let dir = crate::testutil::TempDir::new();
+        many_files(&dir, 40);
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        index_repo(&config, false).unwrap();
+
+        let searcher = open(&config).unwrap();
+        let first = searcher.query("zephyr", 5).unwrap();
+        let loaded = searcher.ann_map.get().map(|m| m as *const _);
+        assert!(loaded.is_some());
+
+        let second = searcher.query("zephyr", 5).unwrap();
+        assert_eq!(searcher.ann_map.get().map(|m| m as *const _), loaded);
+        assert_eq!(shape(&second), shape(&first));
+
+        let expected = exhaustive(&config).query("zephyr", 5).unwrap();
+        assert_eq!(shape(&first), shape(&expected));
+    }
+
+    #[cfg(feature = "hnsw")]
+    #[test]
+    fn a_refreshed_index_drops_its_graph_and_never_names_a_record_past_its_end() {
+        let dir = crate::testutil::TempDir::new();
+        many_files(&dir, 40);
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        index_repo(&config, false).unwrap();
+
+        let mut searcher = open(&config).unwrap();
+        searcher.query("zephyr", 5).unwrap();
+        assert!(searcher.ann_map.get().is_some());
+
+        for i in 36..40 {
+            std::fs::remove_file(dir.path().join(format!("f{i:02}.rs"))).unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        index_repo(&config, false).unwrap();
+
+        assert!(searcher.refresh().unwrap());
+        assert!(searcher.ann_map.get().is_none());
+        assert_eq!(searcher.record_count(), 36);
+        let hits = searcher.query("zephyr", 40).unwrap();
+        assert_eq!(hits.len(), 36);
+        assert!(hits.iter().all(|h| h.path.as_str() <= "f35.rs"));
+        let expected = exhaustive(&config).query("zephyr", 40).unwrap();
+        assert_eq!(shape(&hits), shape(&expected));
+    }
+
+    #[cfg(feature = "hnsw")]
+    #[test]
+    fn a_graph_that_does_not_decode_falls_back_to_the_exhaustive_scan() {
+        let dir = crate::testutil::TempDir::new();
+        many_files(&dir, 40);
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        index_repo(&config, false).unwrap();
+
+        let intact = Index::load(&config.index_path()).unwrap();
+        let blob = intact.ann.clone().unwrap();
+        let expected = exhaustive(&config).query("zephyr", 5).unwrap();
+
+        let damaged = [
+            vec![1, 2, 3],
+            blob[..blob.len() / 2].to_vec(),
+            vec![0xff; blob.len()],
+        ];
+        for garbage in damaged {
+            let mut index = Index::load(&config.index_path()).unwrap();
+            index.ann = Some(garbage);
+            let searcher =
+                searcher_over(&config, index, Arc::new(LazyEmbedder::new(&config)), None).unwrap();
+            let hits = searcher.query("zephyr", 5).unwrap();
+            assert_eq!(shape(&hits), shape(&expected));
+            assert!(searcher.ann_map.get().is_some_and(Option::is_none));
+        }
+    }
+
     #[test]
     fn relative_strips_root_and_uses_forward_slashes() {
         let root = Path::new("/repo");
