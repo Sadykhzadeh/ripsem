@@ -1516,6 +1516,75 @@ mod tests {
         assert!(err.contains("unreadable or corrupt"), "got: {err}");
     }
 
+    /// A seeded xorshift, so every mutation below is the same on every run.
+    struct Xorshift(u64);
+
+    impl Xorshift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// Loads `bytes` and, when that works, searches the result. A corrupt file
+    /// may fail to load; what it must not do is panic or allocate by a length
+    /// it read from the file.
+    fn decodes_or_fails_cleanly(bytes: &[u8]) {
+        if let Ok(index) = Index::decode(bytes) {
+            let terms = crate::lexical::query_terms("second retry");
+            let _ = index.search_fused(&[0.5, 0.25, 0.75], &terms, &[], 5, None);
+        }
+    }
+
+    /// Every prefix, a few thousand random byte changes, and every 4- and
+    /// 8-byte field of the body set to a huge value.
+    fn fuzz_file(version: u32, body: &[u8], seed: u64) {
+        let base = with_header(version, body);
+        for cut in 0..base.len() {
+            decodes_or_fails_cleanly(&base[..cut]);
+        }
+        let mut rng = Xorshift(seed);
+        for _ in 0..1000 {
+            let mut bytes = base.clone();
+            for _ in 0..1 + rng.below(4) {
+                let at = rng.below(bytes.len());
+                bytes[at] = rng.next() as u8;
+            }
+            decodes_or_fails_cleanly(&bytes);
+        }
+        let start = MAGIC.len() + 4;
+        for at in start..base.len().saturating_sub(3) {
+            for value in [u32::MAX, 1 << 30] {
+                let mut bytes = base.clone();
+                bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+                decodes_or_fails_cleanly(&bytes);
+            }
+        }
+        for at in start..base.len().saturating_sub(7) {
+            let mut bytes = base.clone();
+            bytes[at..at + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+            decodes_or_fails_cleanly(&bytes);
+        }
+    }
+
+    #[test]
+    fn a_corrupt_column_file_never_panics_or_over_allocates() {
+        let body = varied_index().encode_body().unwrap();
+        fuzz_file(FORMAT_VERSION, &body, 0x9e37_79b9_7f4a_7c15);
+    }
+
+    #[test]
+    fn a_corrupt_previous_format_file_never_panics_or_over_allocates() {
+        let body = bitcode::encode(&legacy::Index::from(&varied_index()));
+        fuzz_file(LEGACY_VERSION, &body, 0x2545_f491_4f6c_dd1d);
+    }
+
     /// The header cannot tell one bitcode release from another, so a change in
     /// the bytes has to come with a new FORMAT_VERSION and fails here until it
     /// does. Update both together.
