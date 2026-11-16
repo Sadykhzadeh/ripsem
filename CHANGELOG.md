@@ -10,6 +10,9 @@
   when the config is read. The walk stepped back one line at a time and joined
   a window for every line, so a config file in a repository could make
   indexing that file quadratic.
+- The MCP server refuses a message whose `jsonrpc` member is missing, not only
+  one that names another version. JSON-RPC 2.0 requires it, and the server
+  answered such a request as if it were valid.
 
 ## 0.3.0 (2026-11-15)
 

@@ -340,7 +340,7 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
     {
         return Some(error(Value::Null, -32600, "invalid request"));
     }
-    if request.get("jsonrpc").is_some_and(|v| v != "2.0") {
+    if request.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return Some(error(id.unwrap_or(Value::Null), -32600, "invalid request"));
     }
 
@@ -802,6 +802,17 @@ mod tests {
         let resp = handle(&cfg, None, &request).unwrap();
         assert_eq!(resp["error"]["code"], -32600);
         assert_eq!(resp["id"], 3);
+    }
+
+    /// The JSON-RPC 2.0 spec requires the version member; a message without it
+    /// is not the protocol and is refused like one with another version.
+    #[test]
+    fn a_request_without_the_jsonrpc_version_is_an_invalid_request() {
+        let cfg = Config::default();
+        let request = json!({ "id": 4, "method": "ping" });
+        let resp = handle(&cfg, None, &request).unwrap();
+        assert_eq!(resp["error"]["code"], -32600);
+        assert_eq!(resp["id"], 4);
     }
 
     #[test]
