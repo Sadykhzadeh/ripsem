@@ -244,6 +244,9 @@ asks the same as `ripsem search "where is auth set up"`.
 - `-q, --quiet` prints nothing and sets the exit status: 0 when a hit is left
   after the filters and `--min-score`, 1 when none is, so a script can branch
   on a match. Without it a search with no hits still exits 0.
+- `-l, --files-with-matches` lists each file with a hit once, in the order of
+  its best hit, instead of the hits. It cannot be combined with
+  `--count-by-file`.
 
 ## Models
 

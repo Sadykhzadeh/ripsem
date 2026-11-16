@@ -766,6 +766,34 @@ fn a_count_past_the_last_page_says_no_further_matches() {
 }
 
 #[test]
+fn files_with_matches_lists_each_file_once_in_ranking_order() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    let out = ripsem(&dir.path, &["search", query, "-k", "50", "-l"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    let listed: Vec<&str> = text.lines().collect();
+    assert_eq!(listed.len(), 10, "{text}");
+    let mut unique = listed.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), 10, "{text}");
+
+    let json = ripsem(&dir.path, &["search", query, "-k", "50", "-l", "--json"]);
+    let paths: Vec<String> = serde_json::from_str(&stdout(&json)).unwrap();
+    assert_eq!(paths, listed);
+
+    let none = ripsem(
+        &dir.path,
+        &["search", "quantum entanglement", "-l", "--min-score", "0.5"],
+    );
+    assert_eq!(stdout(&none).trim(), "no matches");
+
+    let clash = ripsem(&dir.path, &["search", query, "-l", "--count-by-file"]);
+    assert_eq!(clash.status.code(), Some(2), "{}", stderr(&clash));
+}
+
+#[test]
 fn quiet_search_prints_nothing_and_exits_by_whether_a_hit_is_left() {
     let dir = paged_tree();
     let query = "verify password create session token";

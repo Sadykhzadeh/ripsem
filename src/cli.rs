@@ -148,6 +148,10 @@ pub enum Command {
         /// script can branch on a match as with `grep -q`.
         #[arg(short = 'q', long)]
         quiet: bool,
+        /// List each file with a hit once, in the order of its best hit, instead
+        /// of the hits. Like `--count-by-file` it reads the top `-k` places.
+        #[arg(short = 'l', long, conflicts_with = "count_by_file")]
+        files_with_matches: bool,
     },
     /// Index and keep the index in sync as files change.
     Watch,
@@ -243,6 +247,7 @@ pub fn run(cli: Cli) -> Result<()> {
             min_score,
             count_by_file,
             quiet,
+            files_with_matches,
         } => cmd_search(
             &root,
             &query.join(" "),
@@ -257,6 +262,7 @@ pub fn run(cli: Cli) -> Result<()> {
             min_score,
             count_by_file,
             quiet,
+            files_with_matches,
         ),
         Command::Watch => watch::run(load_config(&root)?),
         Command::Status { json } => cmd_status(&root, json),
@@ -654,6 +660,7 @@ fn cmd_search(
     min_score: Option<f32>,
     count_by_file: bool,
     quiet: bool,
+    files_with_matches: bool,
 ) -> Result<()> {
     let text = regex.map(crate::scope::text_pattern).transpose()?;
     let context = context.unwrap_or(match std::io::stdout().is_terminal() {
@@ -680,6 +687,7 @@ fn cmd_search(
         context,
         &pipeline::query_words(query),
         count_by_file,
+        files_with_matches,
         offset,
         next,
     )?;
@@ -713,15 +721,36 @@ fn no_hits_message(offset: usize) -> &'static str {
 
 /// Prints search results in the shape the flags ask for. `next` is the offset
 /// of the page that follows, when there is one.
+#[allow(clippy::too_many_arguments)]
 fn print_hits(
     hits: &[pipeline::SearchHit],
     as_json: bool,
     context: usize,
     words: &[String],
     count_by_file: bool,
+    files_with_matches: bool,
     offset: usize,
     next: Option<usize>,
 ) -> Result<()> {
+    if files_with_matches {
+        let mut seen = std::collections::HashSet::new();
+        let paths: Vec<&str> = hits
+            .iter()
+            .map(|h| h.path.as_str())
+            .filter(|path| seen.insert(*path))
+            .collect();
+        if as_json {
+            out!("{}", serde_json::to_string_pretty(&paths)?);
+        } else if paths.is_empty() {
+            out!("{}", no_hits_message(offset));
+        } else {
+            for path in paths {
+                out!("{path}");
+            }
+        }
+        return Ok(());
+    }
+
     if count_by_file {
         let counts = file_hit_counts(hits);
         if as_json {
