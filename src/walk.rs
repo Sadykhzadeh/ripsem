@@ -201,21 +201,30 @@ const WINDOWS_1252_HIGH: [char; 32] = [
     '\u{2dc}', '\u{2122}', '\u{161}', '\u{203a}', '\u{153}', '\u{9d}', '\u{17e}', '\u{178}',
 ];
 
-/// UTF-8 when the bytes are UTF-8. Otherwise the bytes are read as Windows-1252,
-/// which every byte maps to, so a file saved in a Western code page keeps its
-/// accented words instead of turning each one into replacement characters.
+/// UTF-8 when the bytes are UTF-8. A file that is mostly UTF-8 with a few stray
+/// bytes keeps its characters, the stray bytes becoming replacement characters.
+/// Otherwise the bytes are read as Windows-1252, which every byte maps to, so a
+/// file saved in a Western code page keeps its accented words instead of
+/// turning each one into replacement characters.
 fn utf8_or_windows_1252(bytes: &[u8]) -> Cow<'_, str> {
     match std::str::from_utf8(bytes) {
         Ok(text) => Cow::Borrowed(text),
-        Err(_) => Cow::Owned(
-            bytes
-                .iter()
-                .map(|&b| match b {
-                    0x80..=0x9F => WINDOWS_1252_HIGH[usize::from(b - 0x80)],
-                    _ => char::from(b),
-                })
-                .collect(),
-        ),
+        Err(_) => {
+            let lossy = String::from_utf8_lossy(bytes);
+            let stray = lossy.matches('\u{FFFD}').count();
+            if stray * 100 <= bytes.len() {
+                return Cow::Owned(lossy.into_owned());
+            }
+            Cow::Owned(
+                bytes
+                    .iter()
+                    .map(|&b| match b {
+                        0x80..=0x9F => WINDOWS_1252_HIGH[usize::from(b - 0x80)],
+                        _ => char::from(b),
+                    })
+                    .collect(),
+            )
+        }
     }
 }
 
@@ -702,6 +711,14 @@ mod tests {
             names(&collect(&config_at(dir.path())).unwrap()),
             ["keep.rs"]
         );
+    }
+
+    #[test]
+    fn a_mostly_utf8_file_with_one_stray_byte_keeps_its_characters() {
+        let head = "été, naïve café. ".repeat(60);
+        let mut bytes = head.as_bytes().to_vec();
+        bytes.extend_from_slice(b"\xE9ok\n");
+        assert_eq!(decode_text(&bytes), format!("{head}\u{FFFD}ok\n"));
     }
 
     #[test]
