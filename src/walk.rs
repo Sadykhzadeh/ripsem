@@ -188,11 +188,39 @@ fn is_internal(path: &Path, root: &Path) -> bool {
         .any(|c| matches!(c.as_os_str().to_str(), Some(".ripsem") | Some(".git")))
 }
 
+/// Windows-1252 for the bytes 0x80 to 0x9F, which that code page gives
+/// characters where Latin-1 gives controls. The five it leaves unassigned keep
+/// the control, as the WHATWG encoding standard has them.
+const WINDOWS_1252_HIGH: [char; 32] = [
+    '\u{20ac}', '\u{81}', '\u{201a}', '\u{192}', '\u{201e}', '\u{2026}', '\u{2020}', '\u{2021}',
+    '\u{2c6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\u{8d}', '\u{17d}', '\u{8f}',
+    '\u{90}', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}', '\u{2022}', '\u{2013}', '\u{2014}',
+    '\u{2dc}', '\u{2122}', '\u{161}', '\u{203a}', '\u{153}', '\u{9d}', '\u{17e}', '\u{178}',
+];
+
+/// UTF-8 when the bytes are UTF-8. Otherwise the bytes are read as Windows-1252,
+/// which every byte maps to, so a file saved in a Western code page keeps its
+/// accented words instead of turning each one into replacement characters.
+fn utf8_or_windows_1252(bytes: &[u8]) -> Cow<'_, str> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Cow::Borrowed(text),
+        Err(_) => Cow::Owned(
+            bytes
+                .iter()
+                .map(|&b| match b {
+                    0x80..=0x9F => WINDOWS_1252_HIGH[usize::from(b - 0x80)],
+                    _ => char::from(b),
+                })
+                .collect(),
+        ),
+    }
+}
+
 /// The text a file holds. UTF-16 and UTF-32 with their byte order mark, as
 /// Windows tools save them, are decoded and the mark dropped; anything else is
-/// read as UTF-8 with bad bytes replaced, after a UTF-8 mark if there is one.
-/// Every reader of a file's text goes through here, so a line number means the
-/// same line in the index and in the snippets.
+/// read as UTF-8, or as Windows-1252 when it is not UTF-8, after a UTF-8 mark
+/// if there is one. Every reader of a file's text goes through here, so a line
+/// number means the same line in the index and in the snippets.
 pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
     let units = |order: fn([u8; 2]) -> u16, rest: &[u8]| {
         let units: Vec<u16> = rest
@@ -217,8 +245,8 @@ pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
         [0, 0, 0xFE, 0xFF, rest @ ..] => Cow::Owned(scalars(u32::from_be_bytes, rest)),
         [0xFF, 0xFE, rest @ ..] => Cow::Owned(units(u16::from_le_bytes, rest)),
         [0xFE, 0xFF, rest @ ..] => Cow::Owned(units(u16::from_be_bytes, rest)),
-        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest),
-        _ => String::from_utf8_lossy(bytes),
+        [0xEF, 0xBB, 0xBF, rest @ ..] => utf8_or_windows_1252(rest),
+        _ => utf8_or_windows_1252(bytes),
     }
 }
 
@@ -536,5 +564,28 @@ mod tests {
             "using System;\n"
         );
         assert!(crate::chunk::is_blank(&decode_text(b"\xEF\xBB\xBF\n")));
+    }
+
+    /// Source saved by a Windows editor in the system code page is not UTF-8.
+    /// Read as UTF-8 it loses every accented word; Windows-1252 reads it as
+    /// the characters its author typed.
+    #[test]
+    fn text_that_is_not_utf8_is_read_as_windows_1252() {
+        assert_eq!(
+            decode_text(b"caf\xE9 costs \x80 5\x94\n"),
+            "caf\u{e9} costs \u{20ac} 5\u{201d}\n"
+        );
+        assert_eq!(decode_text(b"plain \xC3\xA9\n"), "plain \u{e9}\n");
+    }
+
+    #[test]
+    fn a_windows_1252_file_is_indexed_with_its_accents() {
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("notes.txt"), b"caf\xE9 au lait\n").unwrap();
+
+        let collected = collect(&config_at(dir.path())).unwrap();
+        assert_eq!(names(&collected), ["notes.txt"]);
+        let text = decode_text(&std::fs::read(&collected[0]).unwrap()).into_owned();
+        assert_eq!(text, "caf\u{e9} au lait\n");
     }
 }
