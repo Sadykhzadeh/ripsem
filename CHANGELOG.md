@@ -11,6 +11,10 @@
   has a hit once. `--sort path` orders a page by file and then by line, and
   `--since <rev>` keeps only the hits in files that differ from a revision, as
   the working tree has them.
+- `ripsem search ... -l -0` ends each listed path with a NUL byte instead of a
+  line break, for `xargs -0` and paths with spaces or newlines.
+- `ripsem search --vimgrep` and `ripsem similar --vimgrep` print one
+  `path:line:column:text` line per hit, for Vim's quickfix list and grep tools.
 - The query is read from stdin with `ripsem search -`, or when `search` gets no
   words and stdin is not a terminal. One trailing line break is not part of it.
 - A file that is not UTF-8 is read as Windows-1252, so `café` in a file saved in

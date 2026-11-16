@@ -145,7 +145,7 @@ pub struct SearchOpts {
     /// to pass.
     #[arg(long, default_value_t = 0, value_name = "N")]
     offset: usize,
-    /// Print the results as JSON.
+    /// Print the results as JSON. Cannot be combined with `--vimgrep` or `-0`.
     #[arg(long)]
     json: bool,
     /// Limit results to a subdirectory, e.g. `--in src/embed`. A relative
@@ -189,17 +189,42 @@ pub struct SearchOpts {
     /// Summarise as one line per file with its hit count (sorted by count),
     /// instead of listing each hit. Aggregates the top-`k` matches, so pair
     /// it with a larger `-k` for a wider view. Honoured by `--json` too.
+    /// Cannot be combined with `-l` or `--vimgrep`.
     #[arg(long)]
     count_by_file: bool,
     /// Print nothing. The exit status says whether a hit is left after the
     /// filters and `--min-score`: 0 when one is, 1 when none is, so a
-    /// script can branch on a match as with `grep -q`.
+    /// script can branch on a match as with `grep -q`. Cannot be combined
+    /// with `--vimgrep`.
     #[arg(short = 'q', long)]
     quiet: bool,
     /// List each file with a hit once, in the order of its best hit, instead
     /// of the hits. Like `--count-by-file` it reads the top `-k` places.
+    /// Cannot be combined with `--count-by-file` or `--vimgrep`.
     #[arg(short = 'l', long, conflicts_with = "count_by_file")]
     files_with_matches: bool,
+    /// With `-l`, end each path with a NUL byte instead of a line break, for
+    /// `xargs -0` and other readers of NUL-separated names, so a path with a
+    /// space or a newline stays whole. Prints nothing when no file has a hit.
+    /// Requires `-l` and cannot be combined with `--json`.
+    #[arg(
+        short = '0',
+        long = "null",
+        requires = "files_with_matches",
+        conflicts_with = "json"
+    )]
+    null: bool,
+    /// One `path:line:column:text` line per hit, the format editors load into
+    /// a quickfix list and grep tools read: column is 1, and text is the
+    /// hit's first non-blank line. Vim loads it with
+    /// `:cexpr system('ripsem search --vimgrep retry')`. No colour, and no
+    /// note about more results. Cannot be combined with `--json`, `-l`, `-q`
+    /// or `--count-by-file`.
+    #[arg(
+        long,
+        conflicts_with_all = ["json", "files_with_matches", "quiet", "count_by_file"]
+    )]
+    vimgrep: bool,
     /// The order of the hits: `score`, the ranking, or `path`, by file and then
     /// by line. `path` orders the hits of the page shown; `--offset` still
     /// reads the ranking by score.
@@ -673,6 +698,19 @@ fn apply_min_score(hits: Vec<pipeline::SearchHit>, min: Option<f32>) -> Vec<pipe
     }
 }
 
+/// The line of a hit's snippet that holds its first text, with its number in
+/// the file and the line trimmed. A snippet with no text names the hit's first
+/// line with an empty text.
+fn first_text_line(hit: &pipeline::SearchHit) -> (usize, &str) {
+    hit.snippet
+        .lines()
+        .enumerate()
+        .find(|(_, line)| !line.trim().is_empty())
+        .map_or((hit.start_line, ""), |(i, line)| {
+            (hit.start_line + i, line.trim())
+        })
+}
+
 /// Counts hits per file for `--count-by-file`, most hits first, then by path.
 fn file_hit_counts(hits: &[pipeline::SearchHit]) -> Vec<(String, usize)> {
     let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
@@ -840,6 +878,8 @@ fn show(page: pipeline::Page, opts: &SearchOpts, context: usize, words: &[String
         words,
         opts.count_by_file,
         opts.files_with_matches,
+        opts.null,
+        opts.vimgrep,
         opts.offset,
         next,
     )
@@ -879,9 +919,19 @@ fn print_hits(
     words: &[String],
     count_by_file: bool,
     files_with_matches: bool,
+    null: bool,
+    vimgrep: bool,
     offset: usize,
     next: Option<usize>,
 ) -> Result<()> {
+    if vimgrep {
+        for h in hits {
+            let (line, text) = first_text_line(h);
+            out!("{}:{line}:1:{text}", h.path);
+        }
+        return Ok(());
+    }
+
     if files_with_matches {
         let mut seen = std::collections::HashSet::new();
         let paths: Vec<&str> = hits
@@ -891,6 +941,14 @@ fn print_hits(
             .collect();
         if as_json {
             out!("{}", serde_json::to_string_pretty(&paths)?);
+        } else if null {
+            let bytes: Vec<u8> = paths
+                .iter()
+                .flat_map(|path| path.bytes().chain(std::iter::once(0)))
+                .collect();
+            if let Err(e) = std::io::stdout().write_all(&bytes) {
+                stdout_failed(&e);
+            }
         } else if paths.is_empty() {
             out!("{}", no_hits_message(offset));
         } else {

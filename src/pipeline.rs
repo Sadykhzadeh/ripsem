@@ -1171,10 +1171,13 @@ impl Searcher {
                     .ann_map
                     .get_or_init(|| self.index.ann.as_deref().and_then(crate::ann::load))
                 {
-                    Some(map) => crate::ann::search_map(map, qv, depth)
-                        .into_iter()
-                        .map(|(record_idx, score)| crate::index::Hit { score, record_idx })
-                        .collect(),
+                    Some(map) => match crate::ann::search_map(map, qv, depth) {
+                        Some(found) => found
+                            .into_iter()
+                            .map(|(record_idx, score)| crate::index::Hit { score, record_idx })
+                            .collect(),
+                        None => self.index.dense_ranking(qv, depth, None),
+                    },
                     None => self.index.dense_ranking(qv, depth, None),
                 },
                 qv,

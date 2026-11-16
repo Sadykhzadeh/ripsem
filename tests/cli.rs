@@ -927,6 +927,100 @@ fn files_with_matches_lists_each_file_once_in_ranking_order() {
 }
 
 #[test]
+fn vimgrep_prints_one_path_line_column_text_line_per_hit() {
+    let dir = TempDir::new();
+    dir.write(
+        "src/my file.rs",
+        "\n    fn login(user: &str) {\n\tverify password\n    }\n",
+    );
+    dir.write("src/other.rs", "fn logout(user: &str) { end session }");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let out = ripsem(&dir.path, &["search", "verify password", "--vimgrep"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    let lines: Vec<&str> = text.lines().collect();
+    let hits = ripsem(&dir.path, &["search", "verify password", "--json"]);
+    let hits: Vec<serde_json::Value> = serde_json::from_str(&stdout(&hits)).unwrap();
+    assert_eq!(lines.len(), hits.len(), "{text}");
+    for line in &lines {
+        let parts: Vec<&str> = line.splitn(4, ':').collect();
+        assert_eq!(parts.len(), 4, "{line}");
+        assert!(parts[1].parse::<usize>().is_ok(), "{line}");
+        assert_eq!(parts[2], "1", "{line}");
+        assert!(
+            !parts[3].starts_with(' ') && !parts[3].ends_with(' '),
+            "{line}"
+        );
+    }
+    assert!(
+        lines.contains(&"src/my file.rs:2:1:fn login(user: &str) {"),
+        "{text}"
+    );
+    assert!(!text.contains('\x1b'), "{text}");
+
+    for clash in [
+        vec!["search", "verify password", "--vimgrep", "--json"],
+        vec!["search", "verify password", "--vimgrep", "-l"],
+        vec!["search", "verify password", "--vimgrep", "-q"],
+        vec!["search", "verify password", "--vimgrep", "--count-by-file"],
+    ] {
+        let out = ripsem(&dir.path, &clash);
+        assert_eq!(out.status.code(), Some(2), "{clash:?}");
+    }
+}
+
+#[test]
+fn null_ends_each_listed_path_with_a_nul_byte() {
+    let dir = TempDir::new();
+    dir.write("src/my file.rs", "fn login(user: &str) { verify password }");
+    dir.write("src/other.rs", "fn logout(user: &str) { end session }");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let out = ripsem(&dir.path, &["search", "verify password", "-l", "-0"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let plain = ripsem(&dir.path, &["search", "verify password", "-l"]);
+    let mut lines: Vec<String> = stdout(&plain).lines().map(str::to_string).collect();
+    let mut paths: Vec<String> = out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8(p.to_vec()).unwrap())
+        .collect();
+    lines.sort();
+    paths.sort();
+    assert!(paths.contains(&"src/my file.rs".to_string()), "{paths:?}");
+    assert_eq!(paths, lines);
+    assert!(out.stdout.ends_with(&[0]));
+
+    let none = ripsem(
+        &dir.path,
+        &[
+            "search",
+            "quantum entanglement",
+            "-l",
+            "-0",
+            "--min-score",
+            "0.5",
+        ],
+    );
+    assert!(none.status.success());
+    assert!(none.stdout.is_empty(), "{}", stdout(&none));
+
+    let bare = ripsem(&dir.path, &["search", "verify password", "-0"]);
+    assert_eq!(bare.status.code(), Some(2), "{}", stderr(&bare));
+    let json = ripsem(
+        &dir.path,
+        &["search", "verify password", "-l", "-0", "--json"],
+    );
+    assert_eq!(json.status.code(), Some(2), "{}", stderr(&json));
+}
+
+#[test]
 fn similar_finds_the_places_nearest_to_a_location_and_leaves_its_own_out() {
     let dir = paged_tree();
     let found = ripsem(&dir.path, &["similar", "src/auth0.rs"]);
