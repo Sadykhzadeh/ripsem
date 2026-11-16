@@ -754,6 +754,18 @@ fn an_offset_reads_the_next_page_and_says_when_more_follow() {
 }
 
 #[test]
+fn a_count_past_the_last_page_says_no_further_matches() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    let past = ripsem(
+        &dir.path,
+        &["search", query, "--count-by-file", "--offset", "40"],
+    );
+    assert!(past.status.success(), "{}", stderr(&past));
+    assert_eq!(stdout(&past).trim(), "no further matches");
+}
+
+#[test]
 fn the_json_of_a_page_is_the_same_array_of_hits() {
     let dir = paged_tree();
     let query = "verify password create session token";

@@ -691,6 +691,15 @@ fn from_here(raw: &str, root: &Path) -> String {
     }
 }
 
+/// What a search with no hits to show says: a page past the last one has
+/// matches behind it, so it is not "no matches".
+fn no_hits_message(offset: usize) -> &'static str {
+    match offset > 0 {
+        true => "no further matches",
+        false => "no matches",
+    }
+}
+
 /// Prints search results in the shape the flags ask for. `next` is the offset
 /// of the page that follows, when there is one.
 fn print_hits(
@@ -711,7 +720,7 @@ fn print_hits(
                 .collect();
             out!("{}", serde_json::to_string_pretty(&rows)?);
         } else if counts.is_empty() {
-            out!("no matches");
+            out!("{}", no_hits_message(offset));
         } else {
             for (path, count) in counts {
                 out!("{count:>5}  {path}");
@@ -740,14 +749,7 @@ fn print_hits(
     }
 
     if hits.is_empty() {
-        out!(
-            "{}",
-            if offset > 0 {
-                "no further matches"
-            } else {
-                "no matches"
-            }
-        );
+        out!("{}", no_hits_message(offset));
         return Ok(());
     }
     for h in hits {
