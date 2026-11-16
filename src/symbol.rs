@@ -103,26 +103,6 @@ pub fn named(kind: &str, name: &str, enclosing: Option<&Symbol>) -> Symbol {
 /// a declaration also has to yield a name.
 #[cfg(feature = "treesitter")]
 fn declared_kind(node_kind: &str) -> Option<&'static str> {
-    const KINDS: &[(&str, &str)] = &[
-        ("interface", "interface"),
-        ("namespace", "mod"),
-        ("constructor", "fn"),
-        ("function", "fn"),
-        ("method", "fn"),
-        ("module", "mod"),
-        ("struct", "struct"),
-        ("class", "class"),
-        ("macro", "macro"),
-        ("union", "union"),
-        ("const", "const"),
-        ("static", "static"),
-        ("trait", "trait"),
-        ("enum", "enum"),
-        ("impl", "impl"),
-        ("type", "type"),
-        ("mod", "mod"),
-        ("def", "fn"),
-    ];
     if is_use(node_kind) {
         return None;
     }
@@ -131,6 +111,28 @@ fn declared_kind(node_kind: &str) -> Option<&'static str> {
         .find(|(needle, _)| kind_contains(node_kind, needle))
         .map(|&(_, kind)| kind)
 }
+
+#[cfg(feature = "treesitter")]
+const KINDS: &[(&str, &str)] = &[
+    ("interface", "interface"),
+    ("namespace", "mod"),
+    ("constructor", "fn"),
+    ("function", "fn"),
+    ("method", "fn"),
+    ("module", "mod"),
+    ("struct", "struct"),
+    ("class", "class"),
+    ("macro", "macro"),
+    ("union", "union"),
+    ("const", "const"),
+    ("static", "static"),
+    ("trait", "trait"),
+    ("enum", "enum"),
+    ("impl", "impl"),
+    ("type", "type"),
+    ("mod", "mod"),
+    ("def", "fn"),
+];
 
 /// `str::contains` for a needle of a few bytes. Every std call first builds its
 /// search tables, and this runs for each node of a file, so the scan is cheaper.
@@ -226,11 +228,11 @@ fn is_name_leaf(kind: &str) -> bool {
 
 #[cfg(all(test, feature = "treesitter"))]
 mod tests {
-    use super::kind_contains;
+    use super::{KINDS, kind_contains};
 
     #[test]
     fn kind_contains_agrees_with_str_contains() {
-        let kinds = [
+        let extra = [
             "",
             "fn",
             "function_item",
@@ -238,11 +240,11 @@ mod tests {
             "impl_item",
             "type_identifier",
         ];
-        let needles = [
-            "", "fn", "mod", "def", "type", "function", "module", "x_item",
-        ];
-        for kind in kinds {
-            for needle in needles.iter().filter(|n| !n.is_empty()) {
+        for (needle, _) in KINDS {
+            let wrapped = format!("x_{needle}_y");
+            let mut kinds = vec![needle.to_string(), wrapped];
+            kinds.extend(extra.iter().map(|k| k.to_string()));
+            for kind in &kinds {
                 assert_eq!(
                     kind_contains(kind, needle),
                     kind.contains(needle),
