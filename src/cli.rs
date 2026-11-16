@@ -145,7 +145,7 @@ pub struct SearchOpts {
     /// to pass.
     #[arg(long, default_value_t = 0, value_name = "N")]
     offset: usize,
-    /// Print the results as JSON.
+    /// Print the results as JSON. Cannot be combined with `--vimgrep` or `-0`.
     #[arg(long)]
     json: bool,
     /// Limit results to a subdirectory, e.g. `--in src/embed`. A relative
@@ -189,15 +189,18 @@ pub struct SearchOpts {
     /// Summarise as one line per file with its hit count (sorted by count),
     /// instead of listing each hit. Aggregates the top-`k` matches, so pair
     /// it with a larger `-k` for a wider view. Honoured by `--json` too.
+    /// Cannot be combined with `-l` or `--vimgrep`.
     #[arg(long)]
     count_by_file: bool,
     /// Print nothing. The exit status says whether a hit is left after the
     /// filters and `--min-score`: 0 when one is, 1 when none is, so a
-    /// script can branch on a match as with `grep -q`.
+    /// script can branch on a match as with `grep -q`. Cannot be combined
+    /// with `--vimgrep`.
     #[arg(short = 'q', long)]
     quiet: bool,
     /// List each file with a hit once, in the order of its best hit, instead
     /// of the hits. Like `--count-by-file` it reads the top `-k` places.
+    /// Cannot be combined with `--count-by-file` or `--vimgrep`.
     #[arg(short = 'l', long, conflicts_with = "count_by_file")]
     files_with_matches: bool,
     /// With `-l`, end each path with a NUL byte instead of a line break, for
