@@ -1144,7 +1144,10 @@ fn a_named_block_does_not_hide_the_methods_inside_it() {
 fn a_single_long_line_is_indexed_in_pieces() {
     let dir = TempDir::new();
     let filler: String = (0..20_000).map(|n| format!("a{n},")).collect();
-    dir.write("bundle.js", &format!("var t=[{filler}];{filler}"));
+    dir.write(
+        "bundle.js",
+        &format!("{}var t=[{filler}];{filler}", "// note\n".repeat(200)),
+    );
     let config = config_for(&dir.path);
     let stats = pipeline::index_repo(&config, false).unwrap();
     assert!(stats.chunks > 100, "{} chunks", stats.chunks);
@@ -1159,7 +1162,10 @@ fn a_hit_deep_in_a_long_line_shows_that_part_of_it() {
     let filler: String = (0..20_000).map(|n| format!("a{n},")).collect();
     dir.write(
         "bundle.js",
-        &format!("var t=[{filler}zebracrossing,{filler}];"),
+        &format!(
+            "{}var t=[{filler}zebracrossing,{filler}];",
+            "// note\n".repeat(200)
+        ),
     );
     let config = config_for(&dir.path);
     pipeline::index_repo(&config, false).unwrap();

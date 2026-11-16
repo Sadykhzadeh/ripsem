@@ -29,7 +29,9 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
     Ok(list(config)?
         .into_par_iter()
         .map(|(path, _)| path)
-        .filter(|path| reads_file_as_text(path))
+        .filter_map(|path| {
+            matches!(read_hashed(&path, &mut Vec::new()), Sniffed::Text(_)).then_some(path)
+        })
         .collect())
 }
 
@@ -52,10 +54,23 @@ pub fn read_hashed(path: &Path, buffer: &mut Vec<u8>) -> Sniffed {
         return Sniffed::Unreadable;
     }
     let sniffed = &buffer[..buffer.len().min(SNIFF_BYTES as usize)];
-    match reads_as_text(sniffed) {
+    match reads_as_text(sniffed) && !is_minified(buffer) {
         true => Sniffed::Text(content_hash(buffer)),
         false => Sniffed::Binary,
     }
+}
+
+/// A file of at least this many bytes whose lines average at least
+/// [`MINIFIED_LINE`] bytes is a minified or generated bundle. Its words are
+/// noise to a search, and its chunks cut one long line again and again, so it
+/// is left out like a binary file. A long line among ordinary ones does not
+/// make a file minified.
+const MINIFIED_BYTES: usize = 8 * 1024;
+const MINIFIED_LINE: usize = 4 * 1024;
+
+fn is_minified(bytes: &[u8]) -> bool {
+    let lines = bytes.iter().filter(|&&b| b == b'\n').count() + 1;
+    bytes.len() >= MINIFIED_BYTES && bytes.len() / lines >= MINIFIED_LINE
 }
 
 /// Every file the walk reaches within the size limit, in path order, with its
@@ -263,18 +278,6 @@ pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
             Some(Order::Big) => Cow::Owned(units(u16::from_be_bytes, bytes)),
             None => utf8_or_windows_1252(bytes),
         },
-    }
-}
-
-fn reads_file_as_text(path: &Path) -> bool {
-    let file = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-    let mut prefix = Vec::with_capacity(SNIFF_BYTES as usize);
-    match file.take(SNIFF_BYTES).read_to_end(&mut prefix) {
-        Ok(_) => reads_as_text(&prefix),
-        Err(_) => false,
     }
 }
 
@@ -669,6 +672,21 @@ mod tests {
             "caf\u{e9} costs \u{20ac} 5\u{201d}\n"
         );
         assert_eq!(decode_text(b"plain \xC3\xA9\n"), "plain \u{e9}\n");
+    }
+
+    #[test]
+    fn a_minified_bundle_is_skipped_and_a_long_line_in_a_normal_file_is_kept() {
+        let dir = TempDir::new();
+        dir.write("bundle.js", &"var a=1;".repeat(2000));
+        let mut normal = "fn line() {}\n".repeat(300);
+        normal.push_str(&"x".repeat(9000));
+        normal.push('\n');
+        dir.write("normal.rs", &normal);
+
+        assert_eq!(
+            names(&collect(&config_at(dir.path())).unwrap()),
+            ["normal.rs"]
+        );
     }
 
     #[test]

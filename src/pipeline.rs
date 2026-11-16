@@ -476,7 +476,12 @@ fn scan(
     });
     let mut known: HashMap<&str, (u64, FileStat)> = HashMap::new();
     let mut last = None;
-    for record in usable.map_or(&[][..], |index| &index.records[..]) {
+    // A file's text is judged as a whole, and what counts as indexable depends on
+    // the chunking, so stored hashes are trusted only under the same chunking.
+    for record in usable
+        .filter(|index| index.chunking == chunking)
+        .map_or(&[][..], |index| &index.records[..])
+    {
         if last != Some(record.path.as_str()) {
             last = Some(record.path.as_str());
             known
