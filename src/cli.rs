@@ -76,9 +76,10 @@ pub enum Command {
         /// Embed every file again instead of reusing the unchanged ones.
         #[arg(long)]
         force: bool,
-        /// List the files that would be indexed and exit, without building
-        /// embeddings or writing the index. Useful for checking which
-        /// ignore/exclude/config patterns are in effect.
+        /// List the files that would be indexed, then count the files left out
+        /// and why, and exit, without building embeddings or writing the index.
+        /// Useful for checking which ignore/exclude/config patterns are in
+        /// effect.
         #[arg(long)]
         dry_run: bool,
     },

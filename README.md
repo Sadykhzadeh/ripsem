@@ -81,6 +81,13 @@ repository. Every search after that first embeds whatever changed since, so
 results never point at code that has moved. On Windows the first index runs on
 the GPU through DirectML when there is one.
 
+To try it without the download, switch to the hashing backend before the first
+index. It matches the words of a query rather than its meaning:
+
+```bash
+ripsem model backend hash && ripsem index --force
+```
+
 ### Why not grep?
 
 grep answers "where does this string occur". That is the right question when you
@@ -271,8 +278,9 @@ more results below this; pass --offset 2 to see them
 `ripsem similar <path>[:LINE[-LINE]]` finds the code nearest to a place
 already in the index: `ripsem similar src/auth.rs:40-72`, one line
 `src/auth.rs:40`, or a bare path for the whole file. It reads the vectors the
-index stores, so it runs no model and works offline. The lines asked about are
-left out of the answer. A whole file, or a range covering several chunks, is
+index stores, so it runs no model and works offline. Its time is mostly loading
+the index, not the search: 1.15 s at the fastest of five runs on 978 794 chunks
+with the hashing backend. The lines asked about are left out of the answer. A whole file, or a range covering several chunks, is
 looked for by the average of its chunks, so the query reads as what that code
 is about rather than as its single best chunk. It takes the options of
 `search` and refreshes the index first, as `search` does; an unknown path, a
@@ -486,7 +494,7 @@ anyway.
 ## Troubleshooting
 
 **A file never shows up in results.** `ripsem index --dry-run` lists every file
-the index takes in. A file is left out when `.gitignore`, `.ripsemignore` or
+the index takes in, and says how many it left out and why. A file is left out when `.gitignore`, `.ripsemignore` or
 `exclude` matches it, when it is binary, a minified bundle (at least 8 KiB with
 lines averaging 4 KiB or more), or larger than `max_file_kb`, or when
 `skip_generated` treats it as machine-written.
