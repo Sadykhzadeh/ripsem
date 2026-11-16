@@ -29,7 +29,9 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
     Ok(list(config)?
         .into_par_iter()
         .map(|(path, _)| path)
-        .filter(|path| reads_file_as_text(path))
+        .filter_map(|path| {
+            matches!(read_hashed(&path, &mut Vec::new()), Sniffed::Text(_)).then_some(path)
+        })
         .collect())
 }
 
@@ -52,10 +54,23 @@ pub fn read_hashed(path: &Path, buffer: &mut Vec<u8>) -> Sniffed {
         return Sniffed::Unreadable;
     }
     let sniffed = &buffer[..buffer.len().min(SNIFF_BYTES as usize)];
-    match reads_as_text(sniffed) {
+    match reads_as_text(sniffed) && !is_minified(buffer) {
         true => Sniffed::Text(content_hash(buffer)),
         false => Sniffed::Binary,
     }
+}
+
+/// A file of at least this many bytes whose lines average at least
+/// [`MINIFIED_LINE`] bytes is a minified or generated bundle. Its words are
+/// noise to a search, and its chunks cut one long line again and again, so it
+/// is left out like a binary file. A long line among ordinary ones does not
+/// make a file minified.
+const MINIFIED_BYTES: usize = 8 * 1024;
+const MINIFIED_LINE: usize = 4 * 1024;
+
+fn is_minified(bytes: &[u8]) -> bool {
+    let lines = bytes.iter().filter(|&&b| b == b'\n').count() + 1;
+    bytes.len() >= MINIFIED_BYTES && bytes.len() / lines >= MINIFIED_LINE
 }
 
 /// Every file the walk reaches within the size limit, in path order, with its
@@ -116,7 +131,7 @@ fn builder(config: &Config) -> Result<WalkBuilder> {
                 "exclude pattern '{pattern}' cannot start with '!'; put a negation in .ripsemignore"
             );
             overrides
-                .add(&format!("!{}", slashed(pattern)))
+                .add(&format!("!{}", glob_text(pattern, cfg!(windows))))
                 .with_context(|| format!("invalid exclude pattern '{pattern}'"))?;
         }
         builder.overrides(overrides.build().context("building exclude overrides")?);
@@ -127,11 +142,14 @@ fn builder(config: &Config) -> Result<WalkBuilder> {
 
 /// Globs treat a backslash as an escape, but on Windows it is the separator
 /// and cannot be part of a name, so `vendor\third_party` means `vendor/third_party`.
-pub(crate) fn slashed(pattern: &str) -> Cow<'_, str> {
-    match cfg!(windows) && pattern.contains('\\') {
-        true => Cow::Owned(pattern.replace('\\', "/")),
-        false => Cow::Borrowed(pattern),
-    }
+/// A leading `./` names the root, where a glob is anchored already, so it is
+/// dropped; left in, it would match nothing.
+pub(crate) fn glob_text(pattern: &str, windows: bool) -> String {
+    let text = match windows && pattern.contains('\\') {
+        true => pattern.replace('\\', "/"),
+        false => pattern.to_string(),
+    };
+    text.strip_prefix("./").unwrap_or(&text).to_string()
 }
 
 /// Whether a change at any of these paths can alter what [`collect`] returns:
@@ -198,21 +216,30 @@ const WINDOWS_1252_HIGH: [char; 32] = [
     '\u{2dc}', '\u{2122}', '\u{161}', '\u{203a}', '\u{153}', '\u{9d}', '\u{17e}', '\u{178}',
 ];
 
-/// UTF-8 when the bytes are UTF-8. Otherwise the bytes are read as Windows-1252,
-/// which every byte maps to, so a file saved in a Western code page keeps its
-/// accented words instead of turning each one into replacement characters.
+/// UTF-8 when the bytes are UTF-8. A file that is mostly UTF-8 with a few stray
+/// bytes keeps its characters, the stray bytes becoming replacement characters.
+/// Otherwise the bytes are read as Windows-1252, which every byte maps to, so a
+/// file saved in a Western code page keeps its accented words instead of
+/// turning each one into replacement characters.
 fn utf8_or_windows_1252(bytes: &[u8]) -> Cow<'_, str> {
     match std::str::from_utf8(bytes) {
         Ok(text) => Cow::Borrowed(text),
-        Err(_) => Cow::Owned(
-            bytes
-                .iter()
-                .map(|&b| match b {
-                    0x80..=0x9F => WINDOWS_1252_HIGH[usize::from(b - 0x80)],
-                    _ => char::from(b),
-                })
-                .collect(),
-        ),
+        Err(_) => {
+            let lossy = String::from_utf8_lossy(bytes);
+            let stray = lossy.matches('\u{FFFD}').count();
+            if stray * 100 <= bytes.len() {
+                return Cow::Owned(lossy.into_owned());
+            }
+            Cow::Owned(
+                bytes
+                    .iter()
+                    .map(|&b| match b {
+                        0x80..=0x9F => WINDOWS_1252_HIGH[usize::from(b - 0x80)],
+                        _ => char::from(b),
+                    })
+                    .collect(),
+            )
+        }
     }
 }
 
@@ -246,19 +273,11 @@ pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
         [0xFF, 0xFE, rest @ ..] => Cow::Owned(units(u16::from_le_bytes, rest)),
         [0xFE, 0xFF, rest @ ..] => Cow::Owned(units(u16::from_be_bytes, rest)),
         [0xEF, 0xBB, 0xBF, rest @ ..] => utf8_or_windows_1252(rest),
-        _ => utf8_or_windows_1252(bytes),
-    }
-}
-
-fn reads_file_as_text(path: &Path) -> bool {
-    let file = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-    let mut prefix = Vec::with_capacity(SNIFF_BYTES as usize);
-    match file.take(SNIFF_BYTES).read_to_end(&mut prefix) {
-        Ok(_) => reads_as_text(&prefix),
-        Err(_) => false,
+        _ => match utf16_without_mark(&bytes[..bytes.len().min(SNIFF_BYTES as usize)]) {
+            Some(Order::Little) => Cow::Owned(units(u16::from_le_bytes, bytes)),
+            Some(Order::Big) => Cow::Owned(units(u16::from_be_bytes, bytes)),
+            None => utf8_or_windows_1252(bytes),
+        },
     }
 }
 
@@ -274,9 +293,63 @@ fn reads_as_text(prefix: &[u8]) -> bool {
         | content_inspector::ContentType::UTF_16BE
         | content_inspector::ContentType::UTF_32LE
         | content_inspector::ContentType::UTF_32BE => true,
-        content_inspector::ContentType::BINARY => false,
+        content_inspector::ContentType::BINARY => {
+            !BINARY_HEADERS
+                .iter()
+                .any(|header| prefix.starts_with(header))
+                && utf16_without_mark(prefix).is_some()
+        }
         _ => !prefix.contains(&0),
     }
+}
+
+/// Formats whose header shows what they are, whatever bytes follow it.
+const BINARY_HEADERS: &[&[u8]] = &[b"\x7fELF", b"\x89PNG", b"%PDF", b"MZ", b"PK\x03\x04"];
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Order {
+    Little,
+    Big,
+}
+
+/// The byte order of UTF-16 text that has no byte order mark, as Windows tools
+/// sometimes write it. ASCII in UTF-16 has a zero beside every character, on
+/// the second byte of each unit when little-endian and on the first when
+/// big-endian. So the zeros of a sample must sit on one side, and the units
+/// decoded that way must be printable: a binary with zeros in every other byte
+/// (sixteen-bit samples, say) fails the second test. `None` for anything else,
+/// including a sample without a zero.
+fn utf16_without_mark(sample: &[u8]) -> Option<Order> {
+    let sample = &sample[..sample.len() & !1];
+    let units = sample.len() / 2;
+    if units < 8 || !sample.contains(&0) {
+        return None;
+    }
+    let (first, second) = sample
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .fold((0, 0), |(f, s), pair| {
+            (f + usize::from(pair[0] == 0), s + usize::from(pair[1] == 0))
+        });
+    let (order, zeros, other) = match second >= first {
+        true => (Order::Little, second, first),
+        false => (Order::Big, first, second),
+    };
+    if zeros * 10 < units * 4 || other * 20 > units {
+        return None;
+    }
+    let printable = sample
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| match order {
+            Order::Little => u16::from_le_bytes([pair[0], pair[1]]),
+            Order::Big => u16::from_be_bytes([pair[0], pair[1]]),
+        })
+        .filter(|&unit| matches!(unit, 0x09 | 0x0A | 0x0D) || unit >= 0x20)
+        .count();
+    (printable * 100 >= units * 99).then_some(order)
 }
 
 #[cfg(test)]
@@ -420,6 +493,29 @@ mod tests {
         let mut found = names(&collect(&config).unwrap());
         found.sort();
         assert_eq!(found, ["keep.rs", "own.rs"]);
+    }
+
+    #[test]
+    fn a_leading_dot_slash_in_an_exclude_names_the_same_path() {
+        let dir = TempDir::new();
+        dir.write("keep.rs", "fn main() {}\n");
+        dir.write("vendor/skip.rs", "fn main() {}\n");
+        let mut config = config_at(dir.path());
+        config.exclude = vec!["./vendor".into()];
+
+        assert_eq!(names(&collect(&config).unwrap()), ["keep.rs"]);
+    }
+
+    #[test]
+    fn a_glob_reads_its_separators_as_the_platform_does() {
+        assert_eq!(glob_text("vendor\\third_party", true), "vendor/third_party");
+        assert_eq!(glob_text("vendor\\", true), "vendor/");
+        assert_eq!(glob_text(".\\vendor\\x", true), "vendor/x");
+        assert_eq!(glob_text("vendor\\x", false), "vendor\\x");
+        assert_eq!(glob_text("./vendor/x", false), "vendor/x");
+        assert_eq!(glob_text("./vendor/x", true), "vendor/x");
+        assert_eq!(glob_text("src/**/*.rs", true), "src/**/*.rs");
+        assert_eq!(glob_text("my dir/a b.rs", true), "my dir/a b.rs");
     }
 
     #[test]
@@ -576,6 +672,71 @@ mod tests {
             "caf\u{e9} costs \u{20ac} 5\u{201d}\n"
         );
         assert_eq!(decode_text(b"plain \xC3\xA9\n"), "plain \u{e9}\n");
+    }
+
+    #[test]
+    fn a_minified_bundle_is_skipped_and_a_long_line_in_a_normal_file_is_kept() {
+        let dir = TempDir::new();
+        dir.write("bundle.js", &"var a=1;".repeat(2000));
+        let mut normal = "fn line() {}\n".repeat(300);
+        normal.push_str(&"x".repeat(9000));
+        normal.push('\n');
+        dir.write("normal.rs", &normal);
+
+        assert_eq!(
+            names(&collect(&config_at(dir.path())).unwrap()),
+            ["normal.rs"]
+        );
+    }
+
+    #[test]
+    fn utf16_without_a_byte_order_mark_is_text_in_either_order() {
+        let text = "fn a() {}\r\nfn b() { \"caf\u{e9}\" }\r\n";
+        let le: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let be: Vec<u8> = text.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        let dir = TempDir::new();
+        std::fs::write(dir.path().join("le.ps1"), &le).unwrap();
+        std::fs::write(dir.path().join("be.reg"), &be).unwrap();
+
+        assert_eq!(names(&collect(&config_at(dir.path())).unwrap()).len(), 2);
+        assert_eq!(
+            decode_text(&le),
+            "fn a() {}\r\nfn b() { \"caf\u{e9}\" }\r\n"
+        );
+        assert_eq!(
+            decode_text(&be),
+            "fn a() {}\r\nfn b() { \"caf\u{e9}\" }\r\n"
+        );
+    }
+
+    #[test]
+    fn binary_files_with_a_header_are_still_skipped() {
+        let dir = TempDir::new();
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend([0, 0, 0, 16, 0, 0, 0, 16, 8, 6, 0, 0, 0]);
+        let mut elf = b"\x7fELF\x02\x01\x01\0".to_vec();
+        elf.extend([0u8; 56]);
+        let mut int16 = Vec::new();
+        for n in 0u16..4000 {
+            int16.extend((n % 300).to_le_bytes());
+        }
+        std::fs::write(dir.path().join("icon.png"), &png).unwrap();
+        std::fs::write(dir.path().join("prog.elf"), &elf).unwrap();
+        std::fs::write(dir.path().join("samples.raw"), &int16).unwrap();
+        dir.write("keep.rs", "fn main() {}\n");
+
+        assert_eq!(
+            names(&collect(&config_at(dir.path())).unwrap()),
+            ["keep.rs"]
+        );
+    }
+
+    #[test]
+    fn a_mostly_utf8_file_with_one_stray_byte_keeps_its_characters() {
+        let head = "été, naïve café. ".repeat(60);
+        let mut bytes = head.as_bytes().to_vec();
+        bytes.extend_from_slice(b"\xE9ok\n");
+        assert_eq!(decode_text(&bytes), format!("{head}\u{FFFD}ok\n"));
     }
 
     #[test]

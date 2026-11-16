@@ -73,17 +73,29 @@ pub fn declaration(
     text: &str,
     enclosing: Option<&Symbol>,
 ) -> Option<Symbol> {
-    let (kind, name) = match is_binding(node.kind()) {
-        true => ("fn", bound_function_name(node, text)?),
-        false => (declared_kind(node.kind())?, declared_name(node, text)?),
-    };
-    Some(Symbol {
+    let (kind, (start, end)) = raw_declaration(node)?;
+    Some(named(kind, &text[start..end], enclosing))
+}
+
+/// The kind a node declares and the bytes of its name, before the name of an
+/// enclosing declaration is put in front of it. [`named`] completes it.
+#[cfg(feature = "treesitter")]
+pub fn raw_declaration(node: &tree_sitter::Node) -> Option<(&'static str, (usize, usize))> {
+    match is_binding(node.kind()) {
+        true => Some(("fn", bound_function_name(node)?)),
+        false => Some((declared_kind(node.kind())?, declared_name(node)?)),
+    }
+}
+
+#[cfg(feature = "treesitter")]
+pub fn named(kind: &str, name: &str, enclosing: Option<&Symbol>) -> Symbol {
+    Symbol {
         kind: kind.to_string(),
         name: match enclosing {
             Some(outer) => format!("{}::{name}", outer.name),
-            None => name,
+            None => name.to_string(),
         },
-    })
+    }
 }
 
 /// Longer needles come first so `module` is not read as `mod`. A kind match
@@ -91,26 +103,6 @@ pub fn declaration(
 /// a declaration also has to yield a name.
 #[cfg(feature = "treesitter")]
 fn declared_kind(node_kind: &str) -> Option<&'static str> {
-    const KINDS: &[(&str, &str)] = &[
-        ("interface", "interface"),
-        ("namespace", "mod"),
-        ("constructor", "fn"),
-        ("function", "fn"),
-        ("method", "fn"),
-        ("module", "mod"),
-        ("struct", "struct"),
-        ("class", "class"),
-        ("macro", "macro"),
-        ("union", "union"),
-        ("const", "const"),
-        ("static", "static"),
-        ("trait", "trait"),
-        ("enum", "enum"),
-        ("impl", "impl"),
-        ("type", "type"),
-        ("mod", "mod"),
-        ("def", "fn"),
-    ];
     if is_use(node_kind) {
         return None;
     }
@@ -119,6 +111,28 @@ fn declared_kind(node_kind: &str) -> Option<&'static str> {
         .find(|(needle, _)| kind_contains(node_kind, needle))
         .map(|&(_, kind)| kind)
 }
+
+#[cfg(feature = "treesitter")]
+const KINDS: &[(&str, &str)] = &[
+    ("interface", "interface"),
+    ("namespace", "mod"),
+    ("constructor", "fn"),
+    ("function", "fn"),
+    ("method", "fn"),
+    ("module", "mod"),
+    ("struct", "struct"),
+    ("class", "class"),
+    ("macro", "macro"),
+    ("union", "union"),
+    ("const", "const"),
+    ("static", "static"),
+    ("trait", "trait"),
+    ("enum", "enum"),
+    ("impl", "impl"),
+    ("type", "type"),
+    ("mod", "mod"),
+    ("def", "fn"),
+];
 
 /// `str::contains` for a needle of a few bytes. Every std call first builds its
 /// search tables, and this runs for each node of a file, so the scan is cheaper.
@@ -164,7 +178,7 @@ fn is_binding(node_kind: &str) -> bool {
 /// body holds a closure, which belongs to the function around it as a Rust
 /// closure or a Python lambda does.
 #[cfg(feature = "treesitter")]
-fn bound_function_name(node: &tree_sitter::Node, text: &str) -> Option<String> {
+fn bound_function_name(node: &tree_sitter::Node) -> Option<(usize, usize)> {
     let value = node.child_by_field_name("value")?;
     if !value.kind().contains("function") {
         return None;
@@ -180,29 +194,29 @@ fn bound_function_name(node: &tree_sitter::Node, text: &str) -> Option<String> {
         .into_iter()
         .filter_map(|field| node.child_by_field_name(field))
         .find(|name| is_name_leaf(name.kind()))
-        .map(|name| text[name.start_byte()..name.end_byte()].to_string())
+        .map(|name| (name.start_byte(), name.end_byte()))
 }
 
 #[cfg(feature = "treesitter")]
-fn declared_name(node: &tree_sitter::Node, text: &str) -> Option<String> {
+fn declared_name(node: &tree_sitter::Node) -> Option<(usize, usize)> {
     // A C or C++ function's `type` is its return type, so its declarator comes
     // first, and a typedef's `type` is what it aliases.
     ["name", "declarator", "type"]
         .into_iter()
         .filter_map(|field| node.child_by_field_name(field))
-        .find_map(|child| identifier_text(&child, text))
+        .find_map(|child| identifier_span(&child))
 }
 
 /// C-like grammars wrap the identifier in nested declarators, so the field node
 /// is a starting point rather than the answer.
 #[cfg(feature = "treesitter")]
-fn identifier_text(node: &tree_sitter::Node, text: &str) -> Option<String> {
+fn identifier_span(node: &tree_sitter::Node) -> Option<(usize, usize)> {
     if is_name_leaf(node.kind()) {
-        return Some(text[node.start_byte()..node.end_byte()].to_string());
+        return Some((node.start_byte(), node.end_byte()));
     }
     let mut cursor = node.walk();
     node.named_children(&mut cursor)
-        .find_map(|child| identifier_text(&child, text))
+        .find_map(|child| identifier_span(&child))
 }
 
 /// Most grammars call the leaf holding a declared name some flavour of
@@ -214,11 +228,11 @@ fn is_name_leaf(kind: &str) -> bool {
 
 #[cfg(all(test, feature = "treesitter"))]
 mod tests {
-    use super::kind_contains;
+    use super::{KINDS, kind_contains};
 
     #[test]
     fn kind_contains_agrees_with_str_contains() {
-        let kinds = [
+        let extra = [
             "",
             "fn",
             "function_item",
@@ -226,11 +240,11 @@ mod tests {
             "impl_item",
             "type_identifier",
         ];
-        let needles = [
-            "", "fn", "mod", "def", "type", "function", "module", "x_item",
-        ];
-        for kind in kinds {
-            for needle in needles.iter().filter(|n| !n.is_empty()) {
+        for (needle, _) in KINDS {
+            let wrapped = format!("x_{needle}_y");
+            let mut kinds = vec![needle.to_string(), wrapped];
+            kinds.extend(extra.iter().map(|k| k.to_string()));
+            for kind in &kinds {
                 assert_eq!(
                     kind_contains(kind, needle),
                     kind.contains(needle),

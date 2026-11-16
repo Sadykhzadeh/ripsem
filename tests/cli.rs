@@ -1229,3 +1229,92 @@ fn every_file_is_hashed_when_asked_and_not_otherwise() {
     let found = ripsem(&dir.path, &["search", "sigma echo", "--json", "-k", "1"]);
     assert!(stdout(&found).contains("b.rs"), "{}", stdout(&found));
 }
+
+#[test]
+fn a_truncated_index_is_reported_and_rebuilt_without_a_panic() {
+    let dir = TempDir::new();
+    dir.write("src/lib.rs", "fn parse_config() {}\n");
+    assert!(
+        ripsem(&dir.path, &["model", "backend", "hash"])
+            .status
+            .success()
+    );
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let index = dir.path.join(".ripsem/index.bin");
+    let bytes = std::fs::read(&index).unwrap();
+    std::fs::write(&index, &bytes[..bytes.len() / 2]).unwrap();
+
+    let status = ripsem(&dir.path, &["status"]);
+    assert!(
+        stdout(&status).contains("unreadable"),
+        "{}",
+        stdout(&status)
+    );
+    assert!(!stderr(&status).contains("panicked"), "{}", stderr(&status));
+
+    let rebuilt = ripsem(&dir.path, &["index"]);
+    assert!(rebuilt.status.success(), "{}", stderr(&rebuilt));
+    assert!(!stdout(&ripsem(&dir.path, &["status"])).contains("unreadable"));
+}
+
+#[test]
+fn a_config_naming_an_unknown_model_stops_index_and_names_the_file() {
+    let dir = TempDir::new();
+    dir.write("src/lib.rs", "fn main() {}\n");
+    dir.write(".ripsem/config.toml", "model = \"no-such-model\"\n");
+
+    let out = ripsem(&dir.path, &["index"]);
+    assert!(!out.status.success());
+    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+    let err = stderr(&out);
+    assert!(err.contains("config.toml"), "{err}");
+    assert!(err.contains("no-such-model"), "{err}");
+}
+
+#[test]
+fn a_dry_run_lists_one_path_per_line() {
+    let dir = TempDir::new();
+    dir.write("src/lib.rs", "fn main() {}\n");
+    dir.write("docs/notes.md", "# notes\n");
+    assert!(
+        ripsem(&dir.path, &["model", "backend", "hash"])
+            .status
+            .success()
+    );
+
+    let out = ripsem(&dir.path, &["index", "--dry-run"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
+    let text = stdout(&out);
+    let mut listed: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.ends_with("would be indexed"))
+        .collect();
+    listed.sort();
+    assert_eq!(listed, ["docs/notes.md", "src/lib.rs"]);
+}
+
+#[test]
+fn status_says_when_the_index_was_built_in_both_outputs() {
+    let dir = TempDir::new();
+    dir.write("src/lib.rs", "fn main() {}\n");
+    assert!(
+        ripsem(&dir.path, &["model", "backend", "hash"])
+            .status
+            .success()
+    );
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let human = stdout(&ripsem(&dir.path, &["status"]));
+    assert!(human.contains("built:  "), "{human}");
+
+    let json = stdout(&ripsem(&dir.path, &["status", "--json"]));
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(
+        v["index"]["written_unix"]
+            .as_u64()
+            .is_some_and(|s| s > 1_600_000_000),
+        "{json}"
+    );
+}

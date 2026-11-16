@@ -163,7 +163,7 @@ impl Config {
                 .is_ok_and(|table| table.contains_key("chunk_overlap"));
             parsed.root = root.to_path_buf();
             parsed
-                .check_sizes()
+                .check()
                 .and_then(|()| parsed.check_overlap(overlap_given))
                 .with_context(|| format!("in {}", show_path(&path)))?;
             cfg = parsed;
@@ -182,8 +182,9 @@ impl Config {
     }
 
     /// A size of 0 would not fail anywhere else: a file limit of 0 indexes
-    /// nothing, and a window of 0 lines cuts a chunk for every line.
-    fn check_sizes(&self) -> Result<()> {
+    /// nothing, and a window of 0 lines cuts a chunk for every line. A model
+    /// outside the catalogue would index at a guessed width under its own name.
+    fn check(&self) -> Result<()> {
         for (key, value) in [
             ("chunk_lines", self.chunk_lines as u64),
             ("max_chunk_lines", self.max_chunk_lines as u64),
@@ -191,6 +192,11 @@ impl Config {
         ] {
             anyhow::ensure!(value > 0, "{key} must be 1 or more");
         }
+        anyhow::ensure!(
+            model::find(&self.model).is_some(),
+            "model '{}' is not in the catalogue; see `ripsem model list`",
+            self.model
+        );
         Ok(())
     }
 
@@ -250,6 +256,15 @@ mod tests {
         dir.write(".ripsem/config.toml", "exlude = [\"vendor/\"]\n");
         let err = format!("{:#}", Config::load(dir.path()).unwrap_err());
         assert!(err.contains("exlude"), "{err}");
+    }
+
+    #[test]
+    fn a_model_the_catalogue_does_not_hold_is_an_error() {
+        let dir = TempDir::new();
+        dir.write(".ripsem/config.toml", "model = \"no-such-model\"\n");
+        let err = format!("{:#}", Config::load(dir.path()).unwrap_err());
+        assert!(err.contains("config.toml"), "{err}");
+        assert!(err.contains("model 'no-such-model'"), "{err}");
     }
 
     #[test]

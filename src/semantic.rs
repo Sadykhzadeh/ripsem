@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use tree_sitter::{Node, Parser};
 
 use crate::chunk::{Chunk, chunk_file};
@@ -18,6 +21,7 @@ pub fn chunk(text: &str, spec: &LangSpec, max_lines: usize, overlap: usize) -> O
         out: Vec::new(),
         last: None,
         prefix: None,
+        raw: RefCell::new(HashMap::new()),
     };
     emitter.walk(tree.root_node(), None);
     emitter.documentation(tree.root_node(), None);
@@ -85,7 +89,13 @@ struct Emitter<'a> {
     last: Option<(usize, usize)>,
     /// The start of a few lines that open the next record.
     prefix: Option<(usize, usize)>,
+    /// What each node declares, by node id, for the passes that ask about the same
+    /// nodes again.
+    raw: RefCell<HashMap<usize, RawName>>,
 }
+
+/// What a node declares: its kind and the bytes of its name, or nothing.
+type RawName = Option<(&'static str, (usize, usize))>;
 
 /// A declaration that can be a record of its own, with the node that declares
 /// it. The node a chunk is cut at can be a wrapper around it: `export` around a
@@ -137,6 +147,15 @@ fn is_lead(node: &Node) -> bool {
 }
 
 impl Emitter<'_> {
+    fn declared(&self, node: &Node, enclosing: Option<&Symbol>) -> Option<Symbol> {
+        let (kind, (start, end)) = (*self
+            .raw
+            .borrow_mut()
+            .entry(node.id())
+            .or_insert_with(|| symbol::raw_declaration(node)))?;
+        Some(symbol::named(kind, &self.text[start..end], enclosing))
+    }
+
     /// `enclosing` is the declaration being walked, so every piece of a function
     /// too large for one chunk keeps its name. The piece holding its first line
     /// also declares it, which is where a search for the name should land.
@@ -147,7 +166,7 @@ impl Emitter<'_> {
             return;
         }
 
-        let declared = symbol::declaration(&node, self.text, enclosing);
+        let declared = self.declared(&node, enclosing);
         let scope = declared.as_ref().or(enclosing);
         let first = self.out.len();
         self.walk_children(node, scope, None);
@@ -171,7 +190,7 @@ impl Emitter<'_> {
     fn unit<'t>(&self, child: Node<'t>, scope: Option<&Symbol>) -> Option<Unit<'t>> {
         let mut node = child;
         for _ in 0..4 {
-            if let Some(symbol) = symbol::declaration(&node, self.text, scope) {
+            if let Some(symbol) = self.declared(&node, scope) {
                 return Some(Unit { node, symbol });
             }
             let mut cursor = node.walk();
@@ -508,7 +527,7 @@ impl Emitter<'_> {
         enclosing: Option<&Symbol>,
         out: &mut Vec<Declaration>,
     ) {
-        let declared = symbol::declaration(&node, self.text, enclosing);
+        let declared = self.declared(&node, enclosing);
         if let Some(symbol) = &declared {
             out.push(Declaration {
                 symbol: symbol.clone(),
@@ -546,7 +565,7 @@ impl Emitter<'_> {
     }
 
     fn declaration_within(&self, node: &Node, enclosing: Option<&Symbol>) -> Option<Symbol> {
-        if let Some(found) = symbol::declaration(node, self.text, enclosing) {
+        if let Some(found) = self.declared(node, enclosing) {
             return Some(found);
         }
         let mut cursor = node.walk();
@@ -558,7 +577,7 @@ impl Emitter<'_> {
     /// declaration, not the comment, so a hit still points at code. A function
     /// body rarely uses the words its author would use to explain it.
     fn documentation(&mut self, node: Node, enclosing: Option<&Symbol>) {
-        let declared = symbol::declaration(&node, self.text, enclosing);
+        let declared = self.declared(&node, enclosing);
         if let Some(symbol) = &declared
             && (symbol.kind == "fn" || node_lines(&node, self.text) >= STANDALONE_FLOOR)
             && let Some(prose) = self.prose_for(&node)
