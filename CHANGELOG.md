@@ -2,9 +2,44 @@
 
 ## Unreleased
 
-- The MCP `search` tool returns its hits as `structuredContent` and advertises
-  an `outputSchema` to clients of MCP revision 2025-06-18 and later. Older
-  revisions get the same text as before and no new fields.
+- `ripsem similar <path>[:LINE[-LINE]]` finds the code nearest to a file, or to
+  a line range of it, from the vectors the index already stores, so no model
+  runs. The chunks the location covers are left out of the answer. The MCP
+  server offers the same search as the `find_similar` tool.
+- `ripsem search` takes more options. `-q` prints nothing and sets the exit
+  status to 0 when a hit is left and 1 when none is. `-l` lists each file that
+  has a hit once. `--sort path` orders a page by file and then by line, and
+  `--since <rev>` keeps only the hits in files that differ from a revision, as
+  the working tree has them.
+- The query is read from stdin with `ripsem search -`, or when `search` gets no
+  words and stdin is not a terminal. One trailing line break is not part of it.
+- A file that is not UTF-8 is read as Windows-1252, so `café` in a file saved in
+  a Western code page is searchable by its word. A file that is mostly UTF-8
+  with one stray byte keeps its characters, and only that byte becomes U+FFFD.
+- UTF-16 without a byte order mark, as some Windows tools write `.ps1`, `.reg`
+  and `.rc` files, is read as text instead of being skipped as binary.
+- A C or C++ function is named by its declarator. A function that returns a
+  named type was labelled after that type, as in `fn Point` for
+  `Point make(int)`.
+- `.rake`, `.gemspec`, `.pyw`, `.zsh`, `.ipp` and `.tpp` files are cut into
+  declarations like the other languages they belong to, instead of into line
+  windows.
+- A minified or generated bundle, a file of at least 8 KiB whose lines average
+  4 KiB or more, is left out of the index, as a binary file is.
+- An `exclude` or `-g` glob that starts with `./` is anchored at the root, as
+  a glob without it already was. Before this, `./vendor` matched nothing.
+- A `model` in `config.toml` that the catalogue does not hold is refused when the
+  config is read, and the message names the file and the key. Before, it was
+  indexed under its own name at a width of 384.
+- `ripsem status` says when the index was built, in a `built:` line.
+- The chunking revision moves from 12 to 18. The first `ripsem index` after
+  upgrading reads every file once, and reuses the stored vectors for chunks
+  whose text did not change, so only the chunks that changed are embedded
+  again.
+- The MCP `search`, `find_similar` and `index_status` tools return their results
+  as `structuredContent` and advertise an `outputSchema` to clients of MCP
+  revision 2025-06-18 and later. Older revisions get the same text as before
+  and no new fields.
 - A piece of a line too long for one chunk is read only from a file inside the
   repository, and only when the file still matches its hash, as the other
   snippets are. An index that named a path outside the root could make a search

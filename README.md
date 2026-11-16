@@ -200,7 +200,18 @@ noise floor by matching queries about anything but code against it, so the
 scale follows the repository and the model.
 
 The words of a query need no quotes: `ripsem search where is auth set up`
-asks the same as `ripsem search "where is auth set up"`.
+asks the same as `ripsem search "where is auth set up"`. A query can also come
+from stdin, with `ripsem search -`, or with no words when stdin is not a
+terminal; one trailing line break is not part of it:
+
+```
+$ echo verify_password | ripsem search - -k 2 --context 0
+src/login.rs:1-3  fn login  (1.000)
+
+src/table.rs:1-3  fn render_table  (0.002)
+
+more results below this; pass --offset 2 to see them
+```
 
 - `-k <N>` sets the number of results (default 10).
 - `--offset <N>` skips the first N results, counted in the ranking after every
@@ -341,10 +352,16 @@ results below this; pass offset=5 to see them.` A client on MCP revision
 `outputSchema`. An `offset` past the last
 result is an answer, not an error: `No further results`. An argument outside the schema comes back as a tool
 error that names what is expected, so the agent can correct the call. The
-`index_status` tool, which takes no arguments, returns what `ripsem status
---json` prints plus `updating`, whether the server is indexing right now, so an
+`find_similar` tool is `ripsem similar` for the agent: a `path`, and optionally
+`line` and `end_line` (the whole file when `line` is absent), returns the code
+nearest to that place, with `limit`, `offset`, `min_score`, `lang`, `glob` and
+`regex` as `search` takes them. Its errors are the CLI's messages, such as a
+file that is not in the index or a line past its end. The `index_status` tool,
+which takes no arguments, returns what `ripsem status
+--json` prints (as structured content too, for revision 2025-06-18 and later)
+plus `updating`, whether the server is indexing right now, so an
 agent that finds nothing it expects can see whether the index exists and how
-many files have changed since it was built. Both tools carry the standard
+many files have changed since it was built. All the tools carry the standard
 MCP annotations (`readOnlyHint` and `idempotentHint` true, `destructiveHint`
 and `openWorldHint` false) and a title, so a client can run them without asking each
 time. `search` refreshes ripsem's own index under `.ripsem/` before it
@@ -408,6 +425,9 @@ put negations in `.ripsemignore`.
 `fastembed` feature start with it.
 
 The file may start with a UTF-8 byte order mark and may use CRLF line endings.
+A file that is not UTF-8 is read as Windows-1252, and UTF-16 without a byte
+order mark is read as text. A file that is mostly UTF-8 keeps its characters
+around a stray byte, which becomes U+FFFD.
 An unknown key, a value of the wrong type, a size of 0 and a `model` that is
 not in `ripsem model list` are all errors, and the message names the file and
 the key. No environment variable sets a key in the file; `--path` picks the
@@ -467,7 +487,8 @@ anyway.
 
 **A file never shows up in results.** `ripsem index --dry-run` lists every file
 the index takes in. A file is left out when `.gitignore`, `.ripsemignore` or
-`exclude` matches it, when it is binary or larger than `max_file_kb`, or when
+`exclude` matches it, when it is binary, a minified bundle (at least 8 KiB with
+lines averaging 4 KiB or more), or larger than `max_file_kb`, or when
 `skip_generated` treats it as machine-written.
 
 **A result points at the wrong lines.** The file changed after it was indexed.

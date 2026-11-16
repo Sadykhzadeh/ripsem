@@ -35,6 +35,93 @@ pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
+/// What the walk left out of the tree, by the rule that took each file out. The
+/// counts add up: every file the walk reaches is indexed or left out for one
+/// reason, and a file the exclude patterns drop is counted as excluded.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Tally {
+    pub indexed: usize,
+    pub binary: usize,
+    pub minified: usize,
+    pub blank: usize,
+    pub unreadable: usize,
+    pub too_large: usize,
+    pub excluded: usize,
+}
+
+impl Tally {
+    /// Every file the walk reached, indexed or not.
+    pub fn seen(&self) -> usize {
+        self.indexed
+            + self.binary
+            + self.minified
+            + self.blank
+            + self.unreadable
+            + self.too_large
+            + self.excluded
+    }
+}
+
+enum Kind {
+    Indexed,
+    Binary,
+    Minified,
+    Blank,
+    Unreadable,
+}
+
+fn kind_of(path: &Path) -> Kind {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Kind::Unreadable;
+    };
+    let sniffed = &bytes[..bytes.len().min(SNIFF_BYTES as usize)];
+    if !reads_as_text(sniffed) {
+        Kind::Binary
+    } else if is_minified(&bytes) {
+        Kind::Minified
+    } else if crate::chunk::is_blank(&decode_text(&bytes)) {
+        Kind::Blank
+    } else {
+        Kind::Indexed
+    }
+}
+
+/// The files [`collect`] returns, with a [`Tally`] of every other file the walk
+/// reaches. It walks the tree three times and reads each file within the size
+/// limit, so it is for `index --dry-run`, not for a normal run.
+pub fn tally(config: &Config) -> Result<(Vec<PathBuf>, Tally)> {
+    let max_bytes = config.max_file_kb.saturating_mul(1024);
+    let everything = walk_files(config, false, u64::MAX)?.len();
+    let reached = walk_files(config, true, u64::MAX)?.len();
+    let kept = walk_files(config, true, max_bytes)?;
+    let mut counts = Tally {
+        excluded: everything.saturating_sub(reached),
+        too_large: reached.saturating_sub(kept.len()),
+        ..Tally::default()
+    };
+    let kinds: Vec<(PathBuf, Kind)> = kept
+        .into_par_iter()
+        .map(|(path, _)| {
+            let kind = kind_of(&path);
+            (path, kind)
+        })
+        .collect();
+    let mut indexed = Vec::new();
+    for (path, kind) in kinds {
+        match kind {
+            Kind::Indexed => {
+                counts.indexed += 1;
+                indexed.push(path);
+            }
+            Kind::Binary => counts.binary += 1,
+            Kind::Minified => counts.minified += 1,
+            Kind::Blank => counts.blank += 1,
+            Kind::Unreadable => counts.unreadable += 1,
+        }
+    }
+    Ok((indexed, counts))
+}
+
 /// What reading a file for the index found.
 pub enum Sniffed {
     Text(u64),
@@ -77,8 +164,13 @@ fn is_minified(bytes: &[u8]) -> bool {
 /// [`FileStat`]. Nothing is read: the size and time come from the directory
 /// listing, which on Windows costs no system call.
 pub fn list(config: &Config) -> Result<Vec<(PathBuf, FileStat)>> {
-    let max_bytes = config.max_file_kb.saturating_mul(1024);
-    let mut builder = builder(config)?;
+    walk_files(config, true, config.max_file_kb.saturating_mul(1024))
+}
+
+/// [`list`] with the exclude patterns and the size limit applied only when asked
+/// for, so [`tally`] can see what each rule takes out.
+fn walk_files(config: &Config, patterns: bool, max_bytes: u64) -> Result<Vec<(PathBuf, FileStat)>> {
+    let mut builder = builder(config, patterns)?;
     // Pruned during the walk so it never descends into `.git`.
     let root = config.root.clone();
     builder.filter_entry(move |entry| !is_internal(entry.path(), &root));
@@ -104,7 +196,7 @@ pub fn list(config: &Config) -> Result<Vec<(PathBuf, FileStat)>> {
     Ok(candidates)
 }
 
-fn builder(config: &Config) -> Result<WalkBuilder> {
+fn builder(config: &Config, patterns: bool) -> Result<WalkBuilder> {
     let mut builder = WalkBuilder::new(&config.root);
     builder
         .hidden(false)
@@ -114,14 +206,17 @@ fn builder(config: &Config) -> Result<WalkBuilder> {
         .git_exclude(true)
         .add_custom_ignore_filename(".ripsemignore");
 
-    let defaults = match config.skip_generated {
+    let defaults = match config.skip_generated && patterns {
         true => GENERATED,
         false => &[],
     };
-    if !config.exclude.is_empty() || !defaults.is_empty() {
+    let excludes: &[String] = match patterns {
+        true => &config.exclude,
+        false => &[],
+    };
+    if !excludes.is_empty() || !defaults.is_empty() {
         let mut overrides = OverrideBuilder::new(&config.root);
-        for pattern in config
-            .exclude
+        for pattern in excludes
             .iter()
             .map(String::as_str)
             .chain(defaults.iter().copied())
@@ -176,7 +271,7 @@ pub fn reaches_any(config: &Config, paths: &[PathBuf]) -> bool {
     if targets.is_empty() {
         return false;
     }
-    let Ok(mut builder) = builder(config) else {
+    let Ok(mut builder) = builder(config, true) else {
         return true;
     };
     let on_the_way = targets.clone();
@@ -687,6 +782,35 @@ mod tests {
             names(&collect(&config_at(dir.path())).unwrap()),
             ["normal.rs"]
         );
+    }
+
+    #[test]
+    fn tally_gives_each_left_out_file_the_rule_that_took_it_out() {
+        let dir = TempDir::new();
+        dir.write("keep.rs", "fn main() {}\n");
+        dir.write("bundle.js", &"var a=1;".repeat(1200));
+        dir.write("big.rs", &"fn a() {}\n".repeat(2000));
+        std::fs::write(dir.path().join("blob.dat"), b"\0\x01\x02 binary\n").unwrap();
+        dir.write("generated.rs", "fn g() {}\n");
+        let mut config = config_at(dir.path());
+        config.max_file_kb = 16;
+        config.exclude = vec!["generated.rs".into()];
+
+        let (paths, counts) = tally(&config).unwrap();
+
+        assert_eq!(names(&paths), ["keep.rs"]);
+        assert_eq!(
+            counts,
+            Tally {
+                indexed: 1,
+                binary: 1,
+                minified: 1,
+                too_large: 1,
+                excluded: 1,
+                ..Tally::default()
+            }
+        );
+        assert_eq!(counts.seen(), 5);
     }
 
     #[test]

@@ -230,6 +230,120 @@ fn indexed_repository() -> TempDir {
     dir
 }
 
+/// Two files that do the same check, indexed with the hashing backend.
+fn repository_with_a_copied_check() -> TempDir {
+    let dir = TempDir::new();
+    dir.write(
+        "src/login.rs",
+        "fn login(user: &str, pass: &str) -> bool {\n    verify_password(user, pass)\n}\n",
+    );
+    dir.write(
+        "src/signup.rs",
+        "fn signup(user: &str, pass: &str) -> bool {\n    verify_password(user, pass)\n}\n",
+    );
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+    dir
+}
+
+/// The place nearest to a function's lines is the copy of it elsewhere, and the
+/// function's own lines are not reported back.
+#[test]
+fn find_similar_reports_the_copy_of_a_place_over_stdio() {
+    let dir = repository_with_a_copied_check();
+    let responses = mcp_over_stdio(
+        &dir.path,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"find_similar","arguments":{"path":"src/login.rs","line":1,"end_line":3}}}"#,
+        ],
+    );
+    let tool = &responses[1]["result"]["tools"][1];
+    assert_eq!(tool["name"], "find_similar");
+    assert_eq!(tool["annotations"]["readOnlyHint"], true);
+    assert_eq!(tool["annotations"]["openWorldHint"], false);
+    assert_eq!(tool["title"], "Find similar code");
+    assert!(tool["outputSchema"].is_object());
+
+    let result = &responses[2]["result"];
+    assert_eq!(result["isError"], false, "{result}");
+    let hits = result["structuredContent"]["hits"].as_array().unwrap();
+    assert!(!hits.is_empty());
+    assert!(
+        hits.iter().all(|h| h["path"] == "src/signup.rs"),
+        "{hits:?}"
+    );
+    assert!(
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("src/signup.rs:")
+    );
+}
+
+/// Errors come back as tool errors in the CLI's own words, so an agent can
+/// correct the call.
+#[test]
+fn find_similar_errors_are_tool_errors_with_the_cli_wording() {
+    let dir = repository_with_a_copied_check();
+    let responses = mcp_over_stdio(
+        &dir.path,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_similar","arguments":{"path":"src/missing.rs"}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_similar","arguments":{"path":"src/login.rs","line":1,"end_line":40}}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"find_similar","arguments":{"path":"src/login.rs","line":3,"end_line":1}}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"find_similar","arguments":{"line":1}}}"#,
+        ],
+    );
+    let text = |i: usize| {
+        responses[i]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(responses[0]["result"]["isError"], true);
+    assert!(
+        text(0).contains("src/missing.rs is not in the index"),
+        "{}",
+        text(0)
+    );
+    assert!(
+        text(1).contains("src/login.rs has 3 lines, so line 40 is out of range"),
+        "{}",
+        text(1)
+    );
+    assert!(
+        text(2).contains("line 1 comes before line 3"),
+        "{}",
+        text(2)
+    );
+    assert!(text(3).contains("missing 'path'"), "{}", text(3));
+}
+
+/// The status report comes back as structured content as well, with the
+/// fields every report has.
+#[test]
+fn index_status_returns_the_report_as_structured_content() {
+    let dir = indexed_repository();
+    let responses = mcp_over_stdio(
+        &dir.path,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"index_status","arguments":{}}}"#,
+        ],
+    );
+    let result = &responses[1]["result"];
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(result["structuredContent"]["schema"], "ripsem/status/v1");
+    assert_eq!(result["structuredContent"]["index"]["present"], true);
+    assert!(result["structuredContent"]["updating"].is_boolean());
+    let text: serde_json::Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, result["structuredContent"]);
+}
+
 /// A client of a revision that has structured output gets the hits as data as
 /// well as text, and the tool advertises the shape it returns.
 #[test]
@@ -1293,6 +1407,41 @@ fn a_dry_run_lists_one_path_per_line() {
         .collect();
     listed.sort();
     assert_eq!(listed, ["docs/notes.md", "src/lib.rs"]);
+}
+
+#[test]
+fn a_dry_run_says_why_each_file_it_reaches_was_left_out() {
+    let dir = TempDir::new();
+    dir.write("keep.rs", "fn main() {}\n");
+    dir.write("bundle.js", &"var a=1;".repeat(1200));
+    dir.write("big.rs", &"fn a() {}\n".repeat(2000));
+    std::fs::write(dir.path.join("blob.dat"), b"\0\x01\x02 binary\n").unwrap();
+    dir.write("generated.rs", "fn g() {}\n");
+    assert!(
+        ripsem(&dir.path, &["model", "backend", "hash"])
+            .status
+            .success()
+    );
+    let config = dir.path.join(".ripsem/config.toml");
+    let existing = std::fs::read_to_string(&config).unwrap();
+    assert!(existing.contains("max_file_kb = 1024"), "{existing}");
+    assert!(existing.contains("exclude = []"), "{existing}");
+    let edited = existing
+        .replace("max_file_kb = 1024", "max_file_kb = 16")
+        .replace("exclude = []", "exclude = [\"generated.rs\"]");
+    std::fs::write(&config, edited).unwrap();
+
+    let out = ripsem(&dir.path, &["index", "--dry-run"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("1 file would be indexed"), "{text}");
+    assert!(
+        text.contains(
+            "5 files seen, left out: 1 binary, 1 minified, 1 over max_file_kb, \
+             1 excluded by pattern"
+        ),
+        "{text}"
+    );
 }
 
 #[test]

@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
-use rayon::prelude::*;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
@@ -571,11 +570,14 @@ fn load_config(root: &Path) -> Result<Config> {
 fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
     let config = load_config(root)?;
     if dry_run {
-        let files = indexable(&config)?;
+        let (files, counts) = walk::tally(&config)?;
         for path in &files {
             out!("{}", pipeline::relative(&config.root, path));
         }
         out!("{} would be indexed", plural(files.len(), "file"));
+        if let Some(left) = left_out_line(&counts) {
+            out!("{} seen, {left}", plural(counts.seen(), "file"));
+        }
         return Ok(());
     }
     let stats = pipeline::index_repo_once(&config, force)?;
@@ -591,16 +593,21 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// The files `ripsem index` would take in: those the walk finds, less any
-/// with nothing but whitespace in them, which yield no chunk.
-fn indexable(config: &Config) -> Result<Vec<PathBuf>> {
-    Ok(walk::collect(config)?
-        .into_par_iter()
-        .filter(|path| {
-            std::fs::read(path)
-                .is_ok_and(|bytes| !crate::chunk::is_blank(&walk::decode_text(&bytes)))
-        })
-        .collect())
+/// The files a run left out and why, as one line; `None` when it left none out.
+fn left_out_line(counts: &walk::Tally) -> Option<String> {
+    let reasons: Vec<String> = [
+        (counts.binary, "binary"),
+        (counts.minified, "minified"),
+        (counts.blank, "blank"),
+        (counts.unreadable, "unreadable"),
+        (counts.too_large, "over max_file_kb"),
+        (counts.excluded, "excluded by pattern"),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, why)| format!("{n} {why}"))
+    .collect();
+    (!reasons.is_empty()).then(|| format!("left out: {}", reasons.join(", ")))
 }
 
 /// A score to three places for the human output. One that rounds to zero
@@ -781,13 +788,18 @@ fn parse_target(raw: &str) -> Result<(&str, Option<(usize, usize)>)> {
         s.parse::<usize>()
             .map_err(|_| anyhow::anyhow!("'{s}' is not a line number"))
     };
-    let (first, last) = (number(first)?, number(last)?);
+    let (first, last) = line_range(raw, number(first)?, number(last)?)?;
+    Ok((path, Some((first, last))))
+}
+
+/// A 1-based line range as `similar` takes it, from `raw` as the user wrote it.
+pub(crate) fn line_range(raw: &str, first: usize, last: usize) -> Result<(usize, usize)> {
     anyhow::ensure!(first >= 1, "line numbers start at 1, not 0");
     anyhow::ensure!(
         last >= first,
         "line {last} comes before line {first} in '{raw}'"
     );
-    Ok((path, Some((first, last))))
+    Ok((first, last))
 }
 
 /// The filters the options ask for, as one scope. `None` when nothing limits
