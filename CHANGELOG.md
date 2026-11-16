@@ -37,11 +37,11 @@
   seen, left out: 1 binary, 1 minified, 1 over max_file_kb, 1 excluded by
   pattern`, so a file missing from the list has a reason. A normal run and
   `status` are unchanged.
-- On an index of more than 500 000 chunks, the nearest-neighbour graph is
-  decoded by the first query that needs vectors, not by every search. On the
-  hashing backend a query the words answer alone does not decode it. Measured
-  on 766 767 chunks, a cold search went from a minimum of 2559 and 2332 ms to
-  1758 and 1775 ms.
+- In a build with the `hnsw` feature, an index of more than 500 000 chunks has
+  its nearest-neighbour graph decoded by the first query that needs vectors,
+  not by every search. On the hashing backend a query the words answer alone
+  does not decode it. Measured on 766 767 chunks, a cold search went from a
+  minimum of 2559 and 2332 ms to 1758 and 1775 ms.
 - The chunking revision moves from 12 to 18. The first `ripsem index` after
   upgrading reads every file once, and reuses the stored vectors for chunks
   whose text did not change, so only the chunks that changed are embedded
