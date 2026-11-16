@@ -188,6 +188,10 @@ impl Config {
         ] {
             anyhow::ensure!(value > 0, "{key} must be 1 or more");
         }
+        anyhow::ensure!(
+            self.chunk_overlap < self.chunk_lines.min(self.max_chunk_lines),
+            "chunk_overlap must be less than chunk_lines and max_chunk_lines"
+        );
         Ok(())
     }
 
@@ -296,6 +300,27 @@ mod tests {
         let dir = TempDir::new();
         let cfg = Config::load(dir.path()).unwrap();
         assert_eq!(cfg.model, DEFAULT_MODEL);
+    }
+
+    /// The overlap is how far each window steps back over the last. At or above
+    /// the window the walk advances a line at a time and joins a window for each,
+    /// so a config file a repository ships could make indexing quadratic.
+    #[test]
+    fn an_overlap_that_is_not_below_the_window_is_refused() {
+        let dir = TempDir::new();
+        for text in [
+            "chunk_lines = 10\nchunk_overlap = 10\n",
+            "chunk_lines = 100\nchunk_overlap = 99\nmax_chunk_lines = 10\n",
+            "max_chunk_lines = 5\n",
+        ] {
+            dir.write(".ripsem/config.toml", text);
+            assert!(Config::load(dir.path()).is_err(), "{text}");
+        }
+        dir.write(
+            ".ripsem/config.toml",
+            "chunk_lines = 10\nchunk_overlap = 9\n",
+        );
+        assert!(Config::load(dir.path()).is_ok());
     }
 
     #[test]

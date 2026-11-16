@@ -6,6 +6,10 @@
   repository, and only when the file still matches its hash, as the other
   snippets are. An index that named a path outside the root could make a search
   show a stretch of that file.
+- A `chunk_overlap` at or above `chunk_lines` or `max_chunk_lines` is refused
+  when the config is read. The walk stepped back one line at a time and joined
+  a window for every line, so a config file in a repository could make
+  indexing that file quadratic.
 
 ## 0.3.0 (2026-11-15)
 
