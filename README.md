@@ -185,7 +185,8 @@ the line range their file had when it was indexed, so `tree: out of date: 3
 changed, 1 new` tells you when a result may no longer point at the right lines.
 Drift is measured the way the incremental index finds changes, so it counts
 exactly what a rebuild would touch. The JSON carries it as `index.drift`
-(`added`/`modified`/`removed`).
+(`added`/`modified`/`removed`). `built:` says when the index file was last
+written, and the JSON carries the same time as `index.written_unix`.
 
 Results print as `path:start-end` with the declaration's name and a snippet, in
 merged-ranking order. The first three hits carry their code, up to 40 lines,

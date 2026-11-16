@@ -1294,3 +1294,27 @@ fn a_dry_run_lists_one_path_per_line() {
     listed.sort();
     assert_eq!(listed, ["docs/notes.md", "src/lib.rs"]);
 }
+
+#[test]
+fn status_says_when_the_index_was_built_in_both_outputs() {
+    let dir = TempDir::new();
+    dir.write("src/lib.rs", "fn main() {}\n");
+    assert!(
+        ripsem(&dir.path, &["model", "backend", "hash"])
+            .status
+            .success()
+    );
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let human = stdout(&ripsem(&dir.path, &["status"]));
+    assert!(human.contains("built:  "), "{human}");
+
+    let json = stdout(&ripsem(&dir.path, &["status", "--json"]));
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(
+        v["index"]["written_unix"]
+            .as_u64()
+            .is_some_and(|s| s > 1_600_000_000),
+        "{json}"
+    );
+}

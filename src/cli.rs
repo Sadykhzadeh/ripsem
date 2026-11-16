@@ -327,8 +327,21 @@ struct IndexFacts {
     /// Built under other chunk settings, so `ripsem index` cuts every file
     /// again.
     rechunk: bool,
+    /// Seconds since the Unix epoch when the index file was last written.
+    written: Option<u64>,
     /// `None` when the tree could not be walked to compare against.
     drift: Option<pipeline::Drift>,
+}
+
+/// How long before `now` the index was written, in one unit of time.
+fn written_ago(written: u64, now: u64) -> String {
+    let secs = now.saturating_sub(written);
+    match secs {
+        0..60 => "just now".to_string(),
+        60..3_600 => format!("{} min ago", secs / 60),
+        3_600..86_400 => format!("{} h ago", secs / 3_600),
+        _ => format!("{} ago", plural((secs / 86_400) as usize, "day")),
+    }
 }
 
 /// The `tree:` line of `status`: what rebuilding would touch, or that it would
@@ -393,6 +406,7 @@ fn status_value(
             "backend": f.index_backend,
             "model": f.index_model,
             "stale": f.stale,
+            "written_unix": f.written,
             "drift": match f.drift {
                 Some(d) => json!({
                     "added": d.added,
@@ -426,7 +440,12 @@ fn index_facts(config: &Config) -> (Option<IndexFacts>, Option<String>) {
             Ok(index) => {
                 let files: std::collections::HashSet<&str> =
                     index.records.iter().map(|r| r.path.as_str()).collect();
-                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                let meta = std::fs::metadata(&path).ok();
+                let size = meta.as_ref().map_or(0, |m| m.len());
+                let written = meta
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs());
                 let drift = pipeline::drift(config, &index).ok();
                 let facts = IndexFacts {
                     path: show_path(&path),
@@ -439,6 +458,7 @@ fn index_facts(config: &Config) -> (Option<IndexFacts>, Option<String>) {
                     index_model: index.model.clone(),
                     stale: !index.built_for(config.backend, &config.model),
                     rechunk: index.chunking != crate::chunk::Chunking::of(config),
+                    written,
                     drift,
                 };
                 (Some(facts), None)
@@ -481,6 +501,12 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
             out!("named:  {} with a declaration", plural(f.named, "chunk"));
             if let Some(drift) = &f.drift {
                 out!("tree:   {}", drift_line(drift));
+            }
+            if let Some(written) = f.written {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(written, |d| d.as_secs());
+                out!("built:  {}", written_ago(written, now));
             }
             if f.ann {
                 out!("ann:    present (approximate search)");
@@ -1440,6 +1466,7 @@ mod tests {
             index_model: "bge-small-en-v1.5".into(),
             stale: false,
             rechunk: false,
+            written: Some(1_700_000_000),
             drift: Some(pipeline::Drift {
                 added: 1,
                 modified: 2,
@@ -1468,6 +1495,17 @@ mod tests {
         assert_eq!(v["index"]["drift"]["added"], 1);
         assert_eq!(v["index"]["drift"]["modified"], 2);
         assert_eq!(v["index"]["drift"]["removed"], 0);
+        assert_eq!(v["index"]["written_unix"], 1_700_000_000);
+    }
+
+    #[test]
+    fn written_ago_names_one_unit_of_time() {
+        assert_eq!(written_ago(100, 50), "just now");
+        assert_eq!(written_ago(0, 59), "just now");
+        assert_eq!(written_ago(0, 600), "10 min ago");
+        assert_eq!(written_ago(0, 7_200), "2 h ago");
+        assert_eq!(written_ago(0, 86_400), "1 day ago");
+        assert_eq!(written_ago(0, 3 * 86_400 + 5), "3 days ago");
     }
 
     #[test]
