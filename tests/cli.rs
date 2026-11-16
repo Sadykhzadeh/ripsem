@@ -1467,6 +1467,37 @@ fn a_truncated_index_is_reported_and_rebuilt_without_a_panic() {
 }
 
 #[test]
+fn a_bit_flipped_index_is_reported_by_status_and_rebuilt_by_search() {
+    let dir = TempDir::new();
+    dir.write("src/lib.rs", "fn parse_config() {}\n");
+    assert!(
+        ripsem(&dir.path, &["model", "backend", "hash"])
+            .status
+            .success()
+    );
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let index = dir.path.join(".ripsem/index.bin");
+    let mut bytes = std::fs::read(&index).unwrap();
+    bytes[0] ^= 0x01;
+    std::fs::write(&index, &bytes).unwrap();
+
+    let status = ripsem(&dir.path, &["status"]);
+    assert!(status.status.success(), "{}", stderr(&status));
+    assert!(
+        stdout(&status).contains("unreadable") && stdout(&status).contains("index --force"),
+        "{}",
+        stdout(&status)
+    );
+
+    let found = ripsem(&dir.path, &["search", "parse_config"]);
+    assert!(found.status.success(), "{}", stderr(&found));
+    assert!(stdout(&found).contains("src/lib.rs"), "{}", stdout(&found));
+    assert!(!stderr(&found).contains("panicked"), "{}", stderr(&found));
+    assert!(!stdout(&ripsem(&dir.path, &["status"])).contains("unreadable"));
+}
+
+#[test]
 fn a_config_naming_an_unknown_model_stops_index_and_names_the_file() {
     let dir = TempDir::new();
     dir.write("src/lib.rs", "fn main() {}\n");
