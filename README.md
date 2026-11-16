@@ -241,6 +241,9 @@ asks the same as `ripsem search "where is auth set up"`.
   the locations).
 - `--min-score <SCORE>` keeps only strong matches, in both human and JSON output.
 - `--count-by-file` prints hit counts per file instead of the hits.
+- `-q, --quiet` prints nothing and sets the exit status: 0 when a hit is left
+  after the filters and `--min-score`, 1 when none is, so a script can branch
+  on a match. Without it a search with no hits still exits 0.
 
 ## Models
 

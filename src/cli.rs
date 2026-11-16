@@ -143,6 +143,11 @@ pub enum Command {
         /// it with a larger `-k` for a wider view. Honoured by `--json` too.
         #[arg(long)]
         count_by_file: bool,
+        /// Print nothing. The exit status says whether a hit is left after the
+        /// filters and `--min-score`: 0 when one is, 1 when none is, so a
+        /// script can branch on a match as with `grep -q`.
+        #[arg(short = 'q', long)]
+        quiet: bool,
     },
     /// Index and keep the index in sync as files change.
     Watch,
@@ -237,6 +242,7 @@ pub fn run(cli: Cli) -> Result<()> {
             context,
             min_score,
             count_by_file,
+            quiet,
         } => cmd_search(
             &root,
             &query.join(" "),
@@ -250,6 +256,7 @@ pub fn run(cli: Cli) -> Result<()> {
             context,
             min_score,
             count_by_file,
+            quiet,
         ),
         Command::Watch => watch::run(load_config(&root)?),
         Command::Status { json } => cmd_status(&root, json),
@@ -646,6 +653,7 @@ fn cmd_search(
     context: Option<usize>,
     min_score: Option<f32>,
     count_by_file: bool,
+    quiet: bool,
 ) -> Result<()> {
     let text = regex.map(crate::scope::text_pattern).transpose()?;
     let context = context.unwrap_or(match std::io::stdout().is_terminal() {
@@ -662,6 +670,9 @@ fn cmd_search(
     let page = pipeline::search_page(&config, query, limit, offset, scope.as_ref(), text.as_ref())?;
     let more = page.more(min_score);
     let hits = apply_min_score(page.hits, min_score);
+    if quiet {
+        std::process::exit(i32::from(hits.is_empty()));
+    }
     let next = more.then_some(offset + hits.len());
     print_hits(
         &hits,

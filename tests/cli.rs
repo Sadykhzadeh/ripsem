@@ -766,6 +766,22 @@ fn a_count_past_the_last_page_says_no_further_matches() {
 }
 
 #[test]
+fn quiet_search_prints_nothing_and_exits_by_whether_a_hit_is_left() {
+    let dir = paged_tree();
+    let query = "verify password create session token";
+    let found = ripsem(&dir.path, &["search", query, "-q"]);
+    assert!(found.status.success(), "{}", stderr(&found));
+    assert!(stdout(&found).is_empty(), "{}", stdout(&found));
+
+    let none = ripsem(
+        &dir.path,
+        &["search", "quantum entanglement", "--min-score", "0.5", "-q"],
+    );
+    assert_eq!(none.status.code(), Some(1), "{}", stderr(&none));
+    assert!(stdout(&none).is_empty(), "{}", stdout(&none));
+}
+
+#[test]
 fn the_json_of_a_page_is_the_same_array_of_hits() {
     let dir = paged_tree();
     let query = "verify password create session token";
