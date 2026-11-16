@@ -3,7 +3,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use regex::Regex;
@@ -13,7 +13,7 @@ use crate::fingerprint::FileStat;
 use crate::index::{Index, Record};
 use crate::lexical::TermHash;
 use crate::scope::Scope;
-use crate::{chunk, embed, fingerprint, walk};
+use crate::{chunk, embed, fingerprint, quant, walk};
 
 #[derive(Debug)]
 pub struct IndexStats {
@@ -1063,6 +1063,91 @@ impl Searcher {
         Ok(self.places(hits, &names, &words, offset, end))
     }
 
+    /// The page of places nearest to the code at `target`. The chunks the
+    /// target covers are averaged into one unit vector: a whole file reads as
+    /// what it is about, where its single best chunk would be one of its
+    /// neighbours' near-copies. The chunks it covers are left out of the
+    /// answer, and so is anything else on the same lines.
+    fn similar_page(
+        &self,
+        target: &Target,
+        limit: usize,
+        offset: usize,
+        scope: Option<&Scope>,
+        text: Option<&Regex>,
+    ) -> Result<Page> {
+        let own: Vec<usize> = (0..self.index.records.len())
+            .filter(|&i| self.index.records[i].path.as_str() == target.path)
+            .collect();
+        let Some(&first) = own.first() else {
+            anyhow::bail!(
+                "{} is not in the index; check the path, or run `ripsem index` if the file is new",
+                target.path
+            );
+        };
+        let bytes = std::fs::read(self.root.join(&target.path))
+            .with_context(|| format!("reading {}", target.path))?;
+        if fingerprint::content_hash(&bytes) != self.index.records[first].file_hash {
+            anyhow::bail!(
+                "{} changed since it was indexed and the index could not be updated; run `ripsem index`",
+                target.path
+            );
+        }
+        let total = walk::decode_text(&bytes).lines().count();
+        if let Some((_, end)) = target.lines
+            && end > total
+        {
+            anyhow::bail!(
+                "{} has {total} lines, so line {end} is out of range",
+                target.path
+            );
+        }
+        let (from, to) = target.lines.unwrap_or((1, total.max(1)));
+        let covered = |r: &Record| r.start_line <= to && r.end_line >= from;
+        let source: Vec<usize> = own
+            .into_iter()
+            .filter(|&i| covered(&self.index.records[i]))
+            .collect();
+        if source.is_empty() {
+            anyhow::bail!("no indexed code at {}:{from}-{to}", target.path);
+        }
+        let mut query = vec![0f32; self.index.dims];
+        for &i in &source {
+            for (q, v) in query
+                .iter_mut()
+                .zip(quant::dequantize(&self.index.records[i].vector))
+            {
+                *q += v;
+            }
+        }
+        let norm = query.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            query.iter_mut().for_each(|v| *v /= norm);
+        }
+        if let Some(scope) = scope
+            && !self.index.covers(scope)
+        {
+            anyhow::bail!(scope.nothing_matches());
+        }
+
+        let end = offset.saturating_add(limit);
+        let wanted = match text {
+            Some(_) => end.saturating_mul(TEXT_DEPTH_FACTOR).max(TEXT_DEPTH),
+            None => end,
+        };
+        let k = wanted.saturating_add(SPARE_HITS);
+        let mut hits = self.index.similar(
+            &query,
+            k,
+            |r| r.path.as_str() == target.path && covered(r),
+            scope,
+        );
+        if let Some(text) = text {
+            hits = self.matching(hits, text, end.saturating_add(SPARE_HITS));
+        }
+        Ok(self.places(hits, &[], &[], offset, end))
+    }
+
     /// The best `k` places for a query embedded as `qv`, through the
     /// nearest-neighbour graph when there is one and nothing limits the scope.
     fn ranked(
@@ -1379,6 +1464,37 @@ pub fn search_page(
     if found.is_err() {
         embedder.settle();
     }
+    found
+}
+
+/// Code already in the index that `similar` looks for neighbours of: a file, or
+/// the 1-based lines `start` to `end` of it.
+pub struct Target {
+    pub path: String,
+    pub lines: Option<(usize, usize)>,
+}
+
+/// Like [`search_page`], for the places nearest to the code at `target`. The
+/// stored vectors answer it, so no model is loaded unless a file changed since
+/// the index was built and has to be embedded again first.
+pub fn similar_page(
+    config: &Config,
+    target: &Target,
+    limit: usize,
+    offset: usize,
+    scope: Option<&Scope>,
+    text: Option<&Regex>,
+) -> Result<Page> {
+    if !config.index_path().exists() {
+        anyhow::bail!("no index yet; run `ripsem index` in this directory first");
+    }
+    let embedder = Arc::new(LazyEmbedder::new(config));
+    let searcher = match refresh(config) {
+        Some(index) => searcher_over(config, index, embedder, file_mtime(&config.index_path())),
+        None => open_with(config, embedder),
+    }?;
+    let found = searcher.similar_page(target, limit, offset, scope, text);
+    leave_to_exit(searcher.index);
     found
 }
 

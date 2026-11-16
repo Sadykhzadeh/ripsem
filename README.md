@@ -167,6 +167,7 @@ ripsem completions powershell >> $PROFILE
 ripsem init                       # write .ripsem/config.toml
 ripsem index                      # build the index (incremental on re-runs)
 ripsem search "where is auth set up?"   # updates the index first
+ripsem similar src/auth.rs:40-72  # the code nearest to a location, no model run
 ripsem status                     # index size, counts, model, drift from the tree
 ripsem status --json              # the same as JSON (schema ripsem/status/v1)
 ripsem watch                      # keep the index in sync as files change
@@ -247,6 +248,17 @@ asks the same as `ripsem search "where is auth set up"`.
 - `-l, --files-with-matches` lists each file with a hit once, in the order of
   its best hit, instead of the hits. It cannot be combined with
   `--count-by-file`.
+
+`ripsem similar <path>[:LINE[-LINE]]` finds the code nearest to a place
+already in the index: `ripsem similar src/auth.rs:40-72`, one line
+`src/auth.rs:40`, or a bare path for the whole file. It reads the vectors the
+index stores, so it runs no model and works offline. The lines asked about are
+left out of the answer. A whole file, or a range covering several chunks, is
+looked for by the average of its chunks, so the query reads as what that code
+is about rather than as its single best chunk. It takes the options of
+`search` and refreshes the index first, as `search` does; an unknown path, a
+line past the end of the file and a range that holds no indexed code are
+errors.
 
 ## Models
 

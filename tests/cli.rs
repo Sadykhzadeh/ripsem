@@ -794,6 +794,77 @@ fn files_with_matches_lists_each_file_once_in_ranking_order() {
 }
 
 #[test]
+fn similar_finds_the_places_nearest_to_a_location_and_leaves_its_own_out() {
+    let dir = paged_tree();
+    let found = ripsem(&dir.path, &["similar", "src/auth0.rs"]);
+    assert!(found.status.success(), "{}", stderr(&found));
+    let shown = heads(&found);
+    assert!(!shown.is_empty(), "{}", stdout(&found));
+    assert!(
+        shown.iter().all(|h| !h.starts_with("src/auth0.rs:")),
+        "{shown:?}"
+    );
+    assert!(
+        shown.iter().any(|h| h.starts_with("src/auth1.rs:")),
+        "{shown:?}"
+    );
+
+    let by_line = ripsem(&dir.path, &["similar", "src/auth0.rs:1-1", "--json"]);
+    assert!(by_line.status.success(), "{}", stderr(&by_line));
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&stdout(&by_line)).unwrap();
+    assert!(!rows.is_empty());
+    assert!(rows.iter().all(|r| r["path"] != "src/auth0.rs"));
+}
+
+#[test]
+fn similar_names_its_errors() {
+    let dir = paged_tree();
+    for (target, expected) in [
+        ("src/nothere.rs", "is not in the index"),
+        ("src/auth0.rs:9", "has 1 lines, so line 9 is out of range"),
+        ("src/auth0.rs:3-2", "comes before line 3"),
+        ("src/auth0.rs:0", "line numbers start at 1"),
+    ] {
+        let out = ripsem(&dir.path, &["similar", target]);
+        assert_eq!(out.status.code(), Some(1), "{target}: {}", stdout(&out));
+        assert!(
+            stderr(&out).contains(expected),
+            "{target}: {}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
+fn similar_takes_the_filters_and_output_of_search() {
+    let dir = paged_tree();
+    let docs = ripsem(
+        &dir.path,
+        &["similar", "src/auth0.rs", "--lang", "md", "-l"],
+    );
+    assert!(docs.status.success(), "{}", stderr(&docs));
+    let listed = stdout(&docs);
+    assert!(
+        !listed.is_empty() && listed.lines().all(|l| l.ends_with(".md")),
+        "{listed}"
+    );
+
+    let none = ripsem(
+        &dir.path,
+        &["similar", "src/auth0.rs", "--min-score", "1", "-q"],
+    );
+    assert_eq!(none.status.code(), Some(1), "{}", stderr(&none));
+}
+
+#[test]
+fn similar_refreshes_the_index_before_it_reads_a_changed_file() {
+    let dir = paged_tree();
+    dir.write("src/auth0.rs", "fn auth0() {}\nfn extra() {}\n");
+    let out = ripsem(&dir.path, &["similar", "src/auth0.rs:2"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
 fn quiet_search_prints_nothing_and_exits_by_whether_a_hit_is_left() {
     let dir = paged_tree();
     let query = "verify password create session token";
