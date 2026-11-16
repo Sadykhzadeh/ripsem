@@ -358,7 +358,8 @@ nearest to that place, with `limit`, `offset`, `min_score`, `lang`, `glob` and
 `regex` as `search` takes them. Its errors are the CLI's messages, such as a
 file that is not in the index or a line past its end. The `index_status` tool,
 which takes no arguments, returns what `ripsem status
---json` prints plus `updating`, whether the server is indexing right now, so an
+--json` prints (as structured content too, for revision 2025-06-18 and later)
+plus `updating`, whether the server is indexing right now, so an
 agent that finds nothing it expects can see whether the index exists and how
 many files have changed since it was built. All the tools carry the standard
 MCP annotations (`readOnlyHint` and `idempotentHint` true, `destructiveHint`

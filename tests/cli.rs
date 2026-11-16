@@ -322,6 +322,28 @@ fn find_similar_errors_are_tool_errors_with_the_cli_wording() {
     assert!(text(3).contains("missing 'path'"), "{}", text(3));
 }
 
+/// The status report comes back as structured content as well, with the
+/// fields every report has.
+#[test]
+fn index_status_returns_the_report_as_structured_content() {
+    let dir = indexed_repository();
+    let responses = mcp_over_stdio(
+        &dir.path,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"index_status","arguments":{}}}"#,
+        ],
+    );
+    let result = &responses[1]["result"];
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(result["structuredContent"]["schema"], "ripsem/status/v1");
+    assert_eq!(result["structuredContent"]["index"]["present"], true);
+    assert!(result["structuredContent"]["updating"].is_boolean());
+    let text: serde_json::Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, result["structuredContent"]);
+}
+
 /// A client of a revision that has structured output gets the hits as data as
 /// well as text, and the tool advertises the shape it returns.
 #[test]

@@ -519,6 +519,14 @@ fn status_schema() -> Value {
         "name": "index_status",
         "title": "Index status",
         "annotations": read_only("Index status"),
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "schema": { "type": "string" },
+                "updating": { "type": "boolean" }
+            },
+            "required": ["schema", "updating"]
+        },
         "description": "Report whether this repository's search index exists, how many files and chunks it holds, how many files were added, changed or removed since it was built, and whether it is being updated right now. Call it when `search` says there is no index or finds nothing you expect.",
         "inputSchema": {
             "type": "object",
@@ -771,9 +779,14 @@ fn index_status(config: &Config, id: Value, args: &Value) -> Value {
     }
     let mut report = crate::cli::status_report(config);
     report["updating"] = json!(crate::watch::indexing());
-    text_result(
-        serde_json::to_string_pretty(&report).unwrap_or_default(),
-        false,
+    let text = serde_json::to_string_pretty(&report).unwrap_or_default();
+    ok(
+        id,
+        json!({
+            "content": [{ "type": "text", "text": text }],
+            "isError": false,
+            "structuredContent": report
+        }),
     )
 }
 
@@ -1212,10 +1225,14 @@ mod tests {
                 .map(String::as_str)
                 .collect();
             fields.sort_unstable();
-            let mut expected = vec!["annotations", "description", "inputSchema", "name", "title"];
-            if name == "search" || name == "find_similar" {
-                expected.push("outputSchema");
-            }
+            let mut expected = vec![
+                "annotations",
+                "description",
+                "inputSchema",
+                "name",
+                "outputSchema",
+                "title",
+            ];
             expected.sort_unstable();
             assert_eq!(fields, expected, "{name}");
         }
