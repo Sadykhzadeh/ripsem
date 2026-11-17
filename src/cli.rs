@@ -1726,6 +1726,44 @@ mod tests {
         assert!(note.starts_with("## Code search\n") && note.contains("`search` tool"));
     }
 
+    /// Every file under `dir`, by path, with its bytes.
+    fn tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        fn walk(dir: &Path, out: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else {
+                    out.insert(path.clone(), std::fs::read(&path).unwrap());
+                }
+            }
+        }
+        let mut out = std::collections::BTreeMap::new();
+        walk(dir, &mut out);
+        out
+    }
+
+    /// A second install changes no byte of any file, for each agent, in a
+    /// directory the first one wrote to.
+    #[test]
+    fn running_install_twice_changes_no_file_for_any_agent() {
+        let targets: [fn() -> InstallCmd; 6] = [
+            || InstallCmd::ClaudeCode,
+            || InstallCmd::Cursor,
+            || InstallCmd::Vscode,
+            || InstallCmd::Gemini,
+            || InstallCmd::OpenCode,
+            || InstallCmd::Codex,
+        ];
+        for target in targets {
+            let dir = crate::testutil::TempDir::new();
+            cmd_install(dir.path(), target()).unwrap();
+            let first = tree(dir.path());
+            cmd_install(dir.path(), target()).unwrap();
+            assert_eq!(tree(dir.path()), first, "{:?}", first.keys());
+        }
+    }
+
     #[test]
     fn install_cursor_writes_an_always_applied_rule() {
         let dir = crate::testutil::TempDir::new();
