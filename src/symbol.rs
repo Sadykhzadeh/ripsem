@@ -24,7 +24,7 @@ impl Symbol {
     pub fn is_container(&self) -> bool {
         matches!(
             self.kind.as_str(),
-            "impl" | "class" | "trait" | "interface" | "mod"
+            "impl" | "class" | "record" | "trait" | "interface" | "mod"
         )
     }
 
@@ -136,6 +136,7 @@ const KINDS: &[(&str, &str)] = &[
     ("method", "fn"),
     ("module", "mod"),
     ("struct", "struct"),
+    ("record", "record"),
     ("class", "class"),
     ("macro", "macro"),
     ("union", "union"),

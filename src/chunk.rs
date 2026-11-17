@@ -596,6 +596,21 @@ mod cutting {
     }
 
     #[test]
+    fn a_record_is_a_declaration_with_its_members() {
+        let java = "public record Point(int x, int y) {\n    public int sum() {\n        return x + y;\n    }\n}\n";
+        assert_eq!(
+            declared_labels("Point.java", java),
+            ["record Point", "fn Point::sum"]
+        );
+        let cs =
+            "public record Item(string Name, int Qty)\n{\n    public int Total() => Qty * 2;\n}\n";
+        assert_eq!(
+            declared_labels("a.cs", cs),
+            ["record Item", "fn Item::Total"]
+        );
+    }
+
+    #[test]
     fn files_with_the_extensions_of_a_language_are_cut_as_that_language() {
         let ruby = "def build(x)\n  x + 1\nend\n";
         assert!(has(&cut_code("Tasks.rake", ruby), 1, 3, "fn build"));
