@@ -20,6 +20,9 @@
 - `ripsem index` names the files it could not read: a warning on stderr says
   `skipped 2 unreadable files: a.rs, b.rs, and 3 more` (the first three), and the
   exit status is unchanged. The files are still left out of the index.
+- `ripsem similar src/a.rs:abc` says what a line range looks like, `PATH:LINE`
+  or `PATH:LINE-LINE`, when the path is not in the index, since the colon was
+  read as part of a path.
 - `ripsem search --help` ends with examples, and the one-line summary of
   `ripsem similar` in the top-level help is short enough to read.
 - The exit codes are written down in the README: 0 for a run, 1 for a failure

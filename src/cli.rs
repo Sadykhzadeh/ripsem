@@ -859,10 +859,27 @@ fn cmd_similar(root: &Path, target: &str, opts: &SearchOpts) -> Result<()> {
         opts.offset,
         scope.as_ref(),
         text.as_ref(),
-    )?;
+    )
+    .map_err(|e| similar_line_hint(raw, e))?;
     show(page, opts, context_lines(opts), &[])?;
     warn_about_backend(&config);
     Ok(())
+}
+
+/// When the part after the last colon is not a line number and the path is not
+/// in the index, says what a line range looks like: a colon in a path is
+/// otherwise taken for a path that is simply missing.
+fn similar_line_hint(raw: &str, err: anyhow::Error) -> anyhow::Error {
+    let asks_for_lines = raw.rsplit_once(':').is_some_and(|(_, spec)| {
+        !spec.is_empty() && !spec.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+    });
+    if asks_for_lines && err.to_string().contains("is not in the index") {
+        anyhow::anyhow!(
+            "{err}; a line range is PATH:LINE or PATH:LINE-LINE, such as src/auth.rs:40-72"
+        )
+    } else {
+        err
+    }
 }
 
 /// Splits `path`, `path:LINE` or `path:START-END`. A colon that is not
