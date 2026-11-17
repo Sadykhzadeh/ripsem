@@ -57,7 +57,7 @@
   not by every search. On the hashing backend a query the words answer alone
   does not decode it. Measured on 766 767 chunks, a cold search went from a
   minimum of 2559 and 2332 ms to 1758 and 1775 ms.
-- The chunking revision moves from 12 to 18. The first `ripsem index` after
+- The chunking revision moves from 12 to 19. The first `ripsem index` after
   upgrading reads every file once, and reuses the stored vectors for chunks
   whose text did not change, so only the chunks that changed are embedded
   again.
