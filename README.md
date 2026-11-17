@@ -356,6 +356,10 @@ ripsem install codex              # .codex/config.toml and a note in AGENTS.md
 note that tells the agent to reach for `search` before grepping. Restart the
 agent in the directory and it can call `search` directly.
 
+Running `install` again changes nothing. An agent config that is not plain JSON
+(or TOML for Codex) is left as it is, comments and trailing commas included, and
+the command names the file to fix before it is run again.
+
 The server sends the same note as its MCP instructions. Claude Code loads the
 descriptions of MCP tools only when the model looks a tool up, so the model
 learns that `search` exists, and when to use it, from the instructions and the
