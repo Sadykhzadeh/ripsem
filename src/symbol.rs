@@ -272,10 +272,11 @@ fn identifier_span(node: &tree_sitter::Node) -> Option<(usize, usize)> {
 }
 
 /// Most grammars call the leaf holding a declared name some flavour of
-/// `identifier`; bash calls it `word` and PHP calls it `name`.
+/// `identifier`; bash calls it `word`, PHP calls it `name` and Ruby names a
+/// module or a class by its `constant`.
 #[cfg(feature = "treesitter")]
 fn is_name_leaf(kind: &str) -> bool {
-    kind.ends_with("identifier") || matches!(kind, "word" | "name")
+    kind.ends_with("identifier") || matches!(kind, "word" | "name" | "constant")
 }
 
 #[cfg(all(test, feature = "treesitter"))]

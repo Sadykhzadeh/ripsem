@@ -629,6 +629,21 @@ mod cutting {
     }
 
     #[test]
+    fn a_ruby_module_and_class_are_named_by_their_constant() {
+        let ruby = "module Greeting\n  def hello(name)\n    name\n  end\nend\n\n\
+                    class Account\n  def deposit(amount)\n    amount\n  end\nend\n";
+        assert_eq!(
+            declared_labels("a.rb", ruby),
+            [
+                "mod Greeting",
+                "fn Greeting::hello",
+                "class Account",
+                "fn Account::deposit"
+            ]
+        );
+    }
+
+    #[test]
     fn files_with_the_extensions_of_a_language_are_cut_as_that_language() {
         let ruby = "def build(x)\n  x + 1\nend\n";
         assert!(has(&cut_code("Tasks.rake", ruby), 1, 3, "fn build"));
