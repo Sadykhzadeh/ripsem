@@ -1050,6 +1050,12 @@ impl Searcher {
         &self.model
     }
 
+    /// The model this searcher shares, so a searcher opened on a refreshed index
+    /// does not load it again.
+    fn embedder(&self) -> Arc<LazyEmbedder> {
+        Arc::clone(&self.embedder)
+    }
+
     pub fn record_count(&self) -> usize {
         self.index.records.len()
     }
@@ -1540,50 +1546,58 @@ pub fn search_page(
         embedder.warm();
         current = refresh(config, &[]);
     }
-    let mut found = answer(
-        config, &embedder, current, query, limit, offset, scope, text,
-    );
-    // A file rewritten with the size and time it had is not seen by the stat
-    // check. Its hits were left out, so its files are read again and the query
-    // is answered once more from the index as it now stands.
-    if let Ok(page) = &found
-        && !page.stale.is_empty()
-    {
-        let stale = page.stale.clone();
-        let current = refresh(config, &stale);
-        found = answer(
-            config, &embedder, current, query, limit, offset, scope, text,
-        );
-    }
+    let searcher = match current {
+        Some(index) => {
+            let mtime = file_mtime(&config.index_path());
+            searcher_over(config, index, Arc::clone(&embedder), mtime)
+        }
+        None => open_with(config, Arc::clone(&embedder)),
+    };
+    let found = searcher.and_then(|searcher| {
+        let found = search_answer(config, &searcher, query, limit, offset, scope, text);
+        leave_to_exit(searcher.index);
+        found
+    });
     if found.is_err() {
         embedder.settle();
     }
     found
 }
 
-/// Answers a query from `current`, or from the index file when there is none.
-#[allow(clippy::too_many_arguments)]
-fn answer(
+/// The page of a query asked of `held`. When that page names files changed on
+/// disk, they are read again into the index and the question is asked once more
+/// of a searcher opened on the result, so no answer is built from old text. A
+/// failed refresh returns the first page, with the stale hits left out.
+pub fn answer_with_reread(
     config: &Config,
-    embedder: &Arc<LazyEmbedder>,
-    current: Option<Index>,
+    held: &Searcher,
+    ask: impl Fn(&Searcher) -> Result<Page>,
+) -> Result<Page> {
+    let page = ask(held)?;
+    if page.stale.is_empty() {
+        return Ok(page);
+    }
+    let Some(index) = refresh(config, &page.stale) else {
+        return Ok(page);
+    };
+    let mtime = file_mtime(&config.index_path());
+    let fresh = searcher_over(config, index, held.embedder(), mtime)?;
+    ask(&fresh)
+}
+
+/// [`Searcher::query_page`] through [`answer_with_reread`].
+#[allow(clippy::too_many_arguments)]
+pub fn search_answer(
+    config: &Config,
+    held: &Searcher,
     query: &str,
     limit: usize,
     offset: usize,
     scope: Option<&Scope>,
     text: Option<&Regex>,
 ) -> Result<Page> {
-    let searcher = match current {
-        Some(index) => {
-            let mtime = file_mtime(&config.index_path());
-            searcher_over(config, index, Arc::clone(embedder), mtime)
-        }
-        None => open_with(config, Arc::clone(embedder)),
-    };
-    searcher.and_then(|searcher| {
-        let found = searcher.query_page(query, limit, offset, scope, text);
-        leave_to_exit(searcher.index);
-        found
+    answer_with_reread(config, held, |s| {
+        s.query_page(query, limit, offset, scope, text)
     })
 }
 

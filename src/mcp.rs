@@ -578,12 +578,29 @@ fn handle_call(
     };
 
     let result = match session {
-        Some(s) => s.query_page(query, limit, offset, scope.as_ref(), text.as_ref()),
+        Some(s) => pipeline::search_answer(
+            config,
+            s,
+            query,
+            limit,
+            offset,
+            scope.as_ref(),
+            text.as_ref(),
+        ),
         None if crate::watch::indexing() => Err(anyhow!(
             "the index is being built in the background; search again shortly"
         )),
-        None => pipeline::open(config)
-            .and_then(|s| s.query_page(query, limit, offset, scope.as_ref(), text.as_ref())),
+        None => pipeline::open(config).and_then(|s| {
+            pipeline::search_answer(
+                config,
+                &s,
+                query,
+                limit,
+                offset,
+                scope.as_ref(),
+                text.as_ref(),
+            )
+        }),
     };
 
     match result {

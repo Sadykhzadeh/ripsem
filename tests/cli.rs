@@ -220,6 +220,61 @@ fn mcp_over_stdio(dir: &Path, messages: &[&str]) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// A `ripsem mcp` server that stays up between requests, so a file can change
+/// while its session is open.
+struct McpServer {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl McpServer {
+    fn start(dir: &Path) -> Self {
+        use std::process::Stdio;
+
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ripsem"))
+            .arg("mcp")
+            .current_dir(dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+        Self {
+            child,
+            stdin,
+            stdout,
+        }
+    }
+
+    /// Sends one message and returns the response line the server writes for it.
+    fn request(&mut self, message: &str) -> serde_json::Value {
+        use std::io::BufRead;
+
+        writeln!(self.stdin, "{message}").unwrap();
+        self.stdin.flush().unwrap();
+        let mut line = String::new();
+        self.stdout.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+}
+
+impl Drop for McpServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The text of a tool result, as the agent reads it.
+fn tool_text(response: &serde_json::Value) -> String {
+    response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// A repository with one indexed file, for the MCP tests that search it.
 fn indexed_repository() -> TempDir {
     let dir = TempDir::new();
@@ -1726,6 +1781,53 @@ fn a_search_never_answers_from_text_the_file_no_longer_holds() {
             .unwrap()
             .iter()
             .all(|h| h["path"] != "renamed.rs")
+    );
+}
+
+/// The MCP server keeps its searcher open. A file rewritten with the size and
+/// time it had is read again by the search that finds it, so the agent gets the
+/// text the file has now and not the old text, with no CLI run in between.
+#[test]
+fn mcp_search_reads_a_same_size_rewrite_again() {
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+    let set_modified = |dir: &TempDir| {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.path.join("a.rs"))
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+    };
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie");
+    set_modified(&dir);
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let mut server = McpServer::start(&dir.path);
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
+    server.request(init);
+    let before = server.request(
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search","arguments":{"query":"alpha bravo"}}}"#,
+    );
+    assert!(
+        tool_text(&before).contains("alpha bravo charlie"),
+        "{before}"
+    );
+
+    dir.write("a.rs", "omega bravo charlie");
+    set_modified(&dir);
+    let after = server.request(
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search","arguments":{"query":"omega bravo"}}}"#,
+    );
+    assert!(tool_text(&after).contains("omega bravo charlie"), "{after}");
+    let stale = server.request(
+        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search","arguments":{"query":"alpha bravo"}}}"#,
+    );
+    assert!(
+        !tool_text(&stale).contains("alpha bravo charlie"),
+        "{stale}"
     );
 }
 
