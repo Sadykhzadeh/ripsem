@@ -10,7 +10,7 @@ use regex::Regex;
 
 use crate::config::Config;
 use crate::fingerprint::FileStat;
-use crate::index::{Index, Record};
+use crate::index::{Index, Record, path_in_scope};
 use crate::lexical::TermHash;
 use crate::scope::Scope;
 use crate::symbol::Declaration;
@@ -1415,6 +1415,46 @@ impl Searcher {
         Ok(with_stale(self.places(hits, &[], &[], offset, end), stale))
     }
 
+    /// The page of call sites of `query` in the indexed files that `scope`
+    /// admits and that lie under one of `prefixes`, or in every indexed file
+    /// when there are none. Files are read in path order and the calls in
+    /// each in source order; the page is the window `offset` to `offset +
+    /// limit` of them.
+    pub(crate) fn callers_page(
+        &self,
+        query: &crate::callers::Query,
+        limit: usize,
+        offset: usize,
+        scope: Option<&Scope>,
+        prefixes: &[String],
+    ) -> Result<CallPage> {
+        if let Some(scope) = scope
+            && !self.index.covers(scope)
+        {
+            anyhow::bail!(scope.nothing_matches());
+        }
+        let files: std::collections::BTreeSet<&str> = self
+            .index
+            .records
+            .iter()
+            .map(|r| r.path.as_str())
+            .filter(|path| scope.is_none_or(|s| s.admits(path)))
+            .filter(|path| prefixes.is_empty() || prefixes.iter().any(|p| path_in_scope(path, p)))
+            .collect();
+        if files.is_empty()
+            && let Some(first) = prefixes.first()
+        {
+            anyhow::bail!(Scope::under(first).nothing_matches());
+        }
+        let names: Vec<&str> = files.into_iter().collect();
+        let found = crate::callers::find(&self.root, &names, query);
+        let end = offset.saturating_add(limit);
+        Ok(CallPage {
+            more: found.len() > end,
+            hits: found.into_iter().skip(offset).take(limit).collect(),
+        })
+    }
+
     /// The best `k` places for a query embedded as `qv`, through the
     /// nearest-neighbour graph when there is one and nothing limits the scope.
     fn ranked(
@@ -1834,6 +1874,40 @@ pub fn search_answer(
     answer_with_reread(config, held, |s| {
         s.query_page(query, limit, offset, scope, text)
     })
+}
+
+/// The call sites a page of `ripsem callers` shows, and whether another page
+/// follows it.
+pub struct CallPage {
+    pub hits: Vec<crate::callers::Found>,
+    pub more: bool,
+}
+
+/// The call sites of `query` in the files the index holds, read the way
+/// [`similar_page`] reads the index: built when the repository opted in,
+/// brought up to date, then searched. See [`Searcher::callers_page`] for
+/// `scope` and `prefixes`.
+pub fn callers_page(
+    config: &Config,
+    query: &crate::callers::Query,
+    limit: usize,
+    offset: usize,
+    scope: Option<&Scope>,
+    prefixes: &[String],
+) -> Result<CallPage> {
+    build_first_index(config)?;
+    if !config.index_path().exists() {
+        anyhow::bail!("no index yet; run `ripsem index` in this directory first");
+    }
+    let embedder = Arc::new(LazyEmbedder::new(config));
+    let (refreshed, _) = refresh(config, &[]);
+    let searcher = match refreshed {
+        Some(index) => searcher_over(config, index, embedder, file_mtime(&config.index_path())),
+        None => open_with(config, embedder),
+    }?;
+    let found = searcher.callers_page(query, limit, offset, scope, prefixes);
+    leave_to_exit(searcher.index);
+    found
 }
 
 /// Code already in the index that `similar` looks for neighbours of: a file, or

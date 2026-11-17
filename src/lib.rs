@@ -1,6 +1,8 @@
 #[cfg(feature = "hnsw")]
 pub mod ann;
 #[cfg(feature = "treesitter")]
+pub mod callers;
+#[cfg(feature = "treesitter")]
 pub mod calls;
 pub mod chunk;
 pub mod cli;

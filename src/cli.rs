@@ -155,6 +155,21 @@ pub enum Command {
         #[command(flatten)]
         opts: SymbolOpts,
     },
+    /// Find the calls to a function or method, by its name, in the indexed
+    /// files: where is `load` called? Calls are read from the syntax tree, so
+    /// a name in a string or a comment is not one. Matching is by name, not by
+    /// type: a method `open` on two types gives the calls of both.
+    Callers {
+        /// The function or method name, such as `load`. A qualifier narrows
+        /// the match to calls written with it: `Index::load` or
+        /// `module.load`.
+        name: String,
+        /// Only files under these paths, as `--in` reads them. With none,
+        /// every indexed file is searched.
+        paths: Vec<String>,
+        #[command(flatten)]
+        opts: SearchOpts,
+    },
     /// Index and keep the index in sync as files change.
     #[command(after_long_help = "Examples:
   ripsem watch
@@ -470,6 +485,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Similar { target, opts } => cmd_similar(&root, &target, &opts),
         Command::Outline { file, json } => cmd_outline(&root, &file, json),
         Command::Symbol { name, opts } => cmd_symbol(&root, &name, &opts),
+        Command::Callers { name, paths, opts } => cmd_callers(&root, &name, &paths, &opts),
         Command::Watch => watch::run(load_config(&root)?),
         Command::Status { json, verify } => cmd_status(&root, json, verify),
         Command::Mcp => mcp::serve(load_config(&root)?, cli.path.is_some()),
@@ -994,11 +1010,123 @@ fn first_text_line(hit: &pipeline::SearchHit) -> (usize, &str) {
         })
 }
 
+/// What the output formats print for one place: a hit of `search` or `similar`,
+/// or a call site of `callers`. The formats are the same for both.
+trait Place {
+    fn path(&self) -> &str;
+    fn start_line(&self) -> usize;
+    /// The header of a grouped result: where the place is and what holds it.
+    fn header(&self, color: bool) -> String;
+    fn snippet(&self) -> &str;
+    /// Line, column and text of a `--vimgrep` line.
+    fn vimgrep(&self) -> (usize, usize, &str);
+    fn json(&self) -> Value;
+}
+
+impl Place for pipeline::SearchHit {
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    fn start_line(&self) -> usize {
+        self.start_line
+    }
+
+    fn header(&self, color: bool) -> String {
+        let place = format!(
+            "{}:{}",
+            paint(&printable(&self.path), "1", color),
+            paint(
+                &format!("{}-{}", self.start_line, self.end_line),
+                "32",
+                color
+            )
+        );
+        match &self.symbol {
+            Some(s) => format!(
+                "{place}  {}  ({})",
+                printable(&s.label()),
+                show_score(self.score)
+            ),
+            None => format!("{place}  ({})", show_score(self.score)),
+        }
+    }
+
+    fn snippet(&self) -> &str {
+        &self.snippet
+    }
+
+    fn vimgrep(&self) -> (usize, usize, &str) {
+        let (line, text) = first_text_line(self);
+        (line, 1, text)
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "path": self.path,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "score": self.score,
+            "kind": self.symbol.as_ref().map(|s| &s.kind),
+            "symbol": self.symbol.as_ref().map(|s| &s.name),
+            "snippet": self.snippet,
+        })
+    }
+}
+
+#[cfg(feature = "treesitter")]
+impl Place for crate::callers::Found {
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    fn start_line(&self) -> usize {
+        self.site.line
+    }
+
+    fn header(&self, color: bool) -> String {
+        let at = format!(
+            "{}:{}",
+            paint(&printable(&self.path), "1", color),
+            paint(
+                &format!("{}:{}", self.site.line, self.site.column),
+                "32",
+                color
+            )
+        );
+        match &self.site.enclosing {
+            Some(s) => format!("{at}  {}", printable(&s.label())),
+            None => at,
+        }
+    }
+
+    fn snippet(&self) -> &str {
+        &self.text
+    }
+
+    fn vimgrep(&self) -> (usize, usize, &str) {
+        (self.site.line, self.site.column, &self.text)
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "path": self.path,
+            "line": self.site.line,
+            "column": self.site.column,
+            "callee": self.site.callee,
+            "qualifier": self.site.qualifier,
+            "kind": self.site.enclosing.as_ref().map(|s| &s.kind),
+            "symbol": self.site.enclosing.as_ref().map(|s| &s.name),
+            "snippet": self.text,
+        })
+    }
+}
+
 /// Counts hits per file for `--count-by-file`, most hits first, then by path.
-fn file_hit_counts(hits: &[pipeline::SearchHit]) -> Vec<(String, usize)> {
+fn file_hit_counts<P: Place>(hits: &[P]) -> Vec<(String, usize)> {
     let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for h in hits {
-        *counts.entry(h.path.as_str()).or_insert(0) += 1;
+        *counts.entry(h.path()).or_insert(0) += 1;
     }
     let mut pairs: Vec<(String, usize)> = counts
         .into_iter()
@@ -1217,6 +1345,43 @@ fn similar_line_hint(raw: &str, err: anyhow::Error) -> anyhow::Error {
     }
 }
 
+#[cfg(feature = "treesitter")]
+fn cmd_callers(root: &Path, name: &str, paths: &[String], opts: &SearchOpts) -> Result<()> {
+    anyhow::ensure!(
+        opts.min_score.is_none() && opts.regex.is_none(),
+        "callers does not rank by score, so --min-score and -e do not apply"
+    );
+    let query = crate::callers::Query::parse(name)?;
+    let config = load_config(root)?;
+    let scope = scope_for(&config, opts)?;
+    let prefixes: Vec<Option<String>> = paths
+        .iter()
+        .map(|raw| mcp::scope_prefix(&from_here(raw, &config.root), &config.root))
+        .collect::<Result<_>>()?;
+    // A path that is the whole repository (`.`) is no restriction at all.
+    let prefixes: Vec<String> = match prefixes.iter().all(Option::is_some) {
+        true => prefixes.into_iter().flatten().collect(),
+        false => Vec::new(),
+    };
+    let page = pipeline::callers_page(
+        &config,
+        &query,
+        opts.limit,
+        opts.offset,
+        scope.as_ref(),
+        &prefixes,
+    )?;
+    show_places(page.hits, page.more, opts, context_lines(opts), &[])
+}
+
+#[cfg(not(feature = "treesitter"))]
+fn cmd_callers(_: &Path, _: &str, _: &[String], _: &SearchOpts) -> Result<()> {
+    anyhow::bail!(
+        "this build has no call-site grammars, so `ripsem callers` is unavailable; \
+         build with the default features"
+    )
+}
+
 /// Splits `path`, `path:LINE` or `path:START-END`. A colon that is not
 /// followed by line numbers belongs to the path.
 pub(crate) fn parse_target(raw: &str) -> Result<(&str, Option<(usize, usize)>)> {
@@ -1291,12 +1456,27 @@ fn scope_from(
 /// `--min-score` have had their say.
 fn show(page: pipeline::Page, opts: &SearchOpts, context: usize, words: &[String]) -> Result<()> {
     let more = page.more(opts.min_score);
-    let mut hits = apply_min_score(page.hits, opts.min_score);
+    let hits = apply_min_score(page.hits, opts.min_score);
+    show_places(hits, more, opts, context, words)
+}
+
+/// Prints one page of places as the options ask, after `-q` has had its say.
+fn show_places<P: Place>(
+    mut hits: Vec<P>,
+    more: bool,
+    opts: &SearchOpts,
+    context: usize,
+    words: &[String],
+) -> Result<()> {
     if opts.quiet {
         std::process::exit(i32::from(hits.is_empty()));
     }
     if opts.sort == SortBy::Path {
-        hits.sort_by(|a, b| a.path.cmp(&b.path).then(a.start_line.cmp(&b.start_line)));
+        hits.sort_by(|a, b| {
+            a.path()
+                .cmp(b.path())
+                .then(a.start_line().cmp(&b.start_line()))
+        });
     }
     let next = more.then_some(opts.offset + hits.len());
     let color = use_color(
@@ -1346,8 +1526,8 @@ fn no_hits_message(offset: usize) -> &'static str {
 /// Prints search results in the shape the flags ask for. `next` is the offset
 /// of the page that follows, when there is one.
 #[allow(clippy::too_many_arguments)]
-fn print_hits(
-    hits: &[pipeline::SearchHit],
+fn print_hits<P: Place>(
+    hits: &[P],
     as_json: bool,
     context: usize,
     words: &[String],
@@ -1361,8 +1541,12 @@ fn print_hits(
 ) -> Result<()> {
     if vimgrep {
         for h in hits {
-            let (line, text) = first_text_line(h);
-            out!("{}:{line}:1:{}", printable(&h.path), printable(text));
+            let (line, column, text) = h.vimgrep();
+            out!(
+                "{}:{line}:{column}:{}",
+                printable(h.path()),
+                printable(text)
+            );
         }
         return Ok(());
     }
@@ -1371,7 +1555,7 @@ fn print_hits(
         let mut seen = std::collections::HashSet::new();
         let paths: Vec<&str> = hits
             .iter()
-            .map(|h| h.path.as_str())
+            .map(|h| h.path())
             .filter(|path| seen.insert(*path))
             .collect();
         if as_json {
@@ -1413,20 +1597,7 @@ fn print_hits(
     }
 
     if as_json {
-        let rows: Vec<Value> = hits
-            .iter()
-            .map(|h| {
-                json!({
-                    "path": h.path,
-                    "start_line": h.start_line,
-                    "end_line": h.end_line,
-                    "score": h.score,
-                    "kind": h.symbol.as_ref().map(|s| &s.kind),
-                    "symbol": h.symbol.as_ref().map(|s| &s.name),
-                    "snippet": h.snippet,
-                })
-            })
-            .collect();
+        let rows: Vec<Value> = hits.iter().map(Place::json).collect();
         out!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
@@ -1436,20 +1607,8 @@ fn print_hits(
         return Ok(());
     }
     for h in hits {
-        let place = format!(
-            "{}:{}",
-            paint(&printable(&h.path), "1", color),
-            paint(&format!("{}-{}", h.start_line, h.end_line), "32", color)
-        );
-        match &h.symbol {
-            Some(s) => out!(
-                "{place}  {}  ({})",
-                printable(&s.label()),
-                show_score(h.score)
-            ),
-            None => out!("{place}  ({})", show_score(h.score)),
-        }
-        for l in snippet_lines(&h.snippet, context, words) {
+        out!("{}", h.header(color));
+        for l in snippet_lines(h.snippet(), context, words) {
             for piece in wrap(&printable(l)) {
                 out!("    {}", highlight(&piece, words, color));
             }
@@ -2004,7 +2163,7 @@ mod tests {
                 ("src/c.rs".to_string(), 1),
             ]
         );
-        assert!(file_hit_counts(&[]).is_empty());
+        assert!(file_hit_counts::<pipeline::SearchHit>(&[]).is_empty());
     }
 
     #[test]

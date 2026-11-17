@@ -184,6 +184,11 @@
 - `ripsem search` names the unreadable files its index refresh skipped, the
   same warning `ripsem index` prints, once per run, also when the search reads
   a changed file again. `-q` keeps it quiet, and the MCP server does not print it.
+- `ripsem callers <NAME> [PATH...]` lists the calls to a function or method in
+  the indexed files, as `path:line:column` with the function that holds each
+  call. The calls are read from the syntax tree, so a name in a string or a
+  comment is not one. It takes the output options of `search`. Rust, Python,
+  JavaScript, TypeScript and Go are read so far.
 - `ripsem similar <path>[:LINE[-LINE]]` finds the code nearest to a file, or to
   a line range of it, from the vectors the index already stores, so no model
   runs. The chunks the location covers are left out of the answer. The MCP

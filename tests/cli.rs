@@ -3517,3 +3517,128 @@ fn a_first_symbol_lookup_outside_a_repository_names_the_index_command() {
     );
     assert!(!dir.path.join(".ripsem").exists());
 }
+
+/// A repository with calls to `load` in four languages, and a Go `Load`.
+fn repository_with_calls() -> TempDir {
+    let dir = TempDir::new();
+    dir.write(
+        "src/store.rs",
+        "pub fn load(path: &str) -> String {\n    std::fs::read_to_string(path).unwrap_or_default()\n}\n\
+         pub fn save(path: &str, text: &str) {\n    let _ = load(path);\n}\n",
+    );
+    dir.write(
+        "src/main.rs",
+        "fn main() {\n    let text = store::load(\"data.txt\");\n    println!(\"{}\", text);\n}\n",
+    );
+    dir.write(
+        "app/handlers.py",
+        "from store import load\n\ndef handle(path):\n    # load(path) in a comment is not a call\n    return load(path)\n",
+    );
+    dir.write(
+        "web/app.js",
+        "import { load } from './store.js';\n// load() in a comment\nexport function show(p) {\n  return load(p);\n}\n",
+    );
+    dir.write(
+        "pkg/store.go",
+        "package store\n\nfunc Load(path string) string {\n\treturn path\n}\n\nfunc Run() string {\n\treturn Load(\"x\")\n}\n",
+    );
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+    dir
+}
+
+#[test]
+fn callers_lists_each_call_with_its_place_in_every_language() {
+    let dir = repository_with_calls();
+    let vimgrep = ripsem(&dir.path, &["callers", "load", "--vimgrep"]);
+    assert!(vimgrep.status.success(), "{}", stderr(&vimgrep));
+    assert_eq!(
+        stdout(&vimgrep).lines().collect::<Vec<_>>(),
+        [
+            "app/handlers.py:5:12:return load(path)",
+            "src/main.rs:2:23:let text = store::load(\"data.txt\");",
+            "src/store.rs:5:13:let _ = load(path);",
+            "web/app.js:4:10:return load(p);",
+        ]
+    );
+
+    let grouped = stdout(&ripsem(&dir.path, &["callers", "load"]));
+    for header in [
+        "app/handlers.py:5:12  fn handle",
+        "src/main.rs:2:23  fn main",
+        "src/store.rs:5:13  fn save",
+        "web/app.js:4:10  fn show",
+    ] {
+        assert!(
+            grouped.lines().any(|l| l == header),
+            "{header} not in {grouped}"
+        );
+    }
+
+    let go = ripsem(&dir.path, &["callers", "Load", "--vimgrep"]);
+    assert_eq!(stdout(&go), "pkg/store.go:8:9:return Load(\"x\")\n");
+}
+
+#[test]
+fn callers_lists_files_counts_and_json_as_search_does() {
+    let dir = repository_with_calls();
+    let files = stdout(&ripsem(&dir.path, &["callers", "load", "-l"]));
+    assert_eq!(
+        files,
+        "app/handlers.py\nsrc/main.rs\nsrc/store.rs\nweb/app.js\n"
+    );
+
+    let counts = stdout(&ripsem(&dir.path, &["callers", "load", "--count-by-file"]));
+    assert_eq!(counts.lines().count(), 4, "{counts}");
+
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout(&ripsem(&dir.path, &["callers", "load", "--json"]))).unwrap();
+    let first = &json[0];
+    assert_eq!(first["path"], "app/handlers.py");
+    assert_eq!(
+        (first["line"].as_u64(), first["column"].as_u64()),
+        (Some(5), Some(12))
+    );
+    assert_eq!(first["callee"], "load");
+    assert_eq!(
+        (first["kind"].as_str(), first["symbol"].as_str()),
+        (Some("fn"), Some("handle"))
+    );
+    assert_eq!(first["snippet"], "return load(path)");
+}
+
+#[test]
+fn callers_takes_paths_and_reports_nothing_with_the_search_exit_codes() {
+    let dir = repository_with_calls();
+    let under_src = stdout(&ripsem(&dir.path, &["callers", "load", "src/", "-l"]));
+    assert_eq!(under_src, "src/main.rs\nsrc/store.rs\n");
+
+    let none = ripsem(&dir.path, &["callers", "nothing_calls_this", "-q"]);
+    assert_eq!(none.status.code(), Some(1));
+    let some = ripsem(&dir.path, &["callers", "load", "-q"]);
+    assert_eq!(some.status.code(), Some(0));
+    let plain = ripsem(&dir.path, &["callers", "nothing_calls_this"]);
+    assert!(plain.status.success());
+    assert_eq!(stdout(&plain).trim(), "no matches");
+}
+
+#[test]
+fn callers_refuses_a_name_that_is_not_one_and_the_score_options() {
+    let dir = repository_with_calls();
+    let bad = ripsem(&dir.path, &["callers", "Index::"]);
+    assert!(!bad.status.success());
+    assert!(
+        stderr(&bad).contains("'Index::' is not a function name"),
+        "{}",
+        stderr(&bad)
+    );
+
+    let scored = ripsem(&dir.path, &["callers", "load", "--min-score", "0.5"]);
+    assert!(!scored.status.success());
+    assert!(
+        stderr(&scored).contains("--min-score"),
+        "{}",
+        stderr(&scored)
+    );
+}
