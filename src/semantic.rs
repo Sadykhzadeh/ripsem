@@ -297,7 +297,7 @@ impl Emitter<'_> {
                         && group
                             .last()
                             .is_some_and(|l| begin_row - last_row(l, self.text) > 1)
-                        && self.extend_last(&group);
+                        && self.extend_last(&group, scope);
                     if detached {
                         group.clear();
                     }
@@ -386,7 +386,11 @@ impl Emitter<'_> {
         next: Option<&Node>,
     ) {
         let open = opening.take();
-        if next.is_none() && open.is_none() && self.is_fragment(group) && self.extend_last(group) {
+        if next.is_none()
+            && open.is_none()
+            && self.is_fragment(group)
+            && self.extend_last(group, scope)
+        {
             group.clear();
             return;
         }
@@ -418,7 +422,7 @@ impl Emitter<'_> {
 
     /// Adds `group` to the record cut just before it, when that ends within a
     /// line or two of it.
-    fn extend_last(&mut self, group: &[Node]) -> bool {
+    fn extend_last(&mut self, group: &[Node], scope: Option<&Symbol>) -> bool {
         let (Some(first), Some(last)) = (group.first(), group.last()) else {
             return false;
         };
@@ -430,7 +434,7 @@ impl Emitter<'_> {
         }
         let mut declarations = Vec::new();
         for node in group {
-            self.declarations_within(*node, None, &mut declarations);
+            self.declarations_within(*node, scope, &mut declarations);
         }
         let text = self.text[from..last.end_byte()].to_string();
         let end_line = last_row(last, self.text) + 1;

@@ -814,6 +814,15 @@ mod cutting {
     }
 
     #[test]
+    fn a_php_abstract_method_is_named_by_its_class_like_a_concrete_one() {
+        let php = "<?php\n\nabstract class Model {\n    protected static function boot(): void {\n        $n = 1;\n    }\n\n    abstract public function table(): string;\n}\n";
+        assert_eq!(
+            declared_labels("a.php", php),
+            ["class Model", "fn Model::boot", "fn Model::table"]
+        );
+    }
+
+    #[test]
     fn files_with_the_extensions_of_a_language_are_cut_as_that_language() {
         let ruby = "def build(x)\n  x + 1\nend\n";
         assert!(has(&cut_code("Tasks.rake", ruby), 1, 3, "fn build"));
