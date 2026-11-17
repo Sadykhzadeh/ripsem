@@ -651,6 +651,18 @@ mod cutting {
     }
 
     #[test]
+    fn a_c_plus_plus_operator_is_named_by_its_operator() {
+        let free = "bool operator==(const Box& a, const Box& b) {\n    return true;\n}\n";
+        assert_eq!(declared_labels("a.cpp", free), ["fn operator=="]);
+        let member =
+            "class Point {\n    Point operator-() const {\n        return *this;\n    }\n};\n";
+        assert_eq!(
+            declared_labels("a.cpp", member),
+            ["class Point", "fn Point::operator-"]
+        );
+    }
+
+    #[test]
     fn files_with_the_extensions_of_a_language_are_cut_as_that_language() {
         let ruby = "def build(x)\n  x + 1\nend\n";
         assert!(has(&cut_code("Tasks.rake", ruby), 1, 3, "fn build"));

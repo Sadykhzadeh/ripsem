@@ -276,7 +276,7 @@ fn identifier_span(node: &tree_sitter::Node) -> Option<(usize, usize)> {
 /// module or a class by its `constant`.
 #[cfg(feature = "treesitter")]
 fn is_name_leaf(kind: &str) -> bool {
-    kind.ends_with("identifier") || matches!(kind, "word" | "name" | "constant")
+    kind.ends_with("identifier") || matches!(kind, "word" | "name" | "constant" | "operator_name")
 }
 
 #[cfg(all(test, feature = "treesitter"))]
