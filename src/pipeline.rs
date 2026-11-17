@@ -960,6 +960,10 @@ pub struct Searcher {
     // The model the index was opened with. A reload under a different model
     // or backend is refused even when the dimensions match.
     model: String,
+    // The bytes of each file the query being answered reads, so the check that
+    // a hit's file is current and the snippets of that hit read it once. Empty
+    // between queries.
+    reads: std::cell::RefCell<HashMap<String, Option<std::rc::Rc<Vec<u8>>>>>,
     // Decoded on the first query that needs the graph, so a query the words
     // answer alone does not pay for it.
     #[cfg(feature = "hnsw")]
@@ -1009,6 +1013,7 @@ fn searcher_over(
         index_path,
         index_mtime,
         model,
+        reads: Default::default(),
         #[cfg(feature = "hnsw")]
         ann_map: OnceLock::new(),
     })
@@ -1050,6 +1055,12 @@ impl Searcher {
         &self.model
     }
 
+    /// The model this searcher shares, so a searcher opened on a refreshed index
+    /// does not load it again.
+    fn embedder(&self) -> Arc<LazyEmbedder> {
+        Arc::clone(&self.embedder)
+    }
+
     pub fn record_count(&self) -> usize {
         self.index.records.len()
     }
@@ -1088,6 +1099,19 @@ impl Searcher {
     /// times as many as the page ends at when that is more, and a place
     /// ranked below them is not found by it.
     pub fn query_page(
+        &self,
+        query: &str,
+        limit: usize,
+        offset: usize,
+        scope: Option<&Scope>,
+        text: Option<&Regex>,
+    ) -> Result<Page> {
+        let page = self.ask_query(query, limit, offset, scope, text);
+        self.reads.borrow_mut().clear();
+        page
+    }
+
+    fn ask_query(
         &self,
         query: &str,
         limit: usize,
@@ -1143,6 +1167,19 @@ impl Searcher {
         scope: Option<&Scope>,
         text: Option<&Regex>,
     ) -> Result<Page> {
+        let page = self.ask_similar(target, limit, offset, scope, text);
+        self.reads.borrow_mut().clear();
+        page
+    }
+
+    fn ask_similar(
+        &self,
+        target: &Target,
+        limit: usize,
+        offset: usize,
+        scope: Option<&Scope>,
+        text: Option<&Regex>,
+    ) -> Result<Page> {
         let own: Vec<usize> = (0..self.index.records.len())
             .filter(|&i| self.index.records[i].path.as_str() == target.path)
             .collect();
@@ -1155,10 +1192,11 @@ impl Searcher {
         let bytes = std::fs::read(self.root.join(&target.path))
             .with_context(|| format!("reading {}", target.path))?;
         if fingerprint::content_hash(&bytes) != self.index.records[first].file_hash {
-            anyhow::bail!(
-                "{} changed since it was indexed and the index could not be updated; run `ripsem index`",
-                target.path
-            );
+            return Ok(Page {
+                hits: Vec::new(),
+                next: None,
+                stale: vec![target.path.clone()],
+            });
         }
         let total = walk::decode_text(&bytes).lines().count();
         if let Some((_, end)) = target.lines
@@ -1272,7 +1310,6 @@ impl Searcher {
         let mut wider: Vec<(String, usize, usize)> = Vec::new();
         let mut next = None;
         let mut stale: Vec<String> = Vec::new();
-        let mut checked: HashMap<&str, bool> = HashMap::new();
         for h in hits {
             let record = &self.index.records[h.record_idx];
             let covered = wider.iter().any(|(path, start, end)| {
@@ -1287,9 +1324,7 @@ impl Searcher {
                 next = Some(h.score);
                 break;
             }
-            let current = *checked
-                .entry(record.path.as_str())
-                .or_insert_with(|| self.indexed_bytes(record).is_some());
+            let current = self.indexed_bytes(record).is_some();
             if !current {
                 add_stale(&mut stale, record.path.as_str());
                 continue;
@@ -1426,8 +1461,16 @@ impl Searcher {
 
     /// The file a record was cut from, as it was indexed; `None` when it was
     /// changed since or cannot be read.
-    fn indexed_bytes(&self, record: &Record) -> Option<Vec<u8>> {
-        bytes_matching(&self.root, &record.path, record.file_hash)
+    fn indexed_bytes(&self, record: &Record) -> Option<std::rc::Rc<Vec<u8>>> {
+        if let Some(found) = self.reads.borrow().get(record.path.as_str()) {
+            return found.clone();
+        }
+        let found =
+            bytes_matching(&self.root, &record.path, record.file_hash).map(std::rc::Rc::new);
+        self.reads
+            .borrow_mut()
+            .insert(record.path.to_string(), found.clone());
+        found
     }
 
     /// The hits, in their order, whose chunk the pattern matches, up to
@@ -1441,7 +1484,6 @@ impl Searcher {
         text: &Regex,
         needed: usize,
     ) -> (Vec<crate::index::Hit>, Vec<String>) {
-        let mut files: HashMap<&str, Option<Vec<u8>>> = HashMap::new();
         let mut kept = Vec::new();
         let mut stale = Vec::new();
         for h in hits {
@@ -1449,10 +1491,8 @@ impl Searcher {
                 break;
             }
             let record = &self.index.records[h.record_idx];
-            let bytes = files
-                .entry(record.path.as_str())
-                .or_insert_with(|| self.indexed_bytes(record));
-            let found = match bytes {
+            let bytes = self.indexed_bytes(record);
+            let found = match &bytes {
                 Some(bytes) => {
                     let file = walk::decode_text(bytes);
                     let lines: Vec<&str> = file
@@ -1540,50 +1580,83 @@ pub fn search_page(
         embedder.warm();
         current = refresh(config, &[]);
     }
-    let mut found = answer(
-        config, &embedder, current, query, limit, offset, scope, text,
-    );
-    // A file rewritten with the size and time it had is not seen by the stat
-    // check. Its hits were left out, so its files are read again and the query
-    // is answered once more from the index as it now stands.
-    if let Ok(page) = &found
-        && !page.stale.is_empty()
-    {
-        let stale = page.stale.clone();
-        let current = refresh(config, &stale);
-        found = answer(
-            config, &embedder, current, query, limit, offset, scope, text,
-        );
-    }
+    let searcher = match current {
+        Some(index) => {
+            let mtime = file_mtime(&config.index_path());
+            searcher_over(config, index, Arc::clone(&embedder), mtime)
+        }
+        None => open_with(config, Arc::clone(&embedder)),
+    };
+    let found = searcher.and_then(|searcher| {
+        let found = search_answer(config, &searcher, query, limit, offset, scope, text);
+        leave_to_exit(searcher.index);
+        found
+    });
     if found.is_err() {
         embedder.settle();
     }
     found
 }
 
-/// Answers a query from `current`, or from the index file when there is none.
-#[allow(clippy::too_many_arguments)]
-fn answer(
+/// The page of a query asked of `held`. When that page names files changed on
+/// disk, they are read again into the index and the question is asked once more
+/// of a searcher opened on the result, so no answer is built from old text. A
+/// failed refresh returns the first page, with the stale hits left out.
+pub fn answer_with_reread(
     config: &Config,
-    embedder: &Arc<LazyEmbedder>,
-    current: Option<Index>,
+    held: &Searcher,
+    ask: impl Fn(&Searcher) -> Result<Page>,
+) -> Result<Page> {
+    let page = ask(held)?;
+    if page.stale.is_empty() {
+        return Ok(page);
+    }
+    let Some(index) = refresh(config, &page.stale) else {
+        return Ok(page);
+    };
+    let mtime = file_mtime(&config.index_path());
+    let fresh = searcher_over(config, index, held.embedder(), mtime)?;
+    ask(&fresh)
+}
+
+/// [`Searcher::similar_page`] through [`answer_with_reread`]. A target that
+/// changed on disk is read again first; it is an error only when it still does
+/// not match the index afterwards.
+#[allow(clippy::too_many_arguments)]
+pub fn similar_answer(
+    config: &Config,
+    held: &Searcher,
+    target: &Target,
+    limit: usize,
+    offset: usize,
+    scope: Option<&Scope>,
+    text: Option<&Regex>,
+) -> Result<Page> {
+    let page = answer_with_reread(config, held, |s| {
+        s.similar_page(target, limit, offset, scope, text)
+    })?;
+    if page.stale.contains(&target.path) {
+        anyhow::bail!(
+            "{} changed since it was indexed and the index could not be updated; run `ripsem index`",
+            target.path
+        );
+    }
+    Ok(page)
+}
+
+/// [`Searcher::query_page`] through [`answer_with_reread`].
+#[allow(clippy::too_many_arguments)]
+pub fn search_answer(
+    config: &Config,
+    held: &Searcher,
     query: &str,
     limit: usize,
     offset: usize,
     scope: Option<&Scope>,
     text: Option<&Regex>,
 ) -> Result<Page> {
-    let searcher = match current {
-        Some(index) => {
-            let mtime = file_mtime(&config.index_path());
-            searcher_over(config, index, Arc::clone(embedder), mtime)
-        }
-        None => open_with(config, Arc::clone(embedder)),
-    };
-    searcher.and_then(|searcher| {
-        let found = searcher.query_page(query, limit, offset, scope, text);
-        leave_to_exit(searcher.index);
-        found
+    answer_with_reread(config, held, |s| {
+        s.query_page(query, limit, offset, scope, text)
     })
 }
 
@@ -1613,7 +1686,7 @@ pub fn similar_page(
         Some(index) => searcher_over(config, index, embedder, file_mtime(&config.index_path())),
         None => open_with(config, embedder),
     }?;
-    let found = searcher.similar_page(target, limit, offset, scope, text);
+    let found = similar_answer(config, &searcher, target, limit, offset, scope, text);
     leave_to_exit(searcher.index);
     found
 }
@@ -1924,6 +1997,7 @@ mod tests {
             model: config.model.clone(),
             #[cfg(feature = "hnsw")]
             ann_map: OnceLock::new(),
+            reads: Default::default(),
         };
         let inside = record("inside.txt", b"one\ntwo\n");
         assert_eq!(searcher.lines(&inside, 2, 2, 100).as_deref(), Some("two"));
@@ -1975,6 +2049,7 @@ mod tests {
             model: config.model.clone(),
             #[cfg(feature = "hnsw")]
             ann_map: OnceLock::new(),
+            reads: Default::default(),
         };
         let hit = SearchHit {
             path: "../secret.txt".into(),
@@ -2031,6 +2106,7 @@ mod tests {
             model: config.model.clone(),
             #[cfg(feature = "hnsw")]
             ann_map: OnceLock::new(),
+            reads: Default::default(),
         };
         let hit = SearchHit {
             path: record.path.to_string(),

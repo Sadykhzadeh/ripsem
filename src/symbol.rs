@@ -121,10 +121,25 @@ fn declared_kind(node_kind: &str) -> Option<&'static str> {
     if is_use(node_kind) {
         return None;
     }
-    KINDS
-        .iter()
-        .find(|(needle, _)| kind_contains(node_kind, needle))
-        .map(|&(_, kind)| kind)
+    // A grammar has a few hundred node kinds and a file has thousands of nodes,
+    // so each kind is matched against the needles once per thread.
+    KIND_CACHE.with(|cache| {
+        if let Some(&found) = cache.borrow().get(node_kind) {
+            return found;
+        }
+        let found = KINDS
+            .iter()
+            .find(|(needle, _)| kind_contains(node_kind, needle))
+            .map(|&(_, kind)| kind);
+        cache.borrow_mut().insert(node_kind.to_string(), found);
+        found
+    })
+}
+
+#[cfg(feature = "treesitter")]
+thread_local! {
+    static KIND_CACHE: std::cell::RefCell<std::collections::HashMap<String, Option<&'static str>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 #[cfg(feature = "treesitter")]
@@ -285,7 +300,29 @@ fn is_name_leaf(kind: &str) -> bool {
 
 #[cfg(all(test, feature = "treesitter"))]
 mod tests {
-    use super::{KINDS, kind_contains};
+    use super::{KINDS, declared_kind, kind_contains};
+
+    /// A kind answered from the cache gives the answer a fresh scan gives.
+    #[test]
+    fn a_cached_kind_answers_as_a_fresh_scan_does() {
+        let kinds = [
+            "function_item",
+            "modifiers",
+            "impl_item",
+            "identifier",
+            "module",
+            "class_declaration",
+            "identifier",
+        ];
+        for kind in kinds.iter().chain(kinds.iter()) {
+            let fresh = KINDS
+                .iter()
+                .find(|(needle, _)| kind_contains(kind, needle))
+                .map(|&(_, k)| k);
+            let expected = if super::is_use(kind) { None } else { fresh };
+            assert_eq!(declared_kind(kind), expected, "{kind}");
+        }
+    }
 
     #[test]
     fn kind_contains_agrees_with_str_contains() {
