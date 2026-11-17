@@ -680,6 +680,32 @@ fn exit_codes_are_0_for_a_run_1_for_a_failure_and_2_for_bad_usage() {
 }
 
 #[test]
+fn short_help_is_the_summary_and_long_help_carries_the_examples() {
+    let dir = TempDir::new();
+    for sub in [
+        "init",
+        "index",
+        "search",
+        "similar",
+        "watch",
+        "status",
+        "mcp",
+        "model",
+        "install",
+        "completions",
+    ] {
+        let short = stdout(&ripsem(&dir.path, &[sub, "-h"]));
+        let long = stdout(&ripsem(&dir.path, &[sub, "--help"]));
+        assert!(!short.contains("Examples:"), "{sub} -h:\n{short}");
+        assert!(long.contains("Examples:"), "{sub} --help:\n{long}");
+        assert!(short.len() <= long.len(), "{sub}");
+    }
+    let short = stdout(&ripsem(&dir.path, &["search", "-h"]));
+    let long = stdout(&ripsem(&dir.path, &["search", "--help"]));
+    assert!(short.len() < long.len(), "search -h should be shorter");
+}
+
+#[test]
 fn help_has_examples_for_search_and_short_summaries_at_the_top() {
     let dir = TempDir::new();
     let search = stdout(&ripsem(&dir.path, &["search", "--help"]));

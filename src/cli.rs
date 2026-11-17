@@ -70,8 +70,15 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Create the local config for this directory.
+    #[command(after_long_help = "Examples:
+  ripsem init
+  ripsem --path ../other-repo init")]
     Init,
     /// Build or update the index for this directory.
+    #[command(after_long_help = "Examples:
+  ripsem index
+  ripsem index --force                re-embed every file
+  ripsem index --dry-run              list what would be indexed, and why files are left out")]
     Index {
         /// Embed every file again instead of reusing the unchanged ones.
         #[arg(long)]
@@ -84,7 +91,7 @@ pub enum Command {
         dry_run: bool,
     },
     /// Find code by an identifier, an error message or a description.
-    #[command(after_help = "Examples:
+    #[command(after_long_help = "Examples:
   ripsem search where is auth set up
   ripsem search retry on failure -k 5 --lang rust
   ripsem search verify_password -l -0 | xargs -0 wc -l
@@ -105,6 +112,10 @@ pub enum Command {
     ///
     /// Takes `src/auth.rs:40-72`, a single line such as `src/auth.rs:40`, or a
     /// bare path for the whole file. It uses the stored vectors, so no model runs.
+    #[command(after_long_help = "Examples:
+  ripsem similar src/auth.rs:40-72
+  ripsem similar src/auth.rs:40
+  ripsem similar src/auth.rs --lang rust -k 5")]
     Similar {
         /// `path`, `path:LINE` or `path:START-END`, relative to the current
         /// directory. The lines are 1-based.
@@ -113,8 +124,14 @@ pub enum Command {
         opts: SearchOpts,
     },
     /// Index and keep the index in sync as files change.
+    #[command(after_long_help = "Examples:
+  ripsem watch
+  ripsem watch --path ../other-repo")]
     Watch,
     /// Show index health and configuration for this directory.
+    #[command(after_long_help = "Examples:
+  ripsem status
+  ripsem status --json | jq .index.drift")]
     Status {
         /// Emit machine-readable JSON (schema `ripsem/status/v1`) instead of the
         /// human summary — for tooling or an agent checking whether the index
@@ -127,18 +144,31 @@ pub enum Command {
         verify: bool,
     },
     /// Run the MCP server over stdio.
+    #[command(after_long_help = "Examples:
+  ripsem install claude-code      register this server with the agent
+  ripsem mcp                      run by the agent; reads and writes stdio")]
     Mcp,
     /// Inspect and choose the embedding model and backend.
+    #[command(after_long_help = "Examples:
+  ripsem model list
+  ripsem model set bge-base-en-v1.5
+  ripsem model backend hash")]
     Model {
         #[command(subcommand)]
         action: ModelCmd,
     },
     /// Wire ripsem into a coding agent.
+    #[command(after_long_help = "Examples:
+  ripsem install claude-code
+  ripsem install opencode")]
     Install {
         #[command(subcommand)]
         target: InstallCmd,
     },
     /// Print the completion script for a shell.
+    #[command(after_long_help = "Examples:
+  ripsem completions bash > ~/.local/share/bash-completion/completions/ripsem
+  ripsem completions powershell >> $PROFILE")]
     Completions {
         /// bash, zsh, fish, powershell or elvish.
         shell: clap_complete::Shell,

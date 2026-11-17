@@ -23,7 +23,8 @@
 - `ripsem similar src/a.rs:abc` says what a line range looks like, `PATH:LINE`
   or `PATH:LINE-LINE`, when the path is not in the index, since the colon was
   read as part of a path.
-- `ripsem search --help` ends with examples, and the one-line summary of
+- `-h` prints the short summary of each command and `--help` adds an examples
+  section, for every top-level command. The one-line summary of
   `ripsem similar` in the top-level help is short enough to read.
 - The exit codes are written down in the README: 0 for a run, 1 for a failure
   while running (and for a `-q` search with no hit), 2 for a command line that
