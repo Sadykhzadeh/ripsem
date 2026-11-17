@@ -1438,6 +1438,43 @@ fn every_file_is_hashed_when_asked_and_not_otherwise() {
     assert!(stdout(&found).contains("b.rs"), "{}", stdout(&found));
 }
 
+/// A file rewritten with the size and the time it had keeps its old text in
+/// the index, and a search must not print that text as the file's contents.
+#[test]
+fn a_same_size_rewrite_does_not_print_its_old_text() {
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+    let set_modified = |dir: &TempDir| {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.path.join("a.rs"))
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+    };
+
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie");
+    set_modified(&dir);
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    dir.write("a.rs", "omega bravo charlie");
+    set_modified(&dir);
+    let old = ripsem(&dir.path, &["search", "alpha bravo", "--json"]);
+    assert!(
+        !stdout(&old).contains("alpha bravo charlie"),
+        "{}",
+        stdout(&old)
+    );
+    let new = ripsem(&dir.path, &["search", "omega bravo", "--json", "-k", "1"]);
+    assert!(
+        stdout(&new).contains("omega bravo charlie"),
+        "{}",
+        stdout(&new)
+    );
+}
+
 #[test]
 fn a_truncated_index_is_reported_and_rebuilt_without_a_panic() {
     let dir = TempDir::new();

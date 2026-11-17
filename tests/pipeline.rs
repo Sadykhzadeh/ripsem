@@ -1836,16 +1836,16 @@ mod stat_cache {
         assert!(found_by(&config, "alpha").is_empty());
     }
 
-    /// A rewrite that keeps the size and the time is not noticed by the update,
-    /// and the pattern does not read it in either. The file no longer hashes to
-    /// what the index holds, so the pattern is tried on the indexed text, which
-    /// is what the hit shows; the new text is not mixed in under the old line
-    /// numbers. A run that hashes every file brings the change in.
+    /// A rewrite that keeps the size and the time is not noticed by the update.
+    /// The file no longer hashes to what the index holds, so the search reads
+    /// it again before it answers: the pattern finds the text the file has now,
+    /// and not the text the index still holds. A run that hashes every file
+    /// answers the same way.
     #[test]
     fn a_pattern_is_not_fooled_by_a_rewrite_the_stat_cannot_show() {
         let (_dir, config) = rewritten_in_place();
-        assert_eq!(found_by(&config, "alpha"), ["a.rs"]);
-        assert!(found_by(&config, "omega").is_empty());
+        assert!(found_by(&config, "alpha").is_empty());
+        assert_eq!(found_by(&config, "omega"), ["a.rs"]);
 
         let hashed = hashing(&config);
         assert_eq!(found_by(&hashed, "omega"), ["a.rs"]);

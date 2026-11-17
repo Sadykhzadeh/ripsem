@@ -74,6 +74,12 @@
   once, with the `ripsem index --force` fix, and no panic message is printed.
   Later queries in the same run go straight to the exact scan instead of
   trying the graph again.
+- `ripsem search` no longer prints the old text of a file rewritten with the
+  same size and modification time. Each hit's file is checked against the hash
+  the index holds before the hit is shown. A file that differs is read again,
+  and the search is answered once more from the index as it now stands. The MCP
+  server leaves such hits out until a CLI search or `ripsem index --force` reads
+  the file.
 
 ## 0.3.0 (2026-11-15)
 

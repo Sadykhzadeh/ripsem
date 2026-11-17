@@ -526,8 +526,12 @@ drifted.
 are what they were when it was indexed is not read again, by `index`, `search`,
 `watch`, the MCP server or `status`, so a file rewritten with different
 contents, the same size and the same modification time is not seen as changed.
-Set `RIPSEM_HASH_ALL=1` for a run (`RIPSEM_HASH_ALL=1 ripsem status` shows what
-is out of date) or run `ripsem index --force` to read every file.
+`search` does not print the old text of such a file: before it prints a hit, it
+checks the file's hash against the index, and when they differ it reads that
+file again and searches once more. The MCP server leaves such hits out without
+reading the file, until a `ripsem search` or `ripsem index --force` run reads
+it. Set `RIPSEM_HASH_ALL=1` for a run (`RIPSEM_HASH_ALL=1 ripsem status` shows
+what is out of date) or run `ripsem index --force` to read every file.
 
 **Search says the index was built with another model.** The config names a
 different model or backend than the index. `ripsem index` rebuilds it for the
