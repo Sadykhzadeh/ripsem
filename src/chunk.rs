@@ -470,7 +470,7 @@ mod cutting {
                    func run() {\n\tfmt.Println(\"hi\")\n}\n";
         let cut = cut_code("a.go", src);
         assert!(has(&cut, 5, 7, "type Server"), "{cut:?}");
-        assert!(has(&cut, 9, 11, "fn Name"), "{cut:?}");
+        assert!(has(&cut, 9, 11, "fn Server::Name"), "{cut:?}");
         assert!(has(&cut, 13, 15, "fn run"), "{cut:?}");
         assert_apart(&cut);
     }
@@ -607,6 +607,16 @@ mod cutting {
         assert_eq!(
             declared_labels("a.cs", cs),
             ["record Item", "fn Item::Total"]
+        );
+    }
+
+    #[test]
+    fn a_go_method_is_named_by_its_receiver_type() {
+        let go = "package store\n\ntype Set struct{}\n\nfunc (s *Set) Add(v int) {\n\t_ = v\n}\n\n\
+                  func (Set) Len() int {\n\treturn 0\n}\n";
+        assert_eq!(
+            declared_labels("a.go", go),
+            ["type Set", "fn Set::Add", "fn Set::Len"]
         );
     }
 

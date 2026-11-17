@@ -195,6 +195,20 @@ fn is_binding(node_kind: &str) -> bool {
     node_kind == "variable_declarator" || node_kind.ends_with("field_definition")
 }
 
+/// The type a Go method is declared on: `Set` for `func (s *Set[T]) Add`. Its
+/// methods are named as a class's are, `Set::Add`.
+#[cfg(feature = "treesitter")]
+pub fn receiver_type(node: &tree_sitter::Node, text: &str) -> Option<String> {
+    if node.kind() != "method_declaration" {
+        return None;
+    }
+    let receiver = node.child_by_field_name("receiver")?;
+    let mut cursor = receiver.walk();
+    let parameter = receiver.named_children(&mut cursor).next()?;
+    let (start, end) = identifier_span(&parameter.child_by_field_name("type")?)?;
+    Some(text[start..end].to_string())
+}
+
 /// The name has to be a plain identifier: a destructuring pattern, a string or
 /// a computed key does not name one function. A variable inside a function
 /// body holds a closure, which belongs to the function around it as a Rust

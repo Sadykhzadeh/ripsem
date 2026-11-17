@@ -153,7 +153,15 @@ impl Emitter<'_> {
             .borrow_mut()
             .entry(node.id())
             .or_insert_with(|| symbol::raw_declaration(node)))?;
-        Some(symbol::named(kind, &self.text[start..end], enclosing))
+        let owner = symbol::receiver_type(node, self.text).map(|name| Symbol {
+            kind: "type".into(),
+            name,
+        });
+        Some(symbol::named(
+            kind,
+            &self.text[start..end],
+            owner.as_ref().or(enclosing),
+        ))
     }
 
     /// `enclosing` is the declaration being walked, so every piece of a function
