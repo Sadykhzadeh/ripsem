@@ -1200,6 +1200,11 @@ fn since_limits_a_search_to_the_files_changed_since_a_revision() {
         "{}",
         stderr(&outside)
     );
+    assert!(
+        !stderr(&outside).contains("fatal:"),
+        "git's own message should not be repeated: {}",
+        stderr(&outside)
+    );
 }
 
 #[test]

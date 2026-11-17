@@ -14,7 +14,7 @@ pub fn changed_since(root: &Path, rev: &str) -> Result<HashSet<String>> {
     }
     let dir = crate::cli::show_path(root);
     git(&dir, &["rev-parse", "--is-inside-work-tree"])
-        .map_err(|e| anyhow::anyhow!("{dir} is not in a git repository ({e})"))?;
+        .map_err(|_| anyhow::anyhow!("{dir} is not in a git repository"))?;
     git(
         &dir,
         &[

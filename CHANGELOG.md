@@ -17,6 +17,8 @@
   `path:line:column:text` line per hit, for Vim's quickfix list and grep tools.
 - `ripsem search` takes ripgrep's short names for two options: `-c` for
   `--count-by-file` and `-t` for `--lang`, which also accepts `--type`.
+- `ripsem search --since <rev>` outside a git repository says only that the
+  directory is not in one. It used to repeat git's own `fatal:` line after it.
 - `ripsem install opencode` is accepted as the README names it; `open-code`,
   the name the subcommand had, still works.
 - The query is read from stdin with `ripsem search -`, or when `search` gets no
