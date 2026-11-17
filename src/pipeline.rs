@@ -1545,10 +1545,31 @@ fn refresh(config: &Config) -> Option<Index> {
 /// Display `path` relative to `root` with forward slashes, matching the
 /// repo-relative paths the index and search output use.
 pub(crate) fn relative(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
+    below(root, path)
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+/// [`Path::strip_prefix`], answered from the text of the two paths when it can
+/// be: a walk asks this for every file, and comparing components costs far more
+/// than matching bytes. The text is trusted only when the remainder has no empty
+/// or `.` part, since those are the only spellings the components normalise
+/// away. Everything else goes to `strip_prefix`.
+fn below<'a>(root: &Path, path: &'a Path) -> Option<&'a Path> {
+    text_below(root, path).or_else(|| path.strip_prefix(root).ok())
+}
+
+fn text_below<'a>(root: &Path, path: &'a Path) -> Option<&'a Path> {
+    let sep = std::path::MAIN_SEPARATOR;
+    let (root_text, path_text) = (root.to_str()?, path.to_str()?);
+    if root_text.is_empty() || root_text.ends_with(sep) {
+        return None;
+    }
+    let rest = path_text.strip_prefix(root_text)?.strip_prefix(sep)?;
+    rest.split(sep)
+        .all(|part| !part.is_empty() && part != ".")
+        .then(|| Path::new(rest))
 }
 
 /// Strips the indentation every line shares, so a method deep inside a class
@@ -2122,6 +2143,41 @@ mod tests {
         assert_eq!(relative(Path::new("a"), Path::new("a/b\\c")), "b/c");
         // Outside the root: returned as it is.
         assert_eq!(relative(root, Path::new("/other/x.rs")), "/other/x.rs");
+    }
+
+    /// The text shortcut must give what `strip_prefix` gives, including for the
+    /// spellings it leaves to `strip_prefix`.
+    #[test]
+    fn relative_agrees_with_strip_prefix() {
+        let roots = ["/repo", "/repo/", "/repo/sub", "", "repo", "/re"];
+        let paths = [
+            "/repo/src/main.rs",
+            "/repo/./x.rs",
+            "/repo//x.rs",
+            "/repo/x/./y.rs",
+            "/repo/x/",
+            "/repo",
+            "/repo/",
+            "/repository/x.rs",
+            "/repo/src/../x.rs",
+            "/other/x.rs",
+            "repo/src/lib.rs",
+            "repo/a\\b.rs",
+        ];
+        for root in roots {
+            for path in paths {
+                let expected = Path::new(path)
+                    .strip_prefix(root)
+                    .unwrap_or(Path::new(path))
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                assert_eq!(
+                    relative(Path::new(root), Path::new(path)),
+                    expected,
+                    "{root} {path}"
+                );
+            }
+        }
     }
 
     #[test]
