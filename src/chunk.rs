@@ -663,6 +663,12 @@ mod cutting {
     }
 
     #[test]
+    fn a_macro_that_defines_a_function_is_a_macro() {
+        let c = "#define MAKE_GETTER(name, field) \\\n    int get_##name(Node *n) { \\\n        return n->field; }\n";
+        assert_eq!(declared_labels("a.c", c), ["macro MAKE_GETTER"]);
+    }
+
+    #[test]
     fn files_with_the_extensions_of_a_language_are_cut_as_that_language() {
         let ruby = "def build(x)\n  x + 1\nend\n";
         assert!(has(&cut_code("Tasks.rake", ruby), 1, 3, "fn build"));

@@ -129,6 +129,8 @@ fn declared_kind(node_kind: &str) -> Option<&'static str> {
 
 #[cfg(feature = "treesitter")]
 const KINDS: &[(&str, &str)] = &[
+    ("preproc_function_def", "macro"),
+    ("preproc_def", "macro"),
     ("interface", "interface"),
     ("namespace", "mod"),
     ("constructor", "fn"),
