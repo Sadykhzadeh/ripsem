@@ -1857,6 +1857,43 @@ mod tests {
         assert_eq!(replies[2]["id"], 1);
     }
 
+    /// Framing: CRLF lines are read as the lines they are, a last message with no
+    /// line break is answered, and a cancellation or a response from the client
+    /// gets no reply. A message cut off by the end of the input is a parse error.
+    #[test]
+    fn framing_follows_line_endings_and_the_end_of_input() {
+        let replies_to = |input: &[u8]| -> Vec<Value> {
+            let dir = crate::testutil::TempDir::new();
+            let config = Config {
+                root: dir.path().to_path_buf(),
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            serve_on(config, false, |_| {}, input, &mut out).unwrap();
+            out.split(|&b| b == b'\n')
+                .filter(|line| !line.is_empty())
+                .map(|line| serde_json::from_slice(line).unwrap())
+                .collect()
+        };
+        let input = concat!(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\r\n",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":1}}\r\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}",
+        );
+        let replies = replies_to(input.as_bytes());
+        assert_eq!(replies.len(), 2, "{replies:?}");
+        assert_eq!(replies[0]["id"], 1);
+        assert_eq!(replies[0]["result"], json!({}));
+        assert_eq!(replies[1]["id"], 3);
+        assert_eq!(replies[1]["result"], json!({}));
+
+        let replies = replies_to(b"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"pi");
+        assert_eq!(replies.len(), 1, "{replies:?}");
+        assert_eq!(replies[0]["error"]["code"], -32700);
+        assert_eq!(replies[0]["id"], Value::Null);
+    }
+
     /// A request line is held whole only up to a size limit. A longer one is
     /// refused as a request, and the lines after it are still answered.
     #[test]
