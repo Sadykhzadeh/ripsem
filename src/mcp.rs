@@ -1946,6 +1946,39 @@ mod tests {
         assert_eq!(modified(&hashing), 1);
     }
 
+    /// An index cut by an older chunker still answers, and `index_status` says
+    /// its chunks are due a recut until an index run makes them current.
+    #[test]
+    fn an_index_cut_by_an_older_chunker_answers_and_says_it_is_due_a_recut() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("auth.rs", "fn authenticate(user) { verify password }");
+        let config = Config {
+            backend: crate::config::Backend::Hash,
+            root: dir.path().canonicalize().unwrap(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+        let mut older = crate::index::Index::load(&config.index_path()).unwrap();
+        older.chunking = crate::chunk::Chunking::default();
+        older.save(&config.index_path()).unwrap();
+
+        let searched = call_tool(&config, "search", json!({ "query": "authenticate" }));
+        assert_eq!(searched["result"]["isError"], false, "{searched}");
+        let text = searched["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("auth.rs:1-1"), "got: {text}");
+
+        let status = |config: &Config| -> Value {
+            let resp = call_tool(config, "index_status", json!({}));
+            assert_eq!(resp["result"]["isError"], false, "{resp}");
+            resp["result"]["structuredContent"]["index"]["rechunk"].clone()
+        };
+        assert_eq!(status(&config), true);
+
+        pipeline::index_repo(&config, false).unwrap();
+        assert_eq!(status(&config), false);
+    }
+
     #[test]
     fn index_status_takes_no_arguments() {
         let cfg = Config::default();

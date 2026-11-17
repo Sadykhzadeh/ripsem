@@ -459,6 +459,7 @@ the file cannot be read, or `null` when it is missing.
 | `index.model` | string | The model the index was built with. |
 | `index.stale` | boolean | Whether the index was built with another backend or model than the configuration names, so `ripsem index` rebuilds it. The files are described by `index.drift`. |
 | `index.drift` | object or null | How far the files are from the index; `null` when the tree cannot be walked. |
+| `index.rechunk` | boolean | Whether the index was cut with other chunk settings or by an older chunker, so `ripsem index` cuts every file again. |
 | `index.drift.added` | number | Files on disk that the index does not hold. |
 | `index.drift.modified` | number | Files both hold, with different content. |
 | `index.drift.removed` | number | Files the index holds that are no longer on disk. |

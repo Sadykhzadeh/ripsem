@@ -634,6 +634,7 @@ fn status_value(
                 "backend": f.index_backend,
                 "model": f.index_model,
                 "stale": f.stale,
+                "rechunk": f.rechunk,
                 "written_unix": f.written,
                 "drift": match f.drift {
                     Some(d) => json!({
