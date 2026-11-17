@@ -98,10 +98,53 @@ pub fn raw_declaration(node: &tree_sitter::Node) -> Option<(&'static str, (usize
     if is_prototype(node) {
         return Some(("fn", declared_name(node)?));
     }
+    if let Some(span) = kotlin_property(node) {
+        return Some(("val", span));
+    }
     match is_binding(node.kind()) {
         true => Some(("fn", bound_function_name(node)?)),
-        false => Some((declared_kind(node.kind())?, declared_name(node)?)),
+        false => {
+            let (start, end) = declared_name(node)?;
+            let start = kotlin_receiver(node).unwrap_or(start);
+            Some((declared_kind(node.kind())?, (start, end)))
+        }
     }
+}
+
+/// A Kotlin property names what it declares in a `variable_declaration` child,
+/// and only a property of a file or a class is a declaration. A local `val`
+/// inside a function is not, as a Rust `let` is not.
+#[cfg(feature = "treesitter")]
+fn kotlin_property(node: &tree_sitter::Node) -> Option<(usize, usize)> {
+    if node.kind() != "property_declaration" {
+        return None;
+    }
+    let parent = node.parent()?;
+    if !matches!(parent.kind(), "source_file" | "class_body") {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let variable = node
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == "variable_declaration")?;
+    identifier_span(&variable)
+}
+
+/// A Kotlin extension function is named with its receiver type, as in
+/// `fun String.shout()`, so the name runs from the receiver to the function's
+/// own name. The receiver is the type that comes before the name; a return type
+/// comes after it.
+#[cfg(feature = "treesitter")]
+fn kotlin_receiver(node: &tree_sitter::Node) -> Option<usize> {
+    if node.kind() != "function_declaration" {
+        return None;
+    }
+    let name = node.child_by_field_name("name")?;
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .take_while(|child| child.start_byte() < name.start_byte())
+        .find(|child| matches!(child.kind(), "user_type" | "nullable_type"))
+        .map(|receiver| receiver.start_byte())
 }
 
 #[cfg(feature = "treesitter")]

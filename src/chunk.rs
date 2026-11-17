@@ -796,6 +796,24 @@ mod cutting {
     }
 
     #[test]
+    fn a_kotlin_property_and_an_extension_function_are_declarations() {
+        let kt = "package demo\n\nfun String.shout(): String = uppercase()\n\n\
+                  val answer: Int = 42\n\nclass Box(val item: Int) {\n    val size: Int\n        get() = 1\n}\n";
+        assert_eq!(
+            declared_labels("a.kt", kt),
+            [
+                "fn String.shout",
+                "val answer",
+                "class Box",
+                "val Box::size"
+            ]
+        );
+        let annotated =
+            "@file:JvmName(\"Utils\")\n\npackage demo\n\nfun main() {\n    println(1)\n}\n";
+        assert_eq!(declared_labels("Utils.kt", annotated), ["fn main"]);
+    }
+
+    #[test]
     fn files_with_the_extensions_of_a_language_are_cut_as_that_language() {
         let ruby = "def build(x)\n  x + 1\nend\n";
         assert!(has(&cut_code("Tasks.rake", ruby), 1, 3, "fn build"));
