@@ -780,6 +780,47 @@ fn the_json_tables_in_the_readme_name_every_key_the_commands_print() {
     );
 }
 
+/// Every `RIPSEM_` name that a Rust file under `dir` mentions.
+fn ripsem_names_in_sources(dir: &Path, out: &mut std::collections::BTreeSet<String>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            ripsem_names_in_sources(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (at, _) in text.match_indices("RIPSEM_") {
+                let name: String = text[at..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
+                    .collect();
+                if name.len() > "RIPSEM_".len() {
+                    out.insert(name);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_ripsem_variable_the_code_reads_is_in_the_readme_table() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut read = std::collections::BTreeSet::new();
+    ripsem_names_in_sources(&root.join("src"), &mut read);
+    assert!(!read.is_empty());
+
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    let documented: std::collections::BTreeSet<String> = readme
+        .lines()
+        .filter(|line| line.starts_with("| `RIPSEM_"))
+        .filter_map(|line| line.split('|').nth(1))
+        .map(|cell| cell.trim().trim_matches('`').to_string())
+        .collect();
+    assert_eq!(
+        documented, read,
+        "README table and the variables read in src/"
+    );
+}
+
 #[test]
 fn short_help_is_the_summary_and_long_help_carries_the_examples() {
     let dir = TempDir::new();
