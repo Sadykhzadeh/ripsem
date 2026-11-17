@@ -542,23 +542,26 @@ fn handle_call(
     id: Value,
     request: &Value,
 ) -> Value {
-    match request
-        .get("params")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
-    {
-        Some("search") => {}
-        Some("find_similar") => {
+    let name = match request.get("params").and_then(|p| p.get("name")) {
+        None | Some(Value::Null) => return error(id, -32602, "missing tool name"),
+        Some(Value::String(name)) => name.as_str(),
+        Some(other) => {
+            let message = format!("'name' must be a string, not {other}");
+            return error(id, -32602, &message);
+        }
+    };
+    match name {
+        "search" => {}
+        "find_similar" => {
             return find_similar(config, session, id, &call_arguments(request));
         }
-        Some("index_status") => return index_status(config, id, &call_arguments(request)),
-        Some(other) => {
+        "index_status" => return index_status(config, id, &call_arguments(request)),
+        other => {
             let message = format!(
                 "unknown tool '{other}'; the tools are 'search', 'find_similar' and 'index_status'"
             );
             return error(id, -32602, &message);
         }
-        None => return error(id, -32602, "missing tool name"),
     }
 
     let args = call_arguments(request);
@@ -1529,6 +1532,23 @@ mod tests {
         let message = resp["error"]["message"].as_str().unwrap();
         assert!(message.contains("unknown tool 'other'"), "got: {message}");
         assert!(message.contains("'search'"), "got: {message}");
+    }
+
+    /// A `name` of the wrong type is named as the bad field. Calling it missing
+    /// sends the client looking for a field it did send.
+    #[test]
+    fn a_tool_name_that_is_not_a_string_is_named_as_the_bad_field() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("tools/call", json!({ "name": 7 }))).unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        let message = resp["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("'name' must be a string, not 7"),
+            "got: {message}"
+        );
+
+        let resp = handle(&cfg, None, &req("tools/call", json!({}))).unwrap();
+        assert_eq!(resp["error"]["message"], "missing tool name");
     }
 
     #[test]
