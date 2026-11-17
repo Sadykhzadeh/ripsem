@@ -582,6 +582,20 @@ mod cutting {
     }
 
     #[test]
+    fn a_type_parameter_is_not_a_declaration() {
+        let go = "type Set[T comparable] struct {\n\titems map[T]struct{}\n}\n\n\
+                  func Map[T, U any](xs []T) []U {\n\treturn nil\n}\n";
+        assert_eq!(declared_labels("a.go", go), ["type Set", "fn Map"]);
+        let cpp = "class Box {\n  template <typename U>\n  U as() const { return U(v); }\n};\n";
+        assert_eq!(declared_labels("a.cpp", cpp), ["class Box", "fn Box::as"]);
+        let scala = "sealed trait Tree[+A]\n\ntype Pair[A] = (A, A)\n";
+        assert_eq!(
+            declared_labels("a.scala", scala),
+            ["trait Tree", "type Pair"]
+        );
+    }
+
+    #[test]
     fn files_with_the_extensions_of_a_language_are_cut_as_that_language() {
         let ruby = "def build(x)\n  x + 1\nend\n";
         assert!(has(&cut_code("Tasks.rake", ruby), 1, 3, "fn build"));

@@ -177,6 +177,8 @@ fn is_use(node_kind: &str) -> bool {
         "_binding",
         "_invocation",
         "_declarator",
+        "_parameter_declaration",
+        "_parameters",
         "template_function",
     ];
     USES.iter().any(|suffix| node_kind.ends_with(suffix))
