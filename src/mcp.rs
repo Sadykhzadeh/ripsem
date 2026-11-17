@@ -2495,4 +2495,143 @@ mod tests {
         let text = tool_error(json!({ "query": "x", "regex": "((a{100}){100}){100}" }));
         assert!(text.contains("too large"), "{text}");
     }
+
+    /// Checks `value` against the part of JSON Schema the tool schemas use: `type`
+    /// (one name or several), `properties`, `required`, `items`, `minimum`,
+    /// `maximum` and `additionalProperties: false`. Says where the first
+    /// violation is.
+    fn conforms(value: &Value, schema: &Value, at: &str) -> Result<(), String> {
+        if let Some(declared) = schema.get("type") {
+            let names: Vec<&str> = match declared {
+                Value::String(one) => vec![one.as_str()],
+                Value::Array(many) => many.iter().filter_map(Value::as_str).collect(),
+                _ => return Err(format!("{at}: the schema's type is not a name")),
+            };
+            if !names.iter().any(|name| is_type(value, name)) {
+                return Err(format!("{at}: {value} is not {}", names.join(" or ")));
+            }
+        }
+        if let Some(number) = value.as_f64() {
+            if let Some(min) = schema.get("minimum").and_then(Value::as_f64)
+                && number < min
+            {
+                return Err(format!("{at}: {number} is below {min}"));
+            }
+            if let Some(max) = schema.get("maximum").and_then(Value::as_f64)
+                && number > max
+            {
+                return Err(format!("{at}: {number} is above {max}"));
+            }
+        }
+        if let Some(object) = value.as_object() {
+            let properties = schema.get("properties").and_then(Value::as_object);
+            let required = schema.get("required").and_then(Value::as_array);
+            for name in required.into_iter().flatten().filter_map(Value::as_str) {
+                if !object.contains_key(name) {
+                    return Err(format!("{at}: '{name}' is required"));
+                }
+            }
+            let closed = schema.get("additionalProperties") == Some(&json!(false));
+            for (name, member) in object {
+                match properties.and_then(|p| p.get(name)) {
+                    Some(sub) => conforms(member, sub, &format!("{at}.{name}"))?,
+                    None if closed => return Err(format!("{at}: '{name}' is not allowed")),
+                    None => {}
+                }
+            }
+        }
+        if let (Some(items), Some(item_schema)) = (value.as_array(), schema.get("items")) {
+            for (i, item) in items.iter().enumerate() {
+                conforms(item, item_schema, &format!("{at}[{i}]"))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_type(value: &Value, name: &str) -> bool {
+        match name {
+            "string" => value.is_string(),
+            "integer" => value.is_i64() || value.is_u64(),
+            "number" => value.is_number(),
+            "boolean" => value.is_boolean(),
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "null" => value.is_null(),
+            _ => false,
+        }
+    }
+
+    /// The checker is only worth trusting if it refuses what a schema forbids.
+    #[test]
+    fn the_schema_checker_refuses_what_the_schema_forbids() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "n": { "type": "integer", "minimum": 1 },
+                "next": { "type": ["integer", "null"] },
+                "tags": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["n", "next"],
+            "additionalProperties": false
+        });
+        let ok = json!({ "n": 1, "next": null, "tags": ["a"] });
+        assert!(conforms(&ok, &schema, "t").is_ok());
+        for bad in [
+            json!({ "next": null }),
+            json!({ "n": 0, "next": null }),
+            json!({ "n": 1.5, "next": null }),
+            json!({ "n": 1, "next": "2" }),
+            json!({ "n": 1, "next": null, "tags": [1] }),
+            json!({ "n": 1, "next": null, "extra": true }),
+        ] {
+            assert!(conforms(&bad, &schema, "t").is_err(), "{bad}");
+        }
+    }
+
+    /// Every result a tool returns with structured content holds to the
+    /// outputSchema the server declares for that tool, for paged hits, an empty
+    /// page, a threshold that drops everything, similar places and the status.
+    #[test]
+    fn structured_results_hold_to_the_output_schema_declared_for_them() {
+        let (_dir, config, searcher) = paged_project();
+        let listed = handle(&config, None, &req("tools/list", json!({}))).unwrap();
+        let schema_of = |tool: &str| -> Value {
+            listed["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == tool)
+                .unwrap()["outputSchema"]
+                .clone()
+        };
+        let calls = [
+            ("search", json!({ "query": "verify password" })),
+            (
+                "search",
+                json!({ "query": "verify password", "limit": 2, "offset": 2 }),
+            ),
+            (
+                "search",
+                json!({ "query": "verify password", "offset": 9999 }),
+            ),
+            ("search", json!({ "query": "zzqqx", "min_score": 0.9 })),
+            ("find_similar", json!({ "path": "src/auth0.rs", "line": 1 })),
+            ("index_status", json!({})),
+        ];
+        for (tool, arguments) in calls {
+            let request = req(
+                "tools/call",
+                json!({ "name": tool, "arguments": arguments }),
+            );
+            let resp = handle(&config, Some(&searcher), &request).unwrap();
+            assert_eq!(
+                resp["result"]["isError"], false,
+                "{tool} {arguments}: {resp}"
+            );
+            let structured = &resp["result"]["structuredContent"];
+            assert!(structured.is_object(), "{tool} {arguments}: {resp}");
+            conforms(structured, &schema_of(tool), tool)
+                .unwrap_or_else(|e| panic!("{tool} {arguments}: {e}"));
+        }
+    }
 }
