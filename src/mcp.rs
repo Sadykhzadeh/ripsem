@@ -432,7 +432,7 @@ fn tool_schema() -> Value {
         "title": "Search the code",
         "annotations": read_only("Search the code"),
         "outputSchema": hits_schema(),
-        "description": "Find code in this repository. Handles both exact terms (identifiers, error strings, constants) and plain-language descriptions of behaviour in the same call, and returns ranked snippets with file paths and line ranges. Prefer this over grepping and reading whole files: it costs one call instead of guessing at the author's wording.",
+        "description": "Find code in this repository. Handles both exact terms (identifiers, error strings, constants) and plain-language descriptions of behaviour in the same call, and returns ranked snippets with file paths and line ranges. Prefer this over grepping and reading whole files: it costs one call instead of guessing at the author's wording. To find the other places that do what one hit does, call `find_similar` on that hit instead.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -504,7 +504,7 @@ fn similar_schema() -> Value {
         "title": "Find similar code",
         "annotations": read_only("Find similar code"),
         "outputSchema": hits_schema(),
-        "description": "Find the code in this repository that does what a given place does: give a file, and optionally a line range, and get the nearest places back as ranked snippets. Reach for it after finding one relevant place, to find the other places that do the same thing, such as a second handler or a copied check.",
+        "description": "Find the code in this repository that does what a given place does: give a file, and optionally a line range, and get the nearest places back as ranked snippets. Reach for it after `search` (or a read) has found one relevant place, to find the other places that do the same thing, such as a second handler or a copied check. For a question with no place in hand yet, use `search`.",
         "inputSchema": {
             "type": "object",
             "properties": properties,
@@ -1202,6 +1202,31 @@ mod tests {
         assert_eq!(status["type"], "object");
         assert_eq!(status["additionalProperties"], false);
         assert!(status.get("required").is_none());
+    }
+
+    /// An agent that has one hit in hand must be told which tool finds its
+    /// copies, and an agent that has a question must be told it is not the
+    /// other one's job.
+    #[test]
+    fn the_two_search_tools_say_when_to_reach_for_each_other() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("tools/list", json!({}))).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let description = |name: &str| -> &str {
+            tools.iter().find(|t| t["name"] == name).unwrap()["description"]
+                .as_str()
+                .unwrap()
+        };
+        assert!(
+            description("search").contains("`find_similar`"),
+            "{}",
+            description("search")
+        );
+        assert!(
+            description("find_similar").contains("`search`"),
+            "{}",
+            description("find_similar")
+        );
     }
 
     /// Both tools only read, so a client need not ask before each call. The
