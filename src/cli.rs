@@ -657,8 +657,23 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
         plural(stats.chunks, "chunk"),
         stats.vectors
     );
+    if !stats.unreadable.is_empty() {
+        eprintln!("warning: {}", skipped_line(&stats.unreadable));
+    }
     warn_about_backend(&config);
     Ok(())
+}
+
+/// The unreadable files a run skipped, as one line naming the first three.
+fn skipped_line(paths: &[String]) -> String {
+    const SHOWN: usize = 3;
+    let shown = paths[..paths.len().min(SHOWN)].join(", ");
+    let more = paths.len().saturating_sub(SHOWN);
+    let what = plural(paths.len(), "unreadable file");
+    match more {
+        0 => format!("skipped {what}: {shown}"),
+        _ => format!("skipped {what}: {shown}, and {more} more"),
+    }
 }
 
 /// The files a run left out and why, as one line; `None` when it left none out.

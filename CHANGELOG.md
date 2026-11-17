@@ -17,6 +17,9 @@
   `path:line:column:text` line per hit, for Vim's quickfix list and grep tools.
 - `ripsem search` takes ripgrep's short names for two options: `-c` for
   `--count-by-file` and `-t` for `--lang`, which also accepts `--type`.
+- `ripsem index` names the files it could not read: a warning on stderr says
+  `skipped 2 unreadable files: a.rs, b.rs, and 3 more` (the first three), and the
+  exit status is unchanged. The files are still left out of the index.
 - `ripsem search --help` ends with examples, and the one-line summary of
   `ripsem similar` in the top-level help is short enough to read.
 - The exit codes are written down in the README: 0 for a run, 1 for a failure

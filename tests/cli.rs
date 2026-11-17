@@ -2001,6 +2001,42 @@ fn a_dry_run_lists_one_path_per_line() {
     assert_eq!(listed, ["docs/notes.md", "src/lib.rs"]);
 }
 
+#[cfg(unix)]
+#[test]
+fn an_unreadable_file_is_named_on_stderr_and_the_run_still_succeeds() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new();
+    dir.write("src/keep.rs", "fn keep() {}\n");
+    dir.write("src/locked.rs", "fn locked() {}\n");
+    let locked = dir.path.join("src/locked.rs");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&locked).is_ok() {
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        return;
+    }
+    assert!(
+        ripsem(&dir.path, &["model", "backend", "hash"])
+            .status
+            .success()
+    );
+
+    let out = ripsem(&dir.path, &["index"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("skipped 1 unreadable file: src/locked.rs"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        stdout(&out).contains("1 file: 1 changed"),
+        "{}",
+        stdout(&out)
+    );
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
 #[test]
 fn a_dry_run_says_why_each_file_it_reaches_was_left_out() {
     let dir = TempDir::new();
