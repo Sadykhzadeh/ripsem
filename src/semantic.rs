@@ -684,21 +684,20 @@ fn past_prefixes<'tree>(node: &Node<'tree>, text: &str) -> Node<'tree> {
 }
 
 /// Python and similar languages put the docstring first in the body, where the
-/// comment search does not look.
+/// comment search does not look. Only a string that is a statement of its own
+/// is one: a Ruby or PHP method that starts by returning a string is not.
 fn leading_string(node: &Node, text: &str) -> Option<String> {
     let body = node.child_by_field_name("body")?;
     let mut cursor = body.walk();
     let first = body.named_children(&mut cursor).next()?;
-    let string = match first.kind().contains("string") {
-        true => first,
-        false => {
-            let mut inner = first.walk();
-            first
-                .named_children(&mut inner)
-                .next()
-                .filter(|n| n.kind().contains("string"))?
-        }
-    };
+    if first.kind() != "expression_statement" {
+        return None;
+    }
+    let mut inner = first.walk();
+    let string = first
+        .named_children(&mut inner)
+        .next()
+        .filter(|n| n.kind().contains("string"))?;
     Some(text[string.start_byte()..string.end_byte()].to_string())
 }
 

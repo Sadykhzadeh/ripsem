@@ -644,6 +644,13 @@ mod cutting {
     }
 
     #[test]
+    fn a_string_that_starts_a_method_body_is_not_its_documentation() {
+        let ruby = "def hello(name)\n  \"hi #{name}\"\nend\n";
+        let chunks = chunk_source(Path::new("a.rb"), ruby, &Config::default());
+        assert!(chunks.iter().all(|c| c.text != "hi #{name}"), "{chunks:?}");
+    }
+
+    #[test]
     fn files_with_the_extensions_of_a_language_are_cut_as_that_language() {
         let ruby = "def build(x)\n  x + 1\nend\n";
         assert!(has(&cut_code("Tasks.rake", ruby), 1, 3, "fn build"));
