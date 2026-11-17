@@ -24,7 +24,7 @@ impl Symbol {
     pub fn is_container(&self) -> bool {
         matches!(
             self.kind.as_str(),
-            "impl" | "class" | "trait" | "interface" | "mod"
+            "impl" | "class" | "record" | "object" | "trait" | "interface" | "mod"
         )
     }
 
@@ -81,6 +81,9 @@ pub fn declaration(
 /// enclosing declaration is put in front of it. [`named`] completes it.
 #[cfg(feature = "treesitter")]
 pub fn raw_declaration(node: &tree_sitter::Node) -> Option<(&'static str, (usize, usize))> {
+    if is_prototype(node) {
+        return Some(("fn", declared_name(node)?));
+    }
     match is_binding(node.kind()) {
         true => Some(("fn", bound_function_name(node)?)),
         false => Some((declared_kind(node.kind())?, declared_name(node)?)),
@@ -96,6 +99,18 @@ pub fn named(kind: &str, name: &str, enclosing: Option<&Symbol>) -> Symbol {
             None => name.to_string(),
         },
     }
+}
+
+/// A C or C++ prototype is a declaration of a function that has no body, and
+/// its declarator is the only place its name sits. A declarator inside a
+/// definition or a parameter names the same function, or nothing, and is left
+/// out by [`is_use`].
+#[cfg(feature = "treesitter")]
+fn is_prototype(node: &tree_sitter::Node) -> bool {
+    node.kind() == "function_declarator"
+        && node
+            .parent()
+            .is_some_and(|parent| matches!(parent.kind(), "declaration" | "field_declaration"))
 }
 
 /// Longer needles come first so `module` is not read as `mod`. A kind match
@@ -114,6 +129,10 @@ fn declared_kind(node_kind: &str) -> Option<&'static str> {
 
 #[cfg(feature = "treesitter")]
 const KINDS: &[(&str, &str)] = &[
+    ("preproc_function_def", "macro"),
+    ("preproc_def", "macro"),
+    ("object_definition", "object"),
+    ("object_declaration", "object"),
     ("interface", "interface"),
     ("namespace", "mod"),
     ("constructor", "fn"),
@@ -121,6 +140,7 @@ const KINDS: &[(&str, &str)] = &[
     ("method", "fn"),
     ("module", "mod"),
     ("struct", "struct"),
+    ("record", "record"),
     ("class", "class"),
     ("macro", "macro"),
     ("union", "union"),
@@ -146,7 +166,9 @@ fn kind_contains(node_kind: &str, needle: &str) -> bool {
 /// Types, expressions, patterns and parameters name something without declaring
 /// it, yet their kinds carry the same needles: Rust's `Some(x)` is a
 /// `tuple_struct_pattern`, Go's `testing.B` a `qualified_type` and Python's
-/// `timeout=0.5` a `default_parameter`.
+/// `timeout=0.5` a `default_parameter`. A C declarator (`function_declarator`)
+/// repeats the name of the function or the variable its declaration starts,
+/// and a C++ `static_cast<U>(x)` is a call, so both are left out as well.
 #[cfg(feature = "treesitter")]
 fn is_use(node_kind: &str) -> bool {
     const USES: &[&str] = &[
@@ -159,6 +181,10 @@ fn is_use(node_kind: &str) -> bool {
         "_predicate",
         "_binding",
         "_invocation",
+        "_declarator",
+        "_parameter_declaration",
+        "_parameters",
+        "template_function",
     ];
     USES.iter().any(|suffix| node_kind.ends_with(suffix))
 }
@@ -170,7 +196,24 @@ fn is_use(node_kind: &str) -> bool {
 /// TypeScript's `public_field_definition`, contains a needle like `def`.
 #[cfg(feature = "treesitter")]
 fn is_binding(node_kind: &str) -> bool {
-    node_kind == "variable_declarator" || node_kind.ends_with("field_definition")
+    matches!(
+        node_kind,
+        "variable_declarator" | "assignment_expression" | "assignment"
+    ) || node_kind.ends_with("field_definition")
+}
+
+/// The type a Go method is declared on: `Set` for `func (s *Set[T]) Add`. Its
+/// methods are named as a class's are, `Set::Add`.
+#[cfg(feature = "treesitter")]
+pub fn receiver_type(node: &tree_sitter::Node, text: &str) -> Option<String> {
+    if node.kind() != "method_declaration" {
+        return None;
+    }
+    let receiver = node.child_by_field_name("receiver")?;
+    let mut cursor = receiver.walk();
+    let parameter = receiver.named_children(&mut cursor).next()?;
+    let (start, end) = identifier_span(&parameter.child_by_field_name("type")?)?;
+    Some(text[start..end].to_string())
 }
 
 /// The name has to be a plain identifier: a destructuring pattern, a string or
@@ -179,20 +222,33 @@ fn is_binding(node_kind: &str) -> bool {
 /// closure or a Python lambda does.
 #[cfg(feature = "treesitter")]
 fn bound_function_name(node: &tree_sitter::Node) -> Option<(usize, usize)> {
-    let value = node.child_by_field_name("value")?;
-    if !value.kind().contains("function") {
+    let value = node
+        .child_by_field_name("value")
+        .or_else(|| node.child_by_field_name("right"))?;
+    if !(value.kind().contains("function") || value.kind() == "lambda") {
         return None;
     }
     let statement = node.parent()?;
     if statement
         .parent()
-        .is_some_and(|block| block.kind() == "statement_block")
+        .is_some_and(|block| matches!(block.kind(), "statement_block" | "block"))
     {
         return None;
     }
-    ["name", "property"]
+    // `module.exports.parse = ...` is named by its last property, `parse`.
+    let names: Vec<tree_sitter::Node> = match node.child_by_field_name("left") {
+        Some(target) => ["property", "attribute"]
+            .into_iter()
+            .filter_map(|field| target.child_by_field_name(field))
+            .chain(std::iter::once(target))
+            .collect(),
+        None => ["name", "property"]
+            .into_iter()
+            .filter_map(|field| node.child_by_field_name(field))
+            .collect(),
+    };
+    names
         .into_iter()
-        .filter_map(|field| node.child_by_field_name(field))
         .find(|name| is_name_leaf(name.kind()))
         .map(|name| (name.start_byte(), name.end_byte()))
 }
@@ -220,10 +276,11 @@ fn identifier_span(node: &tree_sitter::Node) -> Option<(usize, usize)> {
 }
 
 /// Most grammars call the leaf holding a declared name some flavour of
-/// `identifier`; bash calls it `word` and PHP calls it `name`.
+/// `identifier`; bash calls it `word`, PHP calls it `name` and Ruby names a
+/// module or a class by its `constant`.
 #[cfg(feature = "treesitter")]
 fn is_name_leaf(kind: &str) -> bool {
-    kind.ends_with("identifier") || matches!(kind, "word" | "name")
+    kind.ends_with("identifier") || matches!(kind, "word" | "name" | "constant" | "operator_name")
 }
 
 #[cfg(all(test, feature = "treesitter"))]

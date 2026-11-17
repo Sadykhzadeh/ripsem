@@ -17,7 +17,7 @@ pub struct Chunk {
 
 /// Changes whenever the same file and settings would give other chunks, so an
 /// index cut by an older ripsem is cut again. A test pins it to the output.
-const REVISION: u32 = 18;
+const REVISION: u32 = 19;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -257,7 +257,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (18, expected),
+            (19, expected),
             "{seen}"
         );
     }
@@ -470,7 +470,7 @@ mod cutting {
                    func run() {\n\tfmt.Println(\"hi\")\n}\n";
         let cut = cut_code("a.go", src);
         assert!(has(&cut, 5, 7, "type Server"), "{cut:?}");
-        assert!(has(&cut, 9, 11, "fn Name"), "{cut:?}");
+        assert!(has(&cut, 9, 11, "fn Server::Name"), "{cut:?}");
         assert!(has(&cut, 13, 15, "fn run"), "{cut:?}");
         assert_apart(&cut);
     }
@@ -561,6 +561,120 @@ mod cutting {
         let twice = "template <typename T>\nT twice(T x) {\n  return x + x;\n}\n";
         let cut = cut_code("a.cpp", twice);
         assert!(has(&cut, 1, 4, "fn twice"), "{cut:?}");
+    }
+
+    /// Every declaration a file's chunks hold, as labels, in order.
+    fn declared_labels(file: &str, src: &str) -> Vec<String> {
+        chunk_source(Path::new(file), src, &Config::default())
+            .iter()
+            .flat_map(|c| c.declarations.iter().map(|d| d.symbol.label()))
+            .collect()
+    }
+
+    #[test]
+    fn a_c_declarator_is_not_a_second_declaration_of_its_function() {
+        let c = "int apply(int (*f)(int), int x) {\n    return f(x);\n}\n";
+        assert_eq!(declared_labels("a.c", c), ["fn apply"]);
+        let cpp = "int geo::helper(int a) {\n    return a;\n}\n";
+        assert_eq!(declared_labels("a.cpp", cpp), ["fn geo::helper"]);
+        let call = "class Box {\n  int as() const { return static_cast<int>(v); }\n};\n";
+        assert_eq!(declared_labels("a.cpp", call), ["class Box", "fn Box::as"]);
+    }
+
+    #[test]
+    fn a_type_parameter_is_not_a_declaration() {
+        let go = "type Set[T comparable] struct {\n\titems map[T]struct{}\n}\n\n\
+                  func Map[T, U any](xs []T) []U {\n\treturn nil\n}\n";
+        assert_eq!(declared_labels("a.go", go), ["type Set", "fn Map"]);
+        let cpp = "class Box {\n  template <typename U>\n  U as() const { return U(v); }\n};\n";
+        assert_eq!(declared_labels("a.cpp", cpp), ["class Box", "fn Box::as"]);
+        let scala = "sealed trait Tree[+A]\n\ntype Pair[A] = (A, A)\n";
+        assert_eq!(
+            declared_labels("a.scala", scala),
+            ["trait Tree", "type Pair"]
+        );
+    }
+
+    #[test]
+    fn a_record_is_a_declaration_with_its_members() {
+        let java = "public record Point(int x, int y) {\n    public int sum() {\n        return x + y;\n    }\n}\n";
+        assert_eq!(
+            declared_labels("Point.java", java),
+            ["record Point", "fn Point::sum"]
+        );
+        let cs =
+            "public record Item(string Name, int Qty)\n{\n    public int Total() => Qty * 2;\n}\n";
+        assert_eq!(
+            declared_labels("a.cs", cs),
+            ["record Item", "fn Item::Total"]
+        );
+    }
+
+    #[test]
+    fn a_go_method_is_named_by_its_receiver_type() {
+        let go = "package store\n\ntype Set struct{}\n\nfunc (s *Set) Add(v int) {\n\t_ = v\n}\n\n\
+                  func (Set) Len() int {\n\treturn 0\n}\n";
+        assert_eq!(
+            declared_labels("a.go", go),
+            ["type Set", "fn Set::Add", "fn Set::Len"]
+        );
+    }
+
+    #[test]
+    fn a_function_assigned_to_a_property_or_a_name_is_named_by_it() {
+        let js = "module.exports.parse = function (text) {\n  return text.trim();\n};\n";
+        assert_eq!(declared_labels("a.js", js), ["fn parse"]);
+        let py = "double = lambda x: x * 2\n\ndef run():\n    helper = lambda x: x\n    return helper(1)\n";
+        assert_eq!(declared_labels("a.py", py), ["fn double", "fn run"]);
+    }
+
+    #[test]
+    fn a_ruby_module_and_class_are_named_by_their_constant() {
+        let ruby = "module Greeting\n  def hello(name)\n    name\n  end\nend\n\n\
+                    class Account\n  def deposit(amount)\n    amount\n  end\nend\n";
+        assert_eq!(
+            declared_labels("a.rb", ruby),
+            [
+                "mod Greeting",
+                "fn Greeting::hello",
+                "class Account",
+                "fn Account::deposit"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_string_that_starts_a_method_body_is_not_its_documentation() {
+        let ruby = "def hello(name)\n  \"hi #{name}\"\nend\n";
+        let chunks = chunk_source(Path::new("a.rb"), ruby, &Config::default());
+        assert!(chunks.iter().all(|c| c.text != "hi #{name}"), "{chunks:?}");
+    }
+
+    #[test]
+    fn a_c_plus_plus_operator_is_named_by_its_operator() {
+        let free = "bool operator==(const Box& a, const Box& b) {\n    return true;\n}\n";
+        assert_eq!(declared_labels("a.cpp", free), ["fn operator=="]);
+        let member =
+            "class Point {\n    Point operator-() const {\n        return *this;\n    }\n};\n";
+        assert_eq!(
+            declared_labels("a.cpp", member),
+            ["class Point", "fn Point::operator-"]
+        );
+    }
+
+    #[test]
+    fn a_macro_that_defines_a_function_is_a_macro() {
+        let c = "#define MAKE_GETTER(name, field) \\\n    int get_##name(Node *n) { \\\n        return n->field; }\n";
+        assert_eq!(declared_labels("a.c", c), ["macro MAKE_GETTER"]);
+    }
+
+    #[test]
+    fn an_object_holds_its_members() {
+        let scala = "object Geometry {\n  def area(r: Double): Double = r\n  val Pi = 3.14\n}\n";
+        assert_eq!(
+            declared_labels("a.scala", scala),
+            ["object Geometry", "fn Geometry::area"]
+        );
     }
 
     #[test]
