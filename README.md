@@ -312,6 +312,88 @@ errors.
 - `2`: the command line was not accepted, such as an unknown flag or a value
   out of range. The usage message goes to stderr.
 
+## JSON output
+
+`search`, `similar` and `status` print one JSON document with `--json`. The
+tables below list every field with its type and meaning. A test runs each
+command on a small repository and fails when the fields in a table and the
+keys the command prints differ, so the tables stay true.
+
+### `search`
+
+The hits as an array, in the order `--sort` gives. Each element:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `path` | string | The file, relative to the root, with forward slashes. |
+| `start_line` | number | The first line of the hit, 1-based. |
+| `end_line` | number | The last line of the hit, 1-based and inclusive. |
+| `score` | number | From 0 to 1, as `--min-score` reads it. |
+| `kind` | string or null | The declaration kind, such as `fn`; `null` outside any declaration. |
+| `symbol` | string or null | The declaration's name, such as `Session::refresh`; `null` outside any declaration. |
+| `snippet` | string | The code of the hit, the whole snippet. |
+
+### `search --count-by-file`
+
+An array with one element per file, sorted by count:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `path` | string | The file, relative to the root. |
+| `count` | number | The hits in that file among the top `-k` places. |
+
+### `similar`
+
+The hits nearest the place asked about, as an array in the order `--sort`
+gives. Each element has the fields of `search`:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `path` | string | The file, relative to the root, with forward slashes. |
+| `start_line` | number | The first line of the hit, 1-based. |
+| `end_line` | number | The last line of the hit, 1-based and inclusive. |
+| `score` | number | How near the hit is to the place asked about, from 0 to 1. |
+| `kind` | string or null | The declaration kind, such as `fn`; `null` outside any declaration. |
+| `symbol` | string or null | The declaration's name, such as `Session::refresh`; `null` outside any declaration. |
+| `snippet` | string | The code of the hit, the whole snippet. |
+
+### `status`
+
+One object. Fields under `index` describe the index file and are present while
+it exists; `warning` appears only with the hashing backend.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `schema` | string | The schema of this document, `ripsem/status/v1`. |
+| `backend` | string | The embedding backend, `hash` or `fastembed`. |
+| `model` | string | The embedding model the configuration names. |
+| `dims` | number | The width of the vectors, in dimensions. |
+| `warning` | string | Why hashing results match words, not meaning. |
+| `index` | object | The index file and what it holds. |
+| `index.path` | string | Where the index file is. |
+| `index.present` | boolean | Whether the index file exists. |
+| `index.size_bytes` | number | The size of the index file. |
+| `index.written_unix` | number | When the index file was last written, in seconds since the Unix epoch. |
+| `index.files` | number | The files the index holds. |
+| `index.chunks` | number | The chunks the index holds. |
+| `index.named` | number | The chunks that carry a declaration's name. |
+| `index.ann` | boolean | Whether the index has a nearest-neighbour graph. |
+| `index.backend` | string | The backend the index was built with. |
+| `index.model` | string | The model the index was built with. |
+| `index.stale` | boolean | Whether the index is behind the files it was built from. |
+| `index.drift` | object | How far the files are from the index. |
+| `index.drift.added` | number | Files on disk that the index does not hold. |
+| `index.drift.modified` | number | Files both hold, with different content. |
+| `index.drift.removed` | number | Files the index holds that are no longer on disk. |
+
+### `status --verify`
+
+`--verify` reads every indexed file and adds one more field, under `index`:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `index.changed_on_disk` | array of strings | The indexed files whose content no longer matches the index, relative to the root. |
+
 ## Models
 
 ```

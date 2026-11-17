@@ -679,6 +679,107 @@ fn exit_codes_are_0_for_a_run_1_for_a_failure_and_2_for_bad_usage() {
     assert_eq!(bad_flag.status.code(), Some(2), "{}", stderr(&bad_flag));
 }
 
+/// Every key of a JSON value, as dotted paths. Elements of an array share the
+/// keys of their parent, so the hits of `search --json` are listed without a
+/// prefix.
+fn json_keys(
+    value: &serde_json::Value,
+    prefix: &str,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                let dotted = match prefix.is_empty() {
+                    true => key.clone(),
+                    false => format!("{prefix}.{key}"),
+                };
+                out.insert(dotted.clone());
+                json_keys(child, &dotted, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                json_keys(item, prefix, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The field names in the table under `heading` in the README, up to the next
+/// heading.
+fn documented_fields(readme: &str, heading: &str) -> std::collections::BTreeSet<String> {
+    let start = readme
+        .find(heading)
+        .unwrap_or_else(|| panic!("README has no `{heading}` section"));
+    let body = &readme[start + heading.len()..];
+    let body = body.find("\n#").map_or(body, |end| &body[..end]);
+    body.lines()
+        .filter(|line| line.starts_with('|'))
+        .filter_map(|line| line.split('|').nth(1))
+        .map(|cell| cell.trim().trim_matches('`').to_string())
+        .filter(|field| !field.is_empty() && field != "Field" && !field.starts_with('-'))
+        .collect()
+}
+
+#[test]
+fn the_json_tables_in_the_readme_name_every_key_the_commands_print() {
+    let dir = TempDir::new();
+    dir.write(
+        "src/retry.rs",
+        "fn retry_on_failure(n: u32) -> u32 {\n    n + 1\n}\n",
+    );
+    dir.write(
+        "src/header.rs",
+        "fn parse_header(s: &str) -> bool {\n    s.is_empty()\n}\n",
+    );
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+
+    let readme =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
+    let cases: [(&str, &[&str]); 4] = [
+        ("### `search`", &["search", "retry", "--json"]),
+        (
+            "### `search --count-by-file`",
+            &["search", "retry", "--count-by-file", "--json"],
+        ),
+        ("### `similar`", &["similar", "src/retry.rs", "--json"]),
+        ("### `status`", &["status", "--json"]),
+    ];
+    for (heading, args) in cases {
+        let out = ripsem(&dir.path, args);
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+        let value: serde_json::Value = serde_json::from_str(&stdout(&out))
+            .unwrap_or_else(|e| panic!("{args:?} is not JSON: {e}"));
+        let mut printed = std::collections::BTreeSet::new();
+        json_keys(&value, "", &mut printed);
+        let documented = documented_fields(&readme, heading);
+        assert_eq!(
+            documented, printed,
+            "{heading}: the table and the output of {args:?} differ"
+        );
+    }
+
+    let plain = stdout(&ripsem(&dir.path, &["status", "--json"]));
+    let verified = stdout(&ripsem(&dir.path, &["status", "--json", "--verify"]));
+    let keys = |text: &str| {
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        let mut found = std::collections::BTreeSet::new();
+        json_keys(&value, "", &mut found);
+        found
+    };
+    let added_by_verify: std::collections::BTreeSet<String> =
+        keys(&verified).difference(&keys(&plain)).cloned().collect();
+    assert_eq!(
+        documented_fields(&readme, "### `status --verify`"),
+        added_by_verify,
+        "the keys that --verify adds to status --json"
+    );
+}
+
 #[test]
 fn short_help_is_the_summary_and_long_help_carries_the_examples() {
     let dir = TempDir::new();

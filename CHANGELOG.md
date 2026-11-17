@@ -23,6 +23,9 @@
 - `ripsem similar src/a.rs:abc` says what a line range looks like, `PATH:LINE`
   or `PATH:LINE-LINE`, when the path is not in the index, since the colon was
   read as part of a path.
+- The README has a JSON output section with a table of every field that
+  `search`, `search --count-by-file`, `similar` and `status` print with
+  `--json`, and a test fails when a table and the output differ.
 - `-h` prints the short summary of each command and `--help` adds an examples
   section, for every top-level command. The one-line summary of
   `ripsem similar` in the top-level help is short enough to read.
