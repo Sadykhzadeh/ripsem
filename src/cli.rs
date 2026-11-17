@@ -70,8 +70,15 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Create the local config for this directory.
+    #[command(after_long_help = "Examples:
+  ripsem init
+  ripsem --path ../other-repo init")]
     Init,
     /// Build or update the index for this directory.
+    #[command(after_long_help = "Examples:
+  ripsem index
+  ripsem index --force                re-embed every file
+  ripsem index --dry-run              list what would be indexed, and why files are left out")]
     Index {
         /// Embed every file again instead of reusing the unchanged ones.
         #[arg(long)]
@@ -84,7 +91,7 @@ pub enum Command {
         dry_run: bool,
     },
     /// Find code by an identifier, an error message or a description.
-    #[command(after_help = "Examples:
+    #[command(after_long_help = "Examples:
   ripsem search where is auth set up
   ripsem search retry on failure -k 5 --lang rust
   ripsem search verify_password -l -0 | xargs -0 wc -l
@@ -105,6 +112,10 @@ pub enum Command {
     ///
     /// Takes `src/auth.rs:40-72`, a single line such as `src/auth.rs:40`, or a
     /// bare path for the whole file. It uses the stored vectors, so no model runs.
+    #[command(after_long_help = "Examples:
+  ripsem similar src/auth.rs:40-72
+  ripsem similar src/auth.rs:40
+  ripsem similar src/auth.rs --lang rust -k 5")]
     Similar {
         /// `path`, `path:LINE` or `path:START-END`, relative to the current
         /// directory. The lines are 1-based.
@@ -113,8 +124,14 @@ pub enum Command {
         opts: SearchOpts,
     },
     /// Index and keep the index in sync as files change.
+    #[command(after_long_help = "Examples:
+  ripsem watch
+  ripsem watch --path ../other-repo")]
     Watch,
     /// Show index health and configuration for this directory.
+    #[command(after_long_help = "Examples:
+  ripsem status
+  ripsem status --json | jq .index.drift")]
     Status {
         /// Emit machine-readable JSON (schema `ripsem/status/v1`) instead of the
         /// human summary — for tooling or an agent checking whether the index
@@ -127,18 +144,31 @@ pub enum Command {
         verify: bool,
     },
     /// Run the MCP server over stdio.
+    #[command(after_long_help = "Examples:
+  ripsem install claude-code      register this server with the agent
+  ripsem mcp                      run by the agent; reads and writes stdio")]
     Mcp,
     /// Inspect and choose the embedding model and backend.
+    #[command(after_long_help = "Examples:
+  ripsem model list
+  ripsem model set bge-base-en-v1.5
+  ripsem model backend hash")]
     Model {
         #[command(subcommand)]
         action: ModelCmd,
     },
     /// Wire ripsem into a coding agent.
+    #[command(after_long_help = "Examples:
+  ripsem install claude-code
+  ripsem install opencode")]
     Install {
         #[command(subcommand)]
         target: InstallCmd,
     },
     /// Print the completion script for a shell.
+    #[command(after_long_help = "Examples:
+  ripsem completions bash > ~/.local/share/bash-completion/completions/ripsem
+  ripsem completions powershell >> $PROFILE")]
     Completions {
         /// bash, zsh, fish, powershell or elvish.
         shell: clap_complete::Shell,
@@ -212,7 +242,8 @@ pub struct SearchOpts {
     quiet: bool,
     /// List each file with a hit once, in the order of its best hit, instead
     /// of the hits. Like `--count-by-file` it reads the top `-k` places.
-    /// Cannot be combined with `--count-by-file` or `--vimgrep`.
+    /// With `--json` it prints a JSON array of the paths, as strings, rather
+    /// than of hits. Cannot be combined with `--count-by-file` or `--vimgrep`.
     #[arg(short = 'l', long, conflicts_with = "count_by_file")]
     files_with_matches: bool,
     /// With `-l`, end each path with a NUL byte instead of a line break, for
@@ -657,8 +688,23 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
         plural(stats.chunks, "chunk"),
         stats.vectors
     );
+    if !stats.unreadable.is_empty() {
+        eprintln!("warning: {}", skipped_line(&stats.unreadable));
+    }
     warn_about_backend(&config);
     Ok(())
+}
+
+/// The unreadable files a run skipped, as one line naming the first three.
+fn skipped_line(paths: &[String]) -> String {
+    const SHOWN: usize = 3;
+    let shown = paths[..paths.len().min(SHOWN)].join(", ");
+    let more = paths.len().saturating_sub(SHOWN);
+    let what = plural(paths.len(), "unreadable file");
+    match more {
+        0 => format!("skipped {what}: {shown}"),
+        _ => format!("skipped {what}: {shown}, and {more} more"),
+    }
 }
 
 /// The files a run left out and why, as one line; `None` when it left none out.
@@ -828,6 +874,10 @@ fn cmd_search(root: &Path, words: &[String], opts: &SearchOpts) -> Result<()> {
 fn cmd_similar(root: &Path, target: &str, opts: &SearchOpts) -> Result<()> {
     let config = load_config(root)?;
     let (raw, lines) = parse_target(target)?;
+    anyhow::ensure!(
+        !config.root.join(from_here(raw, &config.root)).is_dir(),
+        "{raw} is a directory; `similar` takes a file, or a line range in one such as src/auth.rs:40-72"
+    );
     let path = mcp::scope_prefix(&from_here(raw, &config.root), &config.root)?
         .ok_or_else(|| anyhow::anyhow!("'{target}' names no file"))?;
     let text = opts
@@ -844,10 +894,27 @@ fn cmd_similar(root: &Path, target: &str, opts: &SearchOpts) -> Result<()> {
         opts.offset,
         scope.as_ref(),
         text.as_ref(),
-    )?;
+    )
+    .map_err(|e| similar_line_hint(raw, e))?;
     show(page, opts, context_lines(opts), &[])?;
     warn_about_backend(&config);
     Ok(())
+}
+
+/// When the part after the last colon is not a line number and the path is not
+/// in the index, says what a line range looks like: a colon in a path is
+/// otherwise taken for a path that is simply missing.
+fn similar_line_hint(raw: &str, err: anyhow::Error) -> anyhow::Error {
+    let asks_for_lines = raw.rsplit_once(':').is_some_and(|(_, spec)| {
+        !spec.is_empty() && !spec.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+    });
+    if asks_for_lines && err.to_string().contains("is not in the index") {
+        anyhow::anyhow!(
+            "{err}; a line range is PATH:LINE or PATH:LINE-LINE, such as src/auth.rs:40-72"
+        )
+    } else {
+        err
+    }
 }
 
 /// Splits `path`, `path:LINE` or `path:START-END`. A colon that is not

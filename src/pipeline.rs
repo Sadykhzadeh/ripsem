@@ -27,6 +27,9 @@ pub struct IndexStats {
     /// Chunks the model embedded. A changed file keeps the vectors of the
     /// chunks whose text it still holds.
     pub vectors: usize,
+    /// Paths, relative to the root and sorted, of files the walk could not
+    /// read. They are left out of the index and not recorded in it.
+    pub unreadable: Vec<String>,
 }
 
 /// How far the index has fallen behind the files it was built from. Hits carry
@@ -206,7 +209,11 @@ fn index_and_keep(
         },
     );
     let chunking = chunk::Chunking::of(config);
-    let Walked { files, mut empties } = scan(config, listed?, prev.as_ref(), started, rehash);
+    let Walked {
+        files,
+        mut empties,
+        unreadable,
+    } = scan(config, listed?, prev.as_ref(), started, rehash);
     if let Some(index) = &mut prev
         && index.dims == dims
         && index.built_for(config.backend, &config.model)
@@ -236,6 +243,7 @@ fn index_and_keep(
             reused: settled.files,
             chunks: index.records.len(),
             vectors: 0,
+            unreadable,
         };
         return Ok((stats, prev));
     }
@@ -401,6 +409,7 @@ fn index_and_keep(
         reused,
         chunks: index.records.len(),
         vectors: queue.embedded,
+        unreadable,
     };
     // Before the early return below, so a data directory that lacks its
     // `.gitignore` gets one even when nothing needs reindexing.
@@ -465,6 +474,7 @@ type Hashed = (std::path::PathBuf, u64, FileStat);
 struct Walked {
     files: Vec<Hashed>,
     empties: Vec<Empty>,
+    unreadable: Vec<String>,
 }
 
 /// Hashes the listed files, except those the previous index already knows at
@@ -508,7 +518,7 @@ fn scan(
         .map(|(path, hash, stat)| (path.as_str(), (*hash, *stat)))
         .collect();
 
-    let scanned: Vec<Option<Result<Hashed, Empty>>> = listed
+    let scanned: Vec<Result<Result<Hashed, Empty>, String>> = listed
         .into_par_iter()
         .map_init(Vec::new, |buffer, (path, stat)| {
             let rel = relative(&config.root, &path);
@@ -517,31 +527,34 @@ fn scan(
                 && stored.trusts(&stat)
                 && !reread
             {
-                return Some(Ok((path, hash, stored)));
+                return Ok(Ok((path, hash, stored)));
             }
             if let Some(&(hash, stored)) = barren.get(rel.as_str())
                 && stored.trusts(&stat)
                 && !reread
             {
-                return Some(Err((rel, hash, stored)));
+                return Ok(Err((rel, hash, stored)));
             }
             match walk::read_hashed(&path, buffer) {
-                walk::Sniffed::Text(hash) => Some(Ok((path, hash, stat.settled(started)))),
-                walk::Sniffed::Binary => Some(Err((rel, 0, stat.settled(started)))),
-                walk::Sniffed::Unreadable => None,
+                walk::Sniffed::Text(hash) => Ok(Ok((path, hash, stat.settled(started)))),
+                walk::Sniffed::Binary => Ok(Err((rel, 0, stat.settled(started)))),
+                walk::Sniffed::Unreadable => Err(rel),
             }
         })
         .collect();
     let mut walked = Walked {
         files: Vec::with_capacity(scanned.len()),
         empties: Vec::new(),
+        unreadable: Vec::new(),
     };
-    for found in scanned.into_iter().flatten() {
+    for found in scanned {
         match found {
-            Ok(file) => walked.files.push(file),
-            Err(empty) => walked.empties.push(empty),
+            Ok(Ok(file)) => walked.files.push(file),
+            Ok(Err(empty)) => walked.empties.push(empty),
+            Err(rel) => walked.unreadable.push(rel),
         }
     }
+    walked.unreadable.sort_unstable();
     walked
 }
 

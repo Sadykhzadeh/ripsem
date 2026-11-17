@@ -17,7 +17,24 @@
   `path:line:column:text` line per hit, for Vim's quickfix list and grep tools.
 - `ripsem search` takes ripgrep's short names for two options: `-c` for
   `--count-by-file` and `-t` for `--lang`, which also accepts `--type`.
-- `ripsem search --help` ends with examples, and the one-line summary of
+- `ripsem index` names the files it could not read: a warning on stderr says
+  `skipped 2 unreadable files: a.rs, b.rs, and 3 more` (the first three), and the
+  exit status is unchanged. The files are still left out of the index.
+- `ripsem similar src/a.rs:abc` says what a line range looks like, `PATH:LINE`
+  or `PATH:LINE-LINE`, when the path is not in the index, since the colon was
+  read as part of a path.
+- `ripsem similar src` says that `src` is a directory and `similar` takes a
+  file, instead of saying it is not in the index.
+- `ripsem search -l --json` prints a JSON array of the file paths, as strings.
+  `--help` now says so, and a test pins the output.
+- The README has an environment variables table: `RIPSEM_HASH_ALL`,
+  `RIPSEM_MODEL_DIR` and `RIPSEM_NO_GPU`, with defaults and effects. A test fails
+  when the table and the variables the source reads differ.
+- The README has a JSON output section with a table of every field that
+  `search`, `search --count-by-file`, `similar` and `status` print with
+  `--json`, and a test fails when a table and the output differ.
+- `-h` prints the short summary of each command and `--help` adds an examples
+  section, for every top-level command. The one-line summary of
   `ripsem similar` in the top-level help is short enough to read.
 - The exit codes are written down in the README: 0 for a run, 1 for a failure
   while running (and for a `-q` search with no hit), 2 for a command line that
