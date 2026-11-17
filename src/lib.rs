@@ -7,6 +7,7 @@ pub mod embed;
 pub mod fingerprint;
 pub mod git;
 pub mod index;
+pub mod jsonc;
 pub mod lang;
 pub mod lexical;
 pub mod markdown;
