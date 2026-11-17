@@ -596,6 +596,35 @@ fn a_language_naming_nothing_is_an_error() {
 }
 
 #[test]
+fn exit_codes_are_0_for_a_run_1_for_a_failure_and_2_for_bad_usage() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn login() { verify password }");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+
+    let hits = ripsem(&dir.path, &["search", "verify password"]);
+    assert_eq!(hits.status.code(), Some(0), "{}", stderr(&hits));
+
+    let no_hit = ripsem(
+        &dir.path,
+        &["search", "verify password", "-e", "nomatchxyz"],
+    );
+    assert_eq!(no_hit.status.code(), Some(0), "{}", stderr(&no_hit));
+    let quiet_no_hit = ripsem(
+        &dir.path,
+        &["search", "verify password", "-e", "nomatchxyz", "-q"],
+    );
+    assert_eq!(quiet_no_hit.status.code(), Some(1));
+
+    let bad_regex = ripsem(&dir.path, &["search", "verify", "-e", "("]);
+    assert_eq!(bad_regex.status.code(), Some(1), "{}", stderr(&bad_regex));
+
+    let bad_flag = ripsem(&dir.path, &["search", "verify", "--nope"]);
+    assert_eq!(bad_flag.status.code(), Some(2), "{}", stderr(&bad_flag));
+}
+
+#[test]
 fn install_takes_opencode_by_the_name_the_docs_use() {
     let dir = TempDir::new();
     let out = ripsem(&dir.path, &["install", "opencode"]);

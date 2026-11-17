@@ -302,6 +302,16 @@ is about rather than as its single best chunk. It takes the options of
 line past the end of the file and a range that holds no indexed code are
 errors.
 
+## Exit codes
+
+- `0`: the command ran. A search with no hits also exits 0, unless `-q` is
+  given.
+- `1`: the command failed while running, such as a missing index, a regex or
+  glob that does not parse, or a path outside the repository. A `-q` search
+  with no hit left also exits 1.
+- `2`: the command line was not accepted, such as an unknown flag or a value
+  out of range. The usage message goes to stderr.
+
 ## Models
 
 ```

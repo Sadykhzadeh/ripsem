@@ -17,6 +17,9 @@
   `path:line:column:text` line per hit, for Vim's quickfix list and grep tools.
 - `ripsem search` takes ripgrep's short names for two options: `-c` for
   `--count-by-file` and `-t` for `--lang`, which also accepts `--type`.
+- The exit codes are written down in the README: 0 for a run, 1 for a failure
+  while running (and for a `-q` search with no hit), 2 for a command line that
+  is not accepted. The codes did not change.
 - `ripsem search --since <rev>` outside a git repository says only that the
   directory is not in one. It used to repeat git's own `fatal:` line after it.
 - `ripsem install opencode` is accepted as the README names it; `open-code`,
