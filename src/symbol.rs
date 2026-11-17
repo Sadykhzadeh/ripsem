@@ -101,6 +101,9 @@ pub fn raw_declaration(node: &tree_sitter::Node) -> Option<(&'static str, (usize
     if let Some(span) = kotlin_property(node) {
         return Some(("val", span));
     }
+    if let Some(span) = csharp_operator(node) {
+        return Some(("fn", span));
+    }
     match is_binding(node.kind()) {
         true => Some(("fn", bound_function_name(node)?)),
         false => {
@@ -108,6 +111,31 @@ pub fn raw_declaration(node: &tree_sitter::Node) -> Option<(&'static str, (usize
             let start = kotlin_receiver(node).unwrap_or(start);
             Some((declared_kind(node.kind())?, (start, end)))
         }
+    }
+}
+
+/// A C# operator has no name field: its name is the `operator` keyword and the
+/// symbol after it, as in `operator +`. A conversion is named by its
+/// `implicit` or `explicit` keyword and its type, as in `implicit operator int`.
+/// Both spans are contiguous in the source.
+#[cfg(feature = "treesitter")]
+fn csharp_operator(node: &tree_sitter::Node) -> Option<(usize, usize)> {
+    let mut cursor = node.walk();
+    let children: Vec<tree_sitter::Node> = node.children(&mut cursor).collect();
+    match node.kind() {
+        "operator_declaration" => {
+            let at = children.iter().position(|c| c.kind() == "operator")?;
+            let symbol = children.get(at + 1)?;
+            Some((children[at].start_byte(), symbol.end_byte()))
+        }
+        "conversion_operator_declaration" => {
+            let keyword = children
+                .iter()
+                .find(|c| matches!(c.kind(), "implicit" | "explicit"))?;
+            let target = node.child_by_field_name("type")?;
+            Some((keyword.start_byte(), target.end_byte()))
+        }
+        _ => None,
     }
 }
 

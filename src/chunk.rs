@@ -823,6 +823,20 @@ mod cutting {
     }
 
     #[test]
+    fn a_c_sharp_operator_and_conversion_are_named_by_their_symbol() {
+        let cs = "public class Money\n{\n    public static Money operator +(Money a, Money b) => a;\n\
+                  \x20   public static implicit operator int(Money m)\n    {\n        return 1;\n    }\n}\n";
+        assert_eq!(
+            declared_labels("a.cs", cs),
+            [
+                "class Money",
+                "fn Money::operator +",
+                "fn Money::implicit operator int"
+            ]
+        );
+    }
+
+    #[test]
     fn files_with_the_extensions_of_a_language_are_cut_as_that_language() {
         let ruby = "def build(x)\n  x + 1\nend\n";
         assert!(has(&cut_code("Tasks.rake", ruby), 1, 3, "fn build"));
