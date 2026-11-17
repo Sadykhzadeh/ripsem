@@ -1056,6 +1056,9 @@ fn cmd_search(root: &Path, words: &[String], opts: &SearchOpts) -> Result<()> {
         scope.as_ref(),
         text.as_ref(),
     )?;
+    if !opts.quiet && !page.unreadable.is_empty() {
+        eprintln!("warning: {}", skipped_line(&page.unreadable));
+    }
     show(
         page,
         opts,

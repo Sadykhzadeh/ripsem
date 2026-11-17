@@ -2796,6 +2796,90 @@ fn an_unreadable_file_is_named_on_stderr_and_the_run_still_succeeds() {
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn a_search_that_refreshes_the_index_names_the_unreadable_files_once_and_not_with_q() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new();
+    dir.write("src/keep.rs", "fn keep() {}\n");
+    dir.write("src/locked.rs", "fn locked() {}\n");
+    let locked = dir.path.join("src/locked.rs");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&locked).is_ok() {
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        return;
+    }
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let search = ripsem(&dir.path, &["search", "keep"]);
+    assert!(search.status.success(), "{}", stderr(&search));
+    let warning = "skipped 1 unreadable file: src/locked.rs";
+    assert_eq!(
+        stderr(&search).matches(warning).count(),
+        1,
+        "{}",
+        stderr(&search)
+    );
+
+    let quiet = ripsem(&dir.path, &["search", "keep", "-q"]);
+    assert!(!stderr(&quiet).contains("skipped"), "{}", stderr(&quiet));
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_search_that_rereads_a_changed_file_names_the_unreadable_files_once() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+    let set_aged = |path: &Path| {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+    };
+    let dir = TempDir::new();
+    dir.write("src/edit.rs", "fn alpha() {}\n");
+    dir.write("src/locked.rs", "fn locked() {}\n");
+    set_aged(&dir.path.join("src/edit.rs"));
+    let locked = dir.path.join("src/locked.rs");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&locked).is_ok() {
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        return;
+    }
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    // Same size and time as before, different words: the stat check cannot see it,
+    // so the hit is left out and the search reads the file again.
+    std::fs::write(dir.path.join("src/edit.rs"), "fn omega() {}\n").unwrap();
+    set_aged(&dir.path.join("src/edit.rs"));
+    let search = ripsem(&dir.path, &["search", "alpha"]);
+    assert!(search.status.success(), "{}", stderr(&search));
+    assert!(
+        stderr(&search).contains("updated the index: 1 file changed"),
+        "the changed file was not read again: {}",
+        stderr(&search)
+    );
+    let warning = "skipped 1 unreadable file: src/locked.rs";
+    assert_eq!(
+        stderr(&search).matches(warning).count(),
+        1,
+        "{}",
+        stderr(&search)
+    );
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
 #[test]
 fn a_dry_run_says_why_each_file_it_reaches_was_left_out() {
     let dir = TempDir::new();

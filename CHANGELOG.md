@@ -181,6 +181,9 @@
 - `ripsem init` in a subdirectory of a project that already has an index warns
   on stderr that the new `.ripsem` hides the parent's index from commands run
   there. The index is still created.
+- `ripsem search` names the unreadable files its index refresh skipped, the
+  same warning `ripsem index` prints, once per run, also when the search reads
+  a changed file again. `-q` keeps it quiet, and the MCP server does not print it.
 - `ripsem similar <path>[:LINE[-LINE]]` finds the code nearest to a file, or to
   a line range of it, from the vectors the index already stores, so no model
   runs. The chunks the location covers are left out of the answer. The MCP

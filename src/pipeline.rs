@@ -118,6 +118,9 @@ pub struct Page {
     /// Files a hit was left out for because their text on disk is no longer
     /// the text the index holds.
     pub stale: Vec<String>,
+    /// Files the index refresh before the answer could not read, relative to
+    /// the root and sorted. Only the command line names them.
+    pub unreadable: Vec<String>,
 }
 
 impl Page {
@@ -1343,6 +1346,7 @@ impl Searcher {
                 hits: Vec::new(),
                 next: None,
                 stale: vec![target.path.clone()],
+                unreadable: Vec::new(),
             });
         }
         let bytes = std::fs::read(&full).with_context(|| format!("reading {}", target.path))?;
@@ -1351,6 +1355,7 @@ impl Searcher {
                 hits: Vec::new(),
                 next: None,
                 stale: vec![target.path.clone()],
+                unreadable: Vec::new(),
             });
         }
         let total = walk::decode_text(&bytes).lines().count();
@@ -1506,6 +1511,7 @@ impl Searcher {
             hits: out,
             next,
             stale,
+            unreadable: Vec::new(),
         }
     }
 
@@ -1737,9 +1743,10 @@ pub fn search_page(
     // side by side. Without an index there is nothing to search and no reason
     // to load (or download) a model.
     let mut current = None;
+    let mut unreadable = Vec::new();
     if config.index_path().exists() {
         embedder.warm();
-        current = refresh(config, &[]);
+        (current, unreadable) = refresh(config, &[]);
     }
     let searcher = match current {
         Some(index) => {
@@ -1756,7 +1763,12 @@ pub fn search_page(
     if found.is_err() {
         embedder.settle();
     }
-    found
+    found.map(|mut page| {
+        page.unreadable.extend(unreadable);
+        page.unreadable.sort_unstable();
+        page.unreadable.dedup();
+        page
+    })
 }
 
 /// The page of a query asked of `held`. When that page names files changed on
@@ -1772,12 +1784,15 @@ pub fn answer_with_reread(
     if page.stale.is_empty() {
         return Ok(page);
     }
-    let Some(index) = refresh(config, &page.stale) else {
+    let (index, unreadable) = refresh(config, &page.stale);
+    let Some(index) = index else {
         return Ok(page);
     };
     let mtime = file_mtime(&config.index_path());
     let fresh = searcher_over(config, index, held.embedder(), mtime)?;
-    ask(&fresh)
+    let mut again = ask(&fresh)?;
+    again.unreadable = unreadable;
+    Ok(again)
 }
 
 /// [`Searcher::similar_page`] through [`answer_with_reread`]. A target that
@@ -1852,7 +1867,8 @@ pub fn similar_page(
         anyhow::bail!("no index yet; run `ripsem index` in this directory first");
     }
     let embedder = Arc::new(LazyEmbedder::new(config));
-    let searcher = match refresh(config, &[]) {
+    let (refreshed, _) = refresh(config, &[]);
+    let searcher = match refreshed {
         Some(index) => searcher_over(config, index, embedder, file_mtime(&config.index_path())),
         None => open_with(config, embedder),
     }?;
@@ -1868,7 +1884,8 @@ pub fn outline(config: &Config, path: &str) -> Result<Vec<Declaration>> {
     if !config.index_path().exists() {
         anyhow::bail!("no index yet; run `ripsem index` in this directory first");
     }
-    let index = match refresh(config, &[path.to_string()]) {
+    let (refreshed, _) = refresh(config, &[path.to_string()]);
+    let index = match refreshed {
         Some(index) => index,
         None => Index::load(&config.index_path())?,
     };
@@ -1914,7 +1931,8 @@ pub fn definitions(
     if !config.index_path().exists() {
         anyhow::bail!("no index yet; run `ripsem index` in this directory first");
     }
-    let index = match refresh(config, &[]) {
+    let (refreshed, _) = refresh(config, &[]);
+    let index = match refreshed {
         Some(index) => index,
         None => Index::load(&config.index_path())?,
     };
@@ -2004,7 +2022,7 @@ pub fn rebuilt_line(reason: &str) -> String {
 /// time moved. A failure, such as a read-only checkout, leaves the search to
 /// the index as it is. Returns the index it ended with, when it has one that
 /// matches the file. The files in `rehash` are read whatever their stat.
-fn refresh(config: &Config, rehash: &[String]) -> Option<Index> {
+fn refresh(config: &Config, rehash: &[String]) -> (Option<Index>, Vec<String>) {
     match index_and_keep(config, false, rehash, Pace::default()) {
         Ok((stats, index)) => {
             if let Some(reason) = &stats.rebuilt {
@@ -2015,11 +2033,11 @@ fn refresh(config: &Config, rehash: &[String]) -> Option<Index> {
                     crate::cli::plural(stats.embedded, "file")
                 );
             }
-            index
+            (index, stats.unreadable)
         }
         Err(e) => {
             eprintln!("warning: could not update the index: {e:#}");
-            None
+            (None, Vec::new())
         }
     }
 }
