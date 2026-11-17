@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use tree_sitter::{Node, Parser};
 
-use crate::chunk::{Chunk, chunk_file};
+use crate::chunk::{Chunk, chunk_file, is_blank};
 use crate::lang::LangSpec;
 use crate::symbol::{self, Declaration, Symbol};
 
@@ -24,8 +24,76 @@ pub fn chunk(text: &str, spec: &LangSpec, max_lines: usize, overlap: usize) -> O
         raw: RefCell::new(HashMap::new()),
     };
     emitter.walk(tree.root_node(), None);
+    fill_gaps(text, &mut emitter.out, emitter.max_lines, emitter.overlap);
     emitter.documentation(tree.root_node(), None);
     Some(emitter.out)
+}
+
+/// The lines no record covers, such as the closing braces of blocks whose last
+/// member is a record of its own, are cut into windows of their own, so every
+/// line of the file is in a chunk. A window takes the declaration of the nearest
+/// record that has one, before it or else after it.
+fn fill_gaps(text: &str, out: &mut Vec<Chunk>, max_lines: usize, overlap: usize) {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut covered = vec![false; lines.len()];
+    for chunk in out.iter() {
+        for line in chunk.start_line..=chunk.end_line.min(lines.len()) {
+            covered[line - 1] = true;
+        }
+    }
+    let mut at = 0;
+    while at < lines.len() {
+        if covered[at] {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < lines.len() && !covered[at] {
+            at += 1;
+        }
+        let body = lines[start..at].join("\n");
+        if is_blank(&body) {
+            continue;
+        }
+        let closing_only = lines[start..at]
+            .iter()
+            .all(|l| l.trim().is_empty() || is_closing(l));
+        if at - start <= FRAGMENT_LINES && closing_only {
+            continue;
+        }
+        let fits = |c: &Chunk| c.end_line - c.start_line + 1 + (at - start) <= max_lines;
+        if let Some(chunk) = out.iter_mut().find(|c| c.end_line == start && fits(c)) {
+            chunk.text = format!("{}\n{body}", chunk.text);
+            chunk.end_line = at;
+            continue;
+        }
+        if let Some(chunk) = out.iter_mut().find(|c| c.start_line == at + 1 && fits(c)) {
+            chunk.text = format!("{body}\n{}", chunk.text);
+            chunk.start_line = start + 1;
+            continue;
+        }
+        let before = out
+            .iter()
+            .rfind(|c| c.start_line <= start + 1 && c.symbol.is_some());
+        let after = out.iter().find(|c| c.start_line > at && c.symbol.is_some());
+        let symbol = before.or(after).and_then(|c| c.symbol.clone());
+        for window in chunk_file(&body, max_lines, overlap) {
+            out.push(Chunk {
+                start_line: start + window.start_line,
+                end_line: start + window.end_line,
+                text: window.text,
+                symbol: symbol.clone(),
+                declarations: Vec::new(),
+            });
+        }
+    }
+}
+
+/// A line that only closes a block: `}`, `};`, `end` and the like. A few of
+/// them are left out of the records, as the closing brace of a container is.
+fn is_closing(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed == "end" || (!trimmed.is_empty() && trimmed.chars().all(|c| "})];,".contains(c)))
 }
 
 /// The walk below recurses once per level of the tree, and a few thousand
@@ -502,8 +570,16 @@ impl Emitter<'_> {
         named: Option<Symbol>,
     ) {
         let from = opening.map_or(*start, |(o, _)| o.start);
+        // A header of at most FRAGMENT_LINES lines may take a record a little past
+        // the window, but not a header left over from far above, which would make a
+        // record much longer than a window. Its lines are then covered by `fill_gaps`.
         let (from_byte, from_row) = match self.prefix.take() {
-            Some(prefix) if opening.is_none() => prefix,
+            Some((byte, row))
+                if opening.is_none()
+                    && last_row(end, self.text) + 1 - row <= self.max_lines + FRAGMENT_LINES =>
+            {
+                (byte, row)
+            }
             _ => (from.start_byte(), from.start_position().row),
         };
         let body = &self.text[line_start(self.text, from_byte)..end.end_byte()];

@@ -837,6 +837,35 @@ mod cutting {
     }
 
     #[test]
+    fn a_deeply_nested_block_loses_no_line_and_no_chunk_is_too_long() {
+        let mut src = String::from("fn nest() {\n");
+        for n in 1..=60 {
+            src.push_str(&format!("    let f{n} = |x: u8| {{\n"));
+        }
+        src.push_str("        x\n");
+        for _ in 1..=60 {
+            src.push_str("    };\n");
+        }
+        src.push_str("}\n");
+        let total = src.lines().count();
+        let chunks = chunk_source(Path::new("a.rs"), &src, &Config::default());
+        let mut covered = vec![false; total + 1];
+        for c in &chunks {
+            for seen in &mut covered[c.start_line..=c.end_line] {
+                *seen = true;
+            }
+        }
+        let missing: Vec<usize> = (1..=total).filter(|&l| !covered[l]).collect();
+        assert!(missing.is_empty(), "lines {missing:?} are in no chunk");
+        let long: Vec<(usize, usize)> = chunks
+            .iter()
+            .filter(|c| c.end_line - c.start_line + 1 > 50)
+            .map(|c| (c.start_line, c.end_line))
+            .collect();
+        assert!(long.is_empty(), "chunks over 50 lines: {long:?}");
+    }
+
+    #[test]
     fn files_with_the_extensions_of_a_language_are_cut_as_that_language() {
         let ruby = "def build(x)\n  x + 1\nend\n";
         assert!(has(&cut_code("Tasks.rake", ruby), 1, 3, "fn build"));
