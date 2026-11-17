@@ -960,6 +960,10 @@ pub struct Searcher {
     // The model the index was opened with. A reload under a different model
     // or backend is refused even when the dimensions match.
     model: String,
+    // The bytes of each file the query being answered reads, so the check that
+    // a hit's file is current and the snippets of that hit read it once. Empty
+    // between queries.
+    reads: std::cell::RefCell<HashMap<String, Option<std::rc::Rc<Vec<u8>>>>>,
     // Decoded on the first query that needs the graph, so a query the words
     // answer alone does not pay for it.
     #[cfg(feature = "hnsw")]
@@ -1009,6 +1013,7 @@ fn searcher_over(
         index_path,
         index_mtime,
         model,
+        reads: Default::default(),
         #[cfg(feature = "hnsw")]
         ann_map: OnceLock::new(),
     })
@@ -1101,6 +1106,19 @@ impl Searcher {
         scope: Option<&Scope>,
         text: Option<&Regex>,
     ) -> Result<Page> {
+        let page = self.ask_query(query, limit, offset, scope, text);
+        self.reads.borrow_mut().clear();
+        page
+    }
+
+    fn ask_query(
+        &self,
+        query: &str,
+        limit: usize,
+        offset: usize,
+        scope: Option<&Scope>,
+        text: Option<&Regex>,
+    ) -> Result<Page> {
         // Every record ties on an empty query, so any answer would be noise.
         if query.trim().is_empty() {
             anyhow::bail!("the query is empty; say what to look for");
@@ -1142,6 +1160,19 @@ impl Searcher {
     /// neighbours' near-copies. The chunks it covers are left out of the
     /// answer, and so is anything else on the same lines.
     pub(crate) fn similar_page(
+        &self,
+        target: &Target,
+        limit: usize,
+        offset: usize,
+        scope: Option<&Scope>,
+        text: Option<&Regex>,
+    ) -> Result<Page> {
+        let page = self.ask_similar(target, limit, offset, scope, text);
+        self.reads.borrow_mut().clear();
+        page
+    }
+
+    fn ask_similar(
         &self,
         target: &Target,
         limit: usize,
@@ -1279,7 +1310,6 @@ impl Searcher {
         let mut wider: Vec<(String, usize, usize)> = Vec::new();
         let mut next = None;
         let mut stale: Vec<String> = Vec::new();
-        let mut checked: HashMap<&str, bool> = HashMap::new();
         for h in hits {
             let record = &self.index.records[h.record_idx];
             let covered = wider.iter().any(|(path, start, end)| {
@@ -1294,9 +1324,7 @@ impl Searcher {
                 next = Some(h.score);
                 break;
             }
-            let current = *checked
-                .entry(record.path.as_str())
-                .or_insert_with(|| self.indexed_bytes(record).is_some());
+            let current = self.indexed_bytes(record).is_some();
             if !current {
                 add_stale(&mut stale, record.path.as_str());
                 continue;
@@ -1433,8 +1461,16 @@ impl Searcher {
 
     /// The file a record was cut from, as it was indexed; `None` when it was
     /// changed since or cannot be read.
-    fn indexed_bytes(&self, record: &Record) -> Option<Vec<u8>> {
-        bytes_matching(&self.root, &record.path, record.file_hash)
+    fn indexed_bytes(&self, record: &Record) -> Option<std::rc::Rc<Vec<u8>>> {
+        if let Some(found) = self.reads.borrow().get(record.path.as_str()) {
+            return found.clone();
+        }
+        let found =
+            bytes_matching(&self.root, &record.path, record.file_hash).map(std::rc::Rc::new);
+        self.reads
+            .borrow_mut()
+            .insert(record.path.to_string(), found.clone());
+        found
     }
 
     /// The hits, in their order, whose chunk the pattern matches, up to
@@ -1448,7 +1484,6 @@ impl Searcher {
         text: &Regex,
         needed: usize,
     ) -> (Vec<crate::index::Hit>, Vec<String>) {
-        let mut files: HashMap<&str, Option<Vec<u8>>> = HashMap::new();
         let mut kept = Vec::new();
         let mut stale = Vec::new();
         for h in hits {
@@ -1456,10 +1491,8 @@ impl Searcher {
                 break;
             }
             let record = &self.index.records[h.record_idx];
-            let bytes = files
-                .entry(record.path.as_str())
-                .or_insert_with(|| self.indexed_bytes(record));
-            let found = match bytes {
+            let bytes = self.indexed_bytes(record);
+            let found = match &bytes {
                 Some(bytes) => {
                     let file = walk::decode_text(bytes);
                     let lines: Vec<&str> = file
@@ -1964,6 +1997,7 @@ mod tests {
             model: config.model.clone(),
             #[cfg(feature = "hnsw")]
             ann_map: OnceLock::new(),
+            reads: Default::default(),
         };
         let inside = record("inside.txt", b"one\ntwo\n");
         assert_eq!(searcher.lines(&inside, 2, 2, 100).as_deref(), Some("two"));
@@ -2015,6 +2049,7 @@ mod tests {
             model: config.model.clone(),
             #[cfg(feature = "hnsw")]
             ann_map: OnceLock::new(),
+            reads: Default::default(),
         };
         let hit = SearchHit {
             path: "../secret.txt".into(),
@@ -2071,6 +2106,7 @@ mod tests {
             model: config.model.clone(),
             #[cfg(feature = "hnsw")]
             ann_map: OnceLock::new(),
+            reads: Default::default(),
         };
         let hit = SearchHit {
             path: record.path.to_string(),
