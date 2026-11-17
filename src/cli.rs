@@ -274,6 +274,7 @@ pub enum InstallCmd {
     /// Add ripsem to .gemini/settings.json for Gemini CLI.
     Gemini,
     /// Add ripsem to opencode.json for OpenCode.
+    #[command(name = "opencode", alias = "open-code")]
     OpenCode,
     /// Add ripsem to .codex/config.toml for Codex CLI.
     Codex,

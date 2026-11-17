@@ -596,6 +596,17 @@ fn a_language_naming_nothing_is_an_error() {
 }
 
 #[test]
+fn install_takes_opencode_by_the_name_the_docs_use() {
+    let dir = TempDir::new();
+    let out = ripsem(&dir.path, &["install", "opencode"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(dir.path.join("opencode.json").exists());
+
+    let old = ripsem(&dir.path, &["install", "open-code"]);
+    assert!(old.status.success(), "{}", stderr(&old));
+}
+
+#[test]
 fn ripgrep_short_flags_for_count_and_type_are_accepted() {
     let dir = TempDir::new();
     dir.write("src/auth.rs", "fn login() { verify password }");

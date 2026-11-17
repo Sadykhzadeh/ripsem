@@ -17,6 +17,8 @@
   `path:line:column:text` line per hit, for Vim's quickfix list and grep tools.
 - `ripsem search` takes ripgrep's short names for two options: `-c` for
   `--count-by-file` and `-t` for `--lang`, which also accepts `--type`.
+- `ripsem install opencode` is accepted as the README names it; `open-code`,
+  the name the subcommand had, still works.
 - The query is read from stdin with `ripsem search -`, or when `search` gets no
   words and stdin is not a terminal. One trailing line break is not part of it.
 - A file that is not UTF-8 is read as Windows-1252, so `café` in a file saved in
