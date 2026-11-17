@@ -1576,6 +1576,10 @@ fn check_inside_root(root: &Path, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The first sentence of the note, which only `install` writes. A file that
+/// names ripsem in passing does not contain it.
+const NOTE_MARKER: &str = "This repository is indexed by ripsem.";
+
 fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
     let (path, note) = match target {
         InstallCmd::ClaudeCode => (
@@ -1612,9 +1616,9 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", show_path(&path))),
     };
-    if existing.contains("ripsem") {
+    if existing.contains(NOTE_MARKER) {
         out!(
-            "{} already mentions ripsem; left as it is",
+            "{} already has the ripsem note; left as it is",
             show_path(&path)
         );
         return Ok(());
@@ -2230,6 +2234,30 @@ mod tests {
         let text = std::fs::read_to_string(&claude).unwrap();
         assert!(text.starts_with("# Project\n\nBuild with make.\n\n## Code search\n"));
         assert_eq!(text.matches("indexed by ripsem").count(), 1);
+    }
+
+    /// A project note that only names ripsem in passing is not the note, so the
+    /// agent still gets the instruction; a file that has the note keeps one copy.
+    #[test]
+    fn a_note_that_only_names_ripsem_in_prose_does_not_block_the_note() {
+        let dir = crate::testutil::TempDir::new();
+        let claude = dir.path().join("CLAUDE.md");
+        std::fs::write(
+            &claude,
+            "# Project\n\nWe ran ripsem once to compare tools.\n",
+        )
+        .unwrap();
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        assert!(mcp::INSTRUCTIONS.starts_with(NOTE_MARKER));
+        let text = std::fs::read_to_string(&claude).unwrap();
+        assert!(
+            text.starts_with("# Project\n\nWe ran ripsem once"),
+            "{text}"
+        );
+        assert_eq!(text.matches(NOTE_MARKER).count(), 1, "{text}");
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        let again = std::fs::read_to_string(&claude).unwrap();
+        assert_eq!(again, text);
     }
 
     #[test]
