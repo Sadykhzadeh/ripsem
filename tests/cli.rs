@@ -596,6 +596,40 @@ fn a_language_naming_nothing_is_an_error() {
 }
 
 #[test]
+fn ripgrep_short_flags_for_count_and_type_are_accepted() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn login() { verify password }");
+    dir.write("src/auth.py", "def login(): verify password");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+
+    let long = stdout(&ripsem(
+        &dir.path,
+        &[
+            "search",
+            "verify password",
+            "--count-by-file",
+            "--context",
+            "0",
+        ],
+    ));
+    let short = ripsem(
+        &dir.path,
+        &["search", "verify password", "-c", "--context", "0"],
+    );
+    assert!(short.status.success(), "{}", stderr(&short));
+    assert_eq!(stdout(&short), long);
+    assert!(!long.trim().is_empty());
+
+    let typed = ripsem(
+        &dir.path,
+        &["search", "verify password", "-t", "rust", "--context", "0"],
+    );
+    assert_eq!(found_paths(&typed), ["src/auth.rs"]);
+}
+
+#[test]
 fn a_glob_limits_a_search_to_matching_paths() {
     let dir = TempDir::new();
     dir.write("src/auth.rs", "fn login() { verify password }");

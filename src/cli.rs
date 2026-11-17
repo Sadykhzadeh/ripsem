@@ -161,7 +161,7 @@ pub struct SearchOpts {
     /// Keep only hits in files of this language, by name or extension:
     /// `--lang rust`, `--lang py`, `--lang toml`. Repeat the flag or
     /// separate values with commas for several.
-    #[arg(long, value_name = "LANG")]
+    #[arg(short = 't', long, alias = "type", value_name = "LANG")]
     lang: Vec<String>,
     /// Keep only hits whose path matches this glob, as with ripgrep's
     /// `-g`; a leading `!` leaves matching paths out. `-g '*.rs' -g
@@ -194,7 +194,7 @@ pub struct SearchOpts {
     /// instead of listing each hit. Aggregates the top-`k` matches, so pair
     /// it with a larger `-k` for a wider view. Honoured by `--json` too.
     /// Cannot be combined with `-l` or `--vimgrep`.
-    #[arg(long)]
+    #[arg(short = 'c', long)]
     count_by_file: bool,
     /// Print nothing. The exit status says whether a hit is left after the
     /// filters and `--min-score`: 0 when one is, 1 when none is, so a

@@ -239,9 +239,9 @@ more results below this; pass --offset 2 to see them
   from the current directory, as in the shell: in `src`, `--in auth` means
   `src/auth` and `--in .` means `src`. An absolute path into the repository
   works too.
-- `--lang <LANG>` keeps only hits in files of that language, by name or by
-  extension: `--lang rust`, `--lang py`, `--lang toml`. Repeat the flag or
-  separate values with commas for several: `--lang rust,toml`.
+- `-t, --lang <LANG>` (also `--type`) keeps only hits in files of that language,
+  by name or by extension: `--lang rust`, `-t py`, `--lang toml`. Repeat the flag
+  or separate values with commas for several: `--lang rust,toml`.
 - `-g, --glob <GLOB>` keeps only hits whose path matches, as ripgrep's `-g`
   does, and a leading `!` leaves matching paths out: `-g '*.rs' -g
   '!*_test.rs'`. A directory counts for the files inside it, so
@@ -261,7 +261,7 @@ more results below this; pass --offset 2 to see them
   the whole snippet when the output goes to another program; `0` prints just
   the locations).
 - `--min-score <SCORE>` keeps only strong matches, in both human and JSON output.
-- `--count-by-file` prints hit counts per file instead of the hits.
+- `-c, --count-by-file` prints hit counts per file instead of the hits.
 - `-q, --quiet` prints nothing and sets the exit status: 0 when a hit is left
   after the filters and `--min-score`, 1 when none is, so a script can branch
   on a match. Without it a search with no hits still exits 0.
