@@ -6,6 +6,7 @@ use tree_sitter::Language;
 
 #[cfg(feature = "treesitter")]
 pub struct LangSpec {
+    pub name: &'static str,
     pub language: Language,
 }
 
@@ -173,7 +174,10 @@ pub fn detect(path: &Path) -> Option<LangSpec> {
         "html" => tree_sitter_html::LANGUAGE.into(),
         _ => return None,
     };
-    Some(LangSpec { language })
+    Some(LangSpec {
+        name: lang.name,
+        language,
+    })
 }
 
 #[cfg(test)]
