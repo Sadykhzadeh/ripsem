@@ -84,6 +84,13 @@ pub enum Command {
         dry_run: bool,
     },
     /// Find code by an identifier, an error message or a description.
+    #[command(after_help = "Examples:
+  ripsem search where is auth set up
+  ripsem search retry on failure -k 5 --lang rust
+  ripsem search verify_password -l -0 | xargs -0 wc -l
+  ripsem search -e 'backoff|jitter' retry on failure
+  ripsem search --since main 'retry on failure'
+  echo 'parse_header' | ripsem search - --context 0")]
     Search {
         /// What to look for, in any of those shapes. Several words need no
         /// quotes: `ripsem search where is auth set up` is one query. `-`, or
@@ -94,9 +101,10 @@ pub enum Command {
         #[command(flatten)]
         opts: SearchOpts,
     },
-    /// Find the code nearest to a location already in the index, such as
-    /// `src/auth.rs:40-72`, or a whole file. It uses the stored vectors, so no
-    /// model runs.
+    /// Find the code nearest to a location already in the index.
+    ///
+    /// Takes `src/auth.rs:40-72`, a single line such as `src/auth.rs:40`, or a
+    /// bare path for the whole file. It uses the stored vectors, so no model runs.
     Similar {
         /// `path`, `path:LINE` or `path:START-END`, relative to the current
         /// directory. The lines are 1-based.

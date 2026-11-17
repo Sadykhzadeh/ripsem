@@ -625,6 +625,24 @@ fn exit_codes_are_0_for_a_run_1_for_a_failure_and_2_for_bad_usage() {
 }
 
 #[test]
+fn help_has_examples_for_search_and_short_summaries_at_the_top() {
+    let dir = TempDir::new();
+    let search = stdout(&ripsem(&dir.path, &["search", "--help"]));
+    assert!(search.contains("Examples:"), "{search}");
+    assert!(
+        search.contains("ripsem search retry on failure -k 5"),
+        "{search}"
+    );
+
+    let top = stdout(&ripsem(&dir.path, &["--help"]));
+    let similar = top
+        .lines()
+        .find(|line| line.trim_start().starts_with("similar"))
+        .unwrap();
+    assert!(similar.len() <= 100, "{similar}");
+}
+
+#[test]
 fn install_takes_opencode_by_the_name_the_docs_use() {
     let dir = TempDir::new();
     let out = ripsem(&dir.path, &["install", "opencode"]);

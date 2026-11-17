@@ -17,6 +17,8 @@
   `path:line:column:text` line per hit, for Vim's quickfix list and grep tools.
 - `ripsem search` takes ripgrep's short names for two options: `-c` for
   `--count-by-file` and `-t` for `--lang`, which also accepts `--type`.
+- `ripsem search --help` ends with examples, and the one-line summary of
+  `ripsem similar` in the top-level help is short enough to read.
 - The exit codes are written down in the README: 0 for a run, 1 for a failure
   while running (and for a `-q` search with no hit), 2 for a command line that
   is not accepted. The codes did not change.
