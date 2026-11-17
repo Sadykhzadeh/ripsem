@@ -1161,10 +1161,11 @@ impl Searcher {
         let bytes = std::fs::read(self.root.join(&target.path))
             .with_context(|| format!("reading {}", target.path))?;
         if fingerprint::content_hash(&bytes) != self.index.records[first].file_hash {
-            anyhow::bail!(
-                "{} changed since it was indexed and the index could not be updated; run `ripsem index`",
-                target.path
-            );
+            return Ok(Page {
+                hits: Vec::new(),
+                next: None,
+                stale: vec![target.path.clone()],
+            });
         }
         let total = walk::decode_text(&bytes).lines().count();
         if let Some((_, end)) = target.lines
@@ -1585,6 +1586,31 @@ pub fn answer_with_reread(
     ask(&fresh)
 }
 
+/// [`Searcher::similar_page`] through [`answer_with_reread`]. A target that
+/// changed on disk is read again first; it is an error only when it still does
+/// not match the index afterwards.
+#[allow(clippy::too_many_arguments)]
+pub fn similar_answer(
+    config: &Config,
+    held: &Searcher,
+    target: &Target,
+    limit: usize,
+    offset: usize,
+    scope: Option<&Scope>,
+    text: Option<&Regex>,
+) -> Result<Page> {
+    let page = answer_with_reread(config, held, |s| {
+        s.similar_page(target, limit, offset, scope, text)
+    })?;
+    if page.stale.contains(&target.path) {
+        anyhow::bail!(
+            "{} changed since it was indexed and the index could not be updated; run `ripsem index`",
+            target.path
+        );
+    }
+    Ok(page)
+}
+
 /// [`Searcher::query_page`] through [`answer_with_reread`].
 #[allow(clippy::too_many_arguments)]
 pub fn search_answer(
@@ -1627,7 +1653,7 @@ pub fn similar_page(
         Some(index) => searcher_over(config, index, embedder, file_mtime(&config.index_path())),
         None => open_with(config, embedder),
     }?;
-    let found = searcher.similar_page(target, limit, offset, scope, text);
+    let found = similar_answer(config, &searcher, target, limit, offset, scope, text);
     leave_to_exit(searcher.index);
     found
 }

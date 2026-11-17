@@ -1831,6 +1831,66 @@ fn mcp_search_reads_a_same_size_rewrite_again() {
     );
 }
 
+/// `similar` answers from the target's current text when it changed with the
+/// size and time it had. Its new text is the same as `c.rs`, and its old text
+/// the same as `d.rs`, so `c.rs` is the answer. The CLI and an MCP session that
+/// was already open both give it, with no error and no answer from the old text.
+#[test]
+fn similar_reads_a_changed_target_again() {
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+    let set_modified = |dir: &TempDir, name: &str| {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.path.join(name))
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+    };
+    let indexed = || {
+        let dir = TempDir::new();
+        dir.write("src/a.rs", "alpha bravo charlie");
+        dir.write("src/d.rs", "alpha bravo charlie");
+        dir.write("src/c.rs", "omega bravo charlie");
+        for name in ["src/a.rs", "src/d.rs", "src/c.rs"] {
+            set_modified(&dir, name);
+        }
+        ripsem(&dir.path, &["init"]);
+        ripsem(&dir.path, &["model", "backend", "hash"]);
+        assert!(ripsem(&dir.path, &["index"]).status.success());
+        dir.write("src/a.rs", "omega bravo charlie");
+        set_modified(&dir, "src/a.rs");
+        dir
+    };
+
+    let dir = indexed();
+    let cli = ripsem(&dir.path, &["similar", "src/a.rs", "--json", "-k", "1"]);
+    assert!(cli.status.success(), "{}", stderr(&cli));
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&stdout(&cli)).unwrap();
+    assert_eq!(rows[0]["path"], "src/c.rs", "{rows:?}");
+
+    let dir = TempDir::new();
+    dir.write("src/a.rs", "alpha bravo charlie");
+    dir.write("src/d.rs", "alpha bravo charlie");
+    dir.write("src/c.rs", "omega bravo charlie");
+    for name in ["src/a.rs", "src/d.rs", "src/c.rs"] {
+        set_modified(&dir, name);
+    }
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+    let mut server = McpServer::start(&dir.path);
+    server.request(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+    );
+    dir.write("src/a.rs", "omega bravo charlie");
+    set_modified(&dir, "src/a.rs");
+    let found = server.request(
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_similar","arguments":{"path":"src/a.rs","limit":1}}}"#,
+    );
+    let top = &found["result"]["structuredContent"]["hits"][0];
+    assert_eq!(top["path"], "src/c.rs", "{found}");
+}
+
 #[test]
 fn a_truncated_index_is_reported_and_rebuilt_without_a_panic() {
     let dir = TempDir::new();
