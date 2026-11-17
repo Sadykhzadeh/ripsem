@@ -563,6 +563,24 @@ mod cutting {
         assert!(has(&cut, 1, 4, "fn twice"), "{cut:?}");
     }
 
+    /// Every declaration a file's chunks hold, as labels, in order.
+    fn declared_labels(file: &str, src: &str) -> Vec<String> {
+        chunk_source(Path::new(file), src, &Config::default())
+            .iter()
+            .flat_map(|c| c.declarations.iter().map(|d| d.symbol.label()))
+            .collect()
+    }
+
+    #[test]
+    fn a_c_declarator_is_not_a_second_declaration_of_its_function() {
+        let c = "int apply(int (*f)(int), int x) {\n    return f(x);\n}\n";
+        assert_eq!(declared_labels("a.c", c), ["fn apply"]);
+        let cpp = "int geo::helper(int a) {\n    return a;\n}\n";
+        assert_eq!(declared_labels("a.cpp", cpp), ["fn geo::helper"]);
+        let call = "class Box {\n  int as() const { return static_cast<int>(v); }\n};\n";
+        assert_eq!(declared_labels("a.cpp", call), ["class Box", "fn Box::as"]);
+    }
+
     #[test]
     fn files_with_the_extensions_of_a_language_are_cut_as_that_language() {
         let ruby = "def build(x)\n  x + 1\nend\n";

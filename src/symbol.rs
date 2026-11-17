@@ -81,6 +81,9 @@ pub fn declaration(
 /// enclosing declaration is put in front of it. [`named`] completes it.
 #[cfg(feature = "treesitter")]
 pub fn raw_declaration(node: &tree_sitter::Node) -> Option<(&'static str, (usize, usize))> {
+    if is_prototype(node) {
+        return Some(("fn", declared_name(node)?));
+    }
     match is_binding(node.kind()) {
         true => Some(("fn", bound_function_name(node)?)),
         false => Some((declared_kind(node.kind())?, declared_name(node)?)),
@@ -96,6 +99,18 @@ pub fn named(kind: &str, name: &str, enclosing: Option<&Symbol>) -> Symbol {
             None => name.to_string(),
         },
     }
+}
+
+/// A C or C++ prototype is a declaration of a function that has no body, and
+/// its declarator is the only place its name sits. A declarator inside a
+/// definition or a parameter names the same function, or nothing, and is left
+/// out by [`is_use`].
+#[cfg(feature = "treesitter")]
+fn is_prototype(node: &tree_sitter::Node) -> bool {
+    node.kind() == "function_declarator"
+        && node
+            .parent()
+            .is_some_and(|parent| matches!(parent.kind(), "declaration" | "field_declaration"))
 }
 
 /// Longer needles come first so `module` is not read as `mod`. A kind match
@@ -146,7 +161,9 @@ fn kind_contains(node_kind: &str, needle: &str) -> bool {
 /// Types, expressions, patterns and parameters name something without declaring
 /// it, yet their kinds carry the same needles: Rust's `Some(x)` is a
 /// `tuple_struct_pattern`, Go's `testing.B` a `qualified_type` and Python's
-/// `timeout=0.5` a `default_parameter`.
+/// `timeout=0.5` a `default_parameter`. A C declarator (`function_declarator`)
+/// repeats the name of the function or the variable its declaration starts,
+/// and a C++ `static_cast<U>(x)` is a call, so both are left out as well.
 #[cfg(feature = "treesitter")]
 fn is_use(node_kind: &str) -> bool {
     const USES: &[&str] = &[
@@ -159,6 +176,8 @@ fn is_use(node_kind: &str) -> bool {
         "_predicate",
         "_binding",
         "_invocation",
+        "_declarator",
+        "template_function",
     ];
     USES.iter().any(|suffix| node_kind.ends_with(suffix))
 }
