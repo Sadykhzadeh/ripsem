@@ -177,6 +177,7 @@ ripsem search "where is auth set up?"   # updates the index first
 ripsem similar src/auth.rs:40-72  # the code nearest to a location, no model run
 ripsem status                     # index size, counts, model, drift from the tree
 ripsem status --json              # the same as JSON (schema ripsem/status/v1)
+ripsem status --verify            # also read every indexed file and list the ones that changed
 ripsem watch                      # keep the index in sync as files change
 ```
 
@@ -532,6 +533,9 @@ file again and searches once more. The MCP server leaves such hits out without
 reading the file, until a `ripsem search` or `ripsem index --force` run reads
 it. Set `RIPSEM_HASH_ALL=1` for a run (`RIPSEM_HASH_ALL=1 ripsem status` shows
 what is out of date) or run `ripsem index --force` to read every file.
+`ripsem status --verify` reads the indexed files and lists the ones whose
+content differs from the index, the same-size rewrites included; a file that is
+gone is listed too.
 
 **Search says the index was built with another model.** The config names a
 different model or backend than the index. `ripsem index` rebuilds it for the

@@ -113,6 +113,10 @@ pub enum Command {
         /// exists, is stale, or needs rebuilding.
         #[arg(long)]
         json: bool,
+        /// Read every indexed file and list the ones whose content no longer
+        /// matches the index, including a rewrite that kept its size and time.
+        #[arg(long)]
+        verify: bool,
     },
     /// Run the MCP server over stdio.
     Mcp,
@@ -298,7 +302,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Search { query, opts } => cmd_search(&root, &query, &opts),
         Command::Similar { target, opts } => cmd_similar(&root, &target, &opts),
         Command::Watch => watch::run(load_config(&root)?),
-        Command::Status { json } => cmd_status(&root, json),
+        Command::Status { json, verify } => cmd_status(&root, json, verify),
         Command::Mcp => mcp::serve(load_config(&root)?, cli.path.is_some()),
         Command::Model { action } => cmd_model(&root, action),
         Command::Install { target } => cmd_install(&root, target),
@@ -356,6 +360,9 @@ struct IndexFacts {
     written: Option<u64>,
     /// `None` when the tree could not be walked to compare against.
     drift: Option<pipeline::Drift>,
+    /// The indexed files whose content differs, read and hashed; `None`
+    /// unless `status --verify` asked for them.
+    changed: Option<Vec<String>>,
 }
 
 /// How long before `now` the index was written, in one unit of time.
@@ -402,7 +409,7 @@ fn status_json(
 
 /// The document `status --json` prints, for the MCP `index_status` tool.
 pub(crate) fn status_report(config: &Config) -> Value {
-    let (facts, error) = index_facts(config);
+    let (facts, error) = index_facts(config, false);
     status_value(
         &config.model,
         config.backend,
@@ -410,6 +417,14 @@ pub(crate) fn status_report(config: &Config) -> Value {
         facts.as_ref(),
         error.as_deref(),
     )
+}
+
+/// `index` with the files `status --verify` found changed, when it ran.
+fn with_changed(mut index: Value, changed: Option<&[String]>) -> Value {
+    if let Some(changed) = changed {
+        index["changed_on_disk"] = json!(changed);
+    }
+    index
 }
 
 fn status_value(
@@ -420,27 +435,30 @@ fn status_value(
     error: Option<&str>,
 ) -> Value {
     let index_json = match index {
-        Some(f) => json!({
-            "present": true,
-            "path": f.path,
-            "size_bytes": f.size_bytes,
-            "chunks": f.chunks,
-            "files": f.files,
-            "named": f.named,
-            "ann": f.ann,
-            "backend": f.index_backend,
-            "model": f.index_model,
-            "stale": f.stale,
-            "written_unix": f.written,
-            "drift": match f.drift {
-                Some(d) => json!({
-                    "added": d.added,
-                    "modified": d.modified,
-                    "removed": d.removed,
-                }),
-                None => Value::Null,
-            },
-        }),
+        Some(f) => with_changed(
+            json!({
+                "present": true,
+                "path": f.path,
+                "size_bytes": f.size_bytes,
+                "chunks": f.chunks,
+                "files": f.files,
+                "named": f.named,
+                "ann": f.ann,
+                "backend": f.index_backend,
+                "model": f.index_model,
+                "stale": f.stale,
+                "written_unix": f.written,
+                "drift": match f.drift {
+                    Some(d) => json!({
+                        "added": d.added,
+                        "modified": d.modified,
+                        "removed": d.removed,
+                    }),
+                    None => Value::Null,
+                },
+            }),
+            f.changed.as_deref(),
+        ),
         None => json!({ "present": false, "error": error }),
     };
     json!({
@@ -456,7 +474,7 @@ fn status_value(
 /// What the index file on disk holds, and how far the tree has drifted from
 /// it. A missing file and an unreadable index both yield no facts; only the
 /// latter carries an error.
-fn index_facts(config: &Config) -> (Option<IndexFacts>, Option<String>) {
+fn index_facts(config: &Config, verify: bool) -> (Option<IndexFacts>, Option<String>) {
     let path = config.index_path();
     if !path.exists() {
         (None, None)
@@ -485,6 +503,7 @@ fn index_facts(config: &Config) -> (Option<IndexFacts>, Option<String>) {
                     rechunk: index.chunking != crate::chunk::Chunking::of(config),
                     written,
                     drift,
+                    changed: verify.then(|| pipeline::changed_on_disk(config, &index)),
                 };
                 (Some(facts), None)
             }
@@ -493,9 +512,9 @@ fn index_facts(config: &Config) -> (Option<IndexFacts>, Option<String>) {
     }
 }
 
-fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
+fn cmd_status(root: &Path, as_json: bool, verify: bool) -> Result<()> {
     let config = load_config(root)?;
-    let (facts, error) = index_facts(&config);
+    let (facts, error) = index_facts(&config, verify);
 
     if as_json {
         out!(
@@ -526,6 +545,20 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
             out!("named:  {} with a declaration", plural(f.named, "chunk"));
             if let Some(drift) = &f.drift {
                 out!("tree:   {}", drift_line(drift));
+            }
+            if let Some(changed) = &f.changed {
+                match changed.is_empty() {
+                    true => out!("verify: every indexed file matches its content"),
+                    false => {
+                        out!(
+                            "verify: {} changed on disk since indexed; run `ripsem index --force`",
+                            plural(changed.len(), "file")
+                        );
+                        for path in changed {
+                            out!("  {path}");
+                        }
+                    }
+                }
             }
             if let Some(written) = f.written {
                 let now = std::time::SystemTime::now()
@@ -1543,6 +1576,7 @@ mod tests {
                 modified: 2,
                 removed: 0,
             }),
+            changed: None,
         };
         let out = status_json("bge-small-en-v1.5", Backend::Hash, 384, Some(&facts), None);
         let v: Value = serde_json::from_str(&out).unwrap();

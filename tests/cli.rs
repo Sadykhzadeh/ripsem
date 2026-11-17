@@ -1475,6 +1475,74 @@ fn a_same_size_rewrite_does_not_print_its_old_text() {
     );
 }
 
+/// `status --verify` reads the indexed files and names the one whose content
+/// changed under the same size and time, which the stat check cannot see. Plain
+/// `status` still judges the tree by stat, and the JSON gains the list only
+/// when asked for it.
+#[test]
+fn status_verify_names_a_file_the_stat_cannot_show() {
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+    let set_modified = |dir: &TempDir, name: &str| {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.path.join(name))
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+    };
+    let listed = |output: &Output| -> Vec<String> {
+        stdout(output)
+            .lines()
+            .filter_map(|l| l.strip_prefix("  "))
+            .map(String::from)
+            .collect()
+    };
+
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie");
+    dir.write("b.rs", "delta echo foxtrot");
+    set_modified(&dir, "a.rs");
+    set_modified(&dir, "b.rs");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let clean = ripsem(&dir.path, &["status", "--verify"]);
+    assert!(clean.status.success());
+    assert!(
+        stdout(&clean).contains("every indexed file matches"),
+        "{}",
+        stdout(&clean)
+    );
+
+    dir.write("a.rs", "omega bravo charlie");
+    set_modified(&dir, "a.rs");
+    let plain = ripsem(&dir.path, &["status"]);
+    assert!(plain.status.success());
+    assert!(
+        stdout(&plain).contains("tree:   matches the index"),
+        "{}",
+        stdout(&plain)
+    );
+    assert!(!stdout(&plain).contains("verify:"));
+
+    let verified = ripsem(&dir.path, &["status", "--verify"]);
+    assert!(verified.status.success());
+    assert!(
+        stdout(&verified).contains("verify: 1 file changed on disk"),
+        "{}",
+        stdout(&verified)
+    );
+    assert_eq!(listed(&verified), ["a.rs"], "{}", stdout(&verified));
+
+    let json = ripsem(&dir.path, &["status", "--verify", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&json)).unwrap();
+    assert_eq!(v["index"]["changed_on_disk"], json!(["a.rs"]));
+    let plain_json = ripsem(&dir.path, &["status", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&plain_json)).unwrap();
+    assert!(v["index"].get("changed_on_disk").is_none());
+}
+
 #[test]
 fn a_truncated_index_is_reported_and_rebuilt_without_a_panic() {
     let dir = TempDir::new();

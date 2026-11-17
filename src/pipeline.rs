@@ -622,6 +622,36 @@ fn refresh_stats(config: &Config, files: &[Hashed], index: &mut Index) {
     }
 }
 
+/// The bytes of the indexed file `path` under `root`, when they still hash to
+/// `hash`. The index is data on disk, and a repository can ship one: a path
+/// that leaves the root is not a file this index could have been built from.
+fn bytes_matching(root: &Path, path: &str, hash: u64) -> Option<Vec<u8>> {
+    let inside = Path::new(path)
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !inside {
+        return None;
+    }
+    let bytes = std::fs::read(root.join(path)).ok()?;
+    (fingerprint::content_hash(&bytes) == hash).then_some(bytes)
+}
+
+/// The indexed files whose content on disk is not the content the index holds,
+/// found by reading and hashing each one rather than by its stat. A file that
+/// is gone counts as changed.
+pub fn changed_on_disk(config: &Config, index: &Index) -> Vec<String> {
+    let files: Vec<(&str, u64)> = index
+        .records
+        .chunk_by(|a, b| a.path == b.path)
+        .map(|file| (file[0].path.as_str(), file[0].file_hash))
+        .collect();
+    files
+        .par_iter()
+        .filter(|(path, hash)| bytes_matching(&config.root, path, *hash).is_none())
+        .map(|(path, _)| path.to_string())
+        .collect()
+}
+
 /// Adds `path` to a list of stale files, once.
 fn add_stale(stale: &mut Vec<String>, path: &str) {
     if !stale.iter().any(|p| p == path) {
@@ -1397,16 +1427,7 @@ impl Searcher {
     /// The file a record was cut from, as it was indexed; `None` when it was
     /// changed since or cannot be read.
     fn indexed_bytes(&self, record: &Record) -> Option<Vec<u8>> {
-        // The index is data on disk, and a repository can ship one: a path that
-        // leaves the root is not a file this index could have been built from.
-        let inside = Path::new(record.path.as_str())
-            .components()
-            .all(|c| matches!(c, std::path::Component::Normal(_)));
-        if !inside {
-            return None;
-        }
-        let bytes = std::fs::read(self.root.join(record.path.as_str())).ok()?;
-        (fingerprint::content_hash(&bytes) == record.file_hash).then_some(bytes)
+        bytes_matching(&self.root, &record.path, record.file_hash)
     }
 
     /// The hits, in their order, whose chunk the pattern matches, up to

@@ -80,6 +80,11 @@
   and the search is answered once more from the index as it now stands. The MCP
   server leaves such hits out until a CLI search or `ripsem index --force` reads
   the file.
+- `ripsem status --verify` reads every indexed file and lists the ones whose
+  content no longer matches the index, so a rewrite that kept its size and
+  modification time shows up. Plain `status` still judges the tree by stat, and
+  the exit status is unchanged. With `--json` the list is `changed_on_disk` under
+  `index`, and only when `--verify` is given.
 
 ## 0.3.0 (2026-11-15)
 
