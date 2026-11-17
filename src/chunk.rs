@@ -621,6 +621,14 @@ mod cutting {
     }
 
     #[test]
+    fn a_function_assigned_to_a_property_or_a_name_is_named_by_it() {
+        let js = "module.exports.parse = function (text) {\n  return text.trim();\n};\n";
+        assert_eq!(declared_labels("a.js", js), ["fn parse"]);
+        let py = "double = lambda x: x * 2\n\ndef run():\n    helper = lambda x: x\n    return helper(1)\n";
+        assert_eq!(declared_labels("a.py", py), ["fn double", "fn run"]);
+    }
+
+    #[test]
     fn files_with_the_extensions_of_a_language_are_cut_as_that_language() {
         let ruby = "def build(x)\n  x + 1\nend\n";
         assert!(has(&cut_code("Tasks.rake", ruby), 1, 3, "fn build"));

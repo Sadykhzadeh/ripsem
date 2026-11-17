@@ -192,7 +192,10 @@ fn is_use(node_kind: &str) -> bool {
 /// TypeScript's `public_field_definition`, contains a needle like `def`.
 #[cfg(feature = "treesitter")]
 fn is_binding(node_kind: &str) -> bool {
-    node_kind == "variable_declarator" || node_kind.ends_with("field_definition")
+    matches!(
+        node_kind,
+        "variable_declarator" | "assignment_expression" | "assignment"
+    ) || node_kind.ends_with("field_definition")
 }
 
 /// The type a Go method is declared on: `Set` for `func (s *Set[T]) Add`. Its
@@ -215,20 +218,33 @@ pub fn receiver_type(node: &tree_sitter::Node, text: &str) -> Option<String> {
 /// closure or a Python lambda does.
 #[cfg(feature = "treesitter")]
 fn bound_function_name(node: &tree_sitter::Node) -> Option<(usize, usize)> {
-    let value = node.child_by_field_name("value")?;
-    if !value.kind().contains("function") {
+    let value = node
+        .child_by_field_name("value")
+        .or_else(|| node.child_by_field_name("right"))?;
+    if !(value.kind().contains("function") || value.kind() == "lambda") {
         return None;
     }
     let statement = node.parent()?;
     if statement
         .parent()
-        .is_some_and(|block| block.kind() == "statement_block")
+        .is_some_and(|block| matches!(block.kind(), "statement_block" | "block"))
     {
         return None;
     }
-    ["name", "property"]
+    // `module.exports.parse = ...` is named by its last property, `parse`.
+    let names: Vec<tree_sitter::Node> = match node.child_by_field_name("left") {
+        Some(target) => ["property", "attribute"]
+            .into_iter()
+            .filter_map(|field| target.child_by_field_name(field))
+            .chain(std::iter::once(target))
+            .collect(),
+        None => ["name", "property"]
+            .into_iter()
+            .filter_map(|field| node.child_by_field_name(field))
+            .collect(),
+    };
+    names
         .into_iter()
-        .filter_map(|field| node.child_by_field_name(field))
         .find(|name| is_name_leaf(name.kind()))
         .map(|name| (name.start_byte(), name.end_byte()))
 }
