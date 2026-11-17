@@ -23,6 +23,8 @@
 - `ripsem similar src/a.rs:abc` says what a line range looks like, `PATH:LINE`
   or `PATH:LINE-LINE`, when the path is not in the index, since the colon was
   read as part of a path.
+- `ripsem search -l --json` prints a JSON array of the file paths, as strings.
+  `--help` now says so, and a test pins the output.
 - The README has an environment variables table: `RIPSEM_HASH_ALL`,
   `RIPSEM_MODEL_DIR` and `RIPSEM_NO_GPU`, with defaults and effects. A test fails
   when the table and the variables the source reads differ.

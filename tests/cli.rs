@@ -822,6 +822,35 @@ fn every_ripsem_variable_the_code_reads_is_in_the_readme_table() {
 }
 
 #[test]
+fn files_with_matches_with_json_prints_a_json_array_of_the_paths() {
+    let dir = TempDir::new();
+    dir.write(
+        "src/retry.rs",
+        "fn retry_on_failure(n: u32) -> u32 {\n    n + 1\n}\n",
+    );
+    dir.write(
+        "src/header.rs",
+        "fn parse_header(s: &str) -> bool {\n    s.is_empty()\n}\n",
+    );
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+
+    let out = ripsem(&dir.path, &["search", "retry", "-l", "--json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let paths: Vec<String> = serde_json::from_str(&stdout(&out))
+        .unwrap_or_else(|e| panic!("not an array of strings: {e}\n{}", stdout(&out)));
+    assert_eq!(paths.first().map(String::as_str), Some("src/retry.rs"));
+    assert!(!paths.iter().any(|p| p.contains(':')), "{paths:?}");
+
+    let help = stdout(&ripsem(&dir.path, &["search", "--help"]));
+    assert!(
+        help.contains("JSON array of the paths"),
+        "the -l help should say what --json prints:\n{help}"
+    );
+}
+
+#[test]
 fn short_help_is_the_summary_and_long_help_carries_the_examples() {
     let dir = TempDir::new();
     for sub in [

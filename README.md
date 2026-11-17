@@ -267,7 +267,8 @@ more results below this; pass --offset 2 to see them
   on a match. Without it a search with no hits still exits 0.
 - `-l, --files-with-matches` lists each file with a hit once, in the order of
   its best hit, instead of the hits. It cannot be combined with
-  `--count-by-file`.
+  `--count-by-file`. With `--json` it prints a JSON array of the paths as
+  strings, not of hits.
 - `-0, --null` ends each path listed by `-l` with a NUL byte instead of a line
   break, so `ripsem search --files-with-matches -0 'retry' | xargs -0 wc -l`
   reads paths with spaces or newlines whole. It needs `-l` and cannot be

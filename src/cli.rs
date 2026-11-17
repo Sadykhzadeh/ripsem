@@ -242,7 +242,8 @@ pub struct SearchOpts {
     quiet: bool,
     /// List each file with a hit once, in the order of its best hit, instead
     /// of the hits. Like `--count-by-file` it reads the top `-k` places.
-    /// Cannot be combined with `--count-by-file` or `--vimgrep`.
+    /// With `--json` it prints a JSON array of the paths, as strings, rather
+    /// than of hits. Cannot be combined with `--count-by-file` or `--vimgrep`.
     #[arg(short = 'l', long, conflicts_with = "count_by_file")]
     files_with_matches: bool,
     /// With `-l`, end each path with a NUL byte instead of a line break, for
