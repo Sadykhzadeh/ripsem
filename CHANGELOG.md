@@ -23,6 +23,8 @@
 - `ripsem similar src/a.rs:abc` says what a line range looks like, `PATH:LINE`
   or `PATH:LINE-LINE`, when the path is not in the index, since the colon was
   read as part of a path.
+- `ripsem similar src` says that `src` is a directory and `similar` takes a
+  file, instead of saying it is not in the index.
 - `ripsem search -l --json` prints a JSON array of the file paths, as strings.
   `--help` now says so, and a test pins the output.
 - The README has an environment variables table: `RIPSEM_HASH_ALL`,

@@ -874,6 +874,10 @@ fn cmd_search(root: &Path, words: &[String], opts: &SearchOpts) -> Result<()> {
 fn cmd_similar(root: &Path, target: &str, opts: &SearchOpts) -> Result<()> {
     let config = load_config(root)?;
     let (raw, lines) = parse_target(target)?;
+    anyhow::ensure!(
+        !config.root.join(from_here(raw, &config.root)).is_dir(),
+        "{raw} is a directory; `similar` takes a file, or a line range in one such as src/auth.rs:40-72"
+    );
     let path = mcp::scope_prefix(&from_here(raw, &config.root), &config.root)?
         .ok_or_else(|| anyhow::anyhow!("'{target}' names no file"))?;
     let text = opts

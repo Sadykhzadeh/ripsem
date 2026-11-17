@@ -1399,6 +1399,7 @@ fn similar_names_its_errors() {
             "src/auth0.rs:abc",
             "a line range is PATH:LINE or PATH:LINE-LINE",
         ),
+        ("src", "is a directory; `similar` takes a file"),
     ] {
         let out = ripsem(&dir.path, &["similar", target]);
         assert_eq!(out.status.code(), Some(1), "{target}: {}", stdout(&out));
