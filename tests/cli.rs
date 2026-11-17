@@ -1543,6 +1543,95 @@ fn status_verify_names_a_file_the_stat_cannot_show() {
     assert!(v["index"].get("changed_on_disk").is_none());
 }
 
+/// Each way a file can differ from its indexed self while the index still
+/// holds the old text: a rewrite that moves lines under the same size and time,
+/// a file that became binary, one deleted, one replaced by a directory, and one
+/// renamed with its content. A search answers from the current file or not at
+/// all, never with the old text, and never panics.
+#[test]
+fn a_search_never_answers_from_text_the_file_no_longer_holds() {
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+    let set_modified = |dir: &TempDir, name: &str| {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.path.join(name))
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+    };
+    let found = |dir: &TempDir, query: &str| -> serde_json::Value {
+        let out = ripsem(&dir.path, &["search", query, "--json"]);
+        assert!(out.status.success(), "{query}: {}", stderr(&out));
+        assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
+        serde_json::from_str(&stdout(&out)).unwrap_or(json!([]))
+    };
+
+    let dir = TempDir::new();
+    dir.write("moved.rs", "fn alpha() {}\nfn bravo() {}\n");
+    dir.write("binary.rs", "fn charlie() {}\n");
+    dir.write("gone.rs", "fn delta() {}\n");
+    dir.write("dir.rs", "fn echo() {}\n");
+    dir.write("renamed.rs", "fn foxtrot() {}\n");
+    for name in ["moved.rs", "binary.rs", "gone.rs", "dir.rs", "renamed.rs"] {
+        set_modified(&dir, name);
+    }
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    dir.write("moved.rs", "fn bravo() {}\nfn alpha() {}\n");
+    set_modified(&dir, "moved.rs");
+    let hits = found(&dir, "bravo");
+    assert_eq!(hits[0]["path"], "moved.rs", "{hits}");
+    assert_eq!(hits[0]["start_line"], 1, "{hits}");
+    assert!(hits[0]["snippet"].as_str().unwrap().starts_with("fn bravo"));
+
+    std::fs::write(
+        dir.path.join("binary.rs"),
+        [0u8, 159, 146, 150, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+    )
+    .unwrap();
+    set_modified(&dir, "binary.rs");
+    assert!(
+        found(&dir, "charlie")
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["path"] != "binary.rs")
+    );
+
+    std::fs::remove_file(dir.path.join("gone.rs")).unwrap();
+    assert!(
+        found(&dir, "delta")
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["path"] != "gone.rs")
+    );
+
+    std::fs::remove_file(dir.path.join("dir.rs")).unwrap();
+    std::fs::create_dir_all(dir.path.join("dir.rs")).unwrap();
+    dir.write("dir.rs/inner.rs", "fn golf() {}\n");
+    assert!(
+        found(&dir, "echo")
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["path"] != "dir.rs")
+    );
+    assert_eq!(found(&dir, "golf")[0]["path"], "dir.rs/inner.rs");
+
+    std::fs::rename(dir.path.join("renamed.rs"), dir.path.join("moved-name.rs")).unwrap();
+    let hits = found(&dir, "foxtrot");
+    assert_eq!(hits[0]["path"], "moved-name.rs", "{hits}");
+    assert!(
+        hits.as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["path"] != "renamed.rs")
+    );
+}
+
 #[test]
 fn a_truncated_index_is_reported_and_rebuilt_without_a_panic() {
     let dir = TempDir::new();
