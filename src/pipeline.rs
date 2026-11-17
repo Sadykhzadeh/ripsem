@@ -10,7 +10,9 @@ use regex::Regex;
 
 use crate::config::Config;
 use crate::fingerprint::FileStat;
-use crate::index::{Index, Record, path_in_scope};
+#[cfg(feature = "treesitter")]
+use crate::index::path_in_scope;
+use crate::index::{Index, Record};
 use crate::lexical::TermHash;
 use crate::scope::Scope;
 use crate::symbol::Declaration;
@@ -1420,6 +1422,7 @@ impl Searcher {
     /// when there are none. Files are read in path order and the calls in
     /// each in source order; the page is the window `offset` to `offset +
     /// limit` of them.
+    #[cfg(feature = "treesitter")]
     pub(crate) fn callers_page(
         &self,
         query: &crate::callers::Query,
@@ -1878,6 +1881,7 @@ pub fn search_answer(
 
 /// The call sites a page of `ripsem callers` shows, and whether another page
 /// follows it.
+#[cfg(feature = "treesitter")]
 pub struct CallPage {
     pub hits: Vec<crate::callers::Found>,
     pub more: bool,
@@ -1887,6 +1891,7 @@ pub struct CallPage {
 /// [`similar_page`] reads the index: built when the repository opted in,
 /// brought up to date, then searched. See [`Searcher::callers_page`] for
 /// `scope` and `prefixes`.
+#[cfg(feature = "treesitter")]
 pub fn callers_page(
     config: &Config,
     query: &crate::callers::Query,

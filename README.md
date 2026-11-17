@@ -374,6 +374,10 @@ matches. Names are not resolved, so `self.load()` and `Self::load()` do not
 match `Index::load`, and a receiver that is a call, as in `a.b().load()`, is
 not narrowed to any type. Find those by the name alone, or with grep.
 
+The MCP server offers the same search as the `find_callers` tool, with a `name`,
+an optional `path`, and the `lang`, `glob`, `limit` and `offset` arguments of
+`search`. Its results come back as structured `calls`.
+
 
 ## Exit codes
 

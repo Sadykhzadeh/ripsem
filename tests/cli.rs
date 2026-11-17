@@ -3519,6 +3519,7 @@ fn a_first_symbol_lookup_outside_a_repository_names_the_index_command() {
 }
 
 /// A repository with calls to `load` in four languages, and a Go `Load`.
+#[cfg(feature = "treesitter")]
 fn repository_with_calls() -> TempDir {
     let dir = TempDir::new();
     dir.write(
@@ -3549,6 +3550,7 @@ fn repository_with_calls() -> TempDir {
 }
 
 #[test]
+#[cfg(feature = "treesitter")]
 fn callers_lists_each_call_with_its_place_in_every_language() {
     let dir = repository_with_calls();
     let vimgrep = ripsem(&dir.path, &["callers", "load", "--vimgrep"]);
@@ -3581,6 +3583,7 @@ fn callers_lists_each_call_with_its_place_in_every_language() {
 }
 
 #[test]
+#[cfg(feature = "treesitter")]
 fn callers_lists_files_counts_and_json_as_search_does() {
     let dir = repository_with_calls();
     let files = stdout(&ripsem(&dir.path, &["callers", "load", "-l"]));
@@ -3609,6 +3612,7 @@ fn callers_lists_files_counts_and_json_as_search_does() {
 }
 
 #[test]
+#[cfg(feature = "treesitter")]
 fn callers_takes_paths_and_reports_nothing_with_the_search_exit_codes() {
     let dir = repository_with_calls();
     let under_src = stdout(&ripsem(&dir.path, &["callers", "load", "src/", "-l"]));
@@ -3624,6 +3628,7 @@ fn callers_takes_paths_and_reports_nothing_with_the_search_exit_codes() {
 }
 
 #[test]
+#[cfg(feature = "treesitter")]
 fn callers_narrows_to_the_qualifier_a_call_was_written_with() {
     let dir = repository_with_calls();
     let qualified = ripsem(&dir.path, &["callers", "store::load", "--vimgrep"]);
@@ -3635,7 +3640,68 @@ fn callers_narrows_to_the_qualifier_a_call_was_written_with() {
     assert_eq!(other.status.code(), Some(1));
 }
 
+/// `find_callers` answers over stdio with the calls as structured content, and
+/// its errors are tool errors in the CLI's words; a score option is unknown.
 #[test]
+#[cfg(feature = "treesitter")]
+fn find_callers_returns_the_calls_over_stdio() {
+    let dir = repository_with_calls();
+    let responses = mcp_over_stdio(
+        &dir.path,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_callers","arguments":{"name":"load","path":"src"}}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"find_callers","arguments":{"name":"Index::"}}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"find_callers","arguments":{"name":"load","min_score":0.5}}}"#,
+        ],
+    );
+    let tool = &responses[0]["result"]["tools"][5];
+    assert_eq!(tool["name"], "find_callers");
+    assert_eq!(tool["annotations"]["readOnlyHint"], true);
+    assert!(tool["outputSchema"].is_object());
+
+    let result = &responses[1]["result"];
+    assert_eq!(result["isError"], false, "{result}");
+    let calls = result["structuredContent"]["calls"].as_array().unwrap();
+    let places: Vec<String> = calls
+        .iter()
+        .map(|c| {
+            let path = c["path"].as_str().unwrap();
+            format!("{path}:{}:{}", c["line"], c["column"])
+        })
+        .collect();
+    assert_eq!(places, ["src/main.rs:2:23", "src/store.rs:5:13"]);
+    assert_eq!(calls[0]["symbol"], "main");
+    assert_eq!(calls[0]["qualifier"], json!(["store"]));
+    assert!(
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("src/main.rs:2:23  fn main")
+    );
+
+    let text = |i: usize| {
+        responses[i]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(responses[2]["result"]["isError"], true);
+    assert!(
+        text(2).contains("'Index::' is not a function name"),
+        "{}",
+        text(2)
+    );
+    assert_eq!(responses[3]["result"]["isError"], true);
+    assert!(
+        text(3).contains("unknown argument 'min_score'"),
+        "{}",
+        text(3)
+    );
+}
+
+#[test]
+#[cfg(feature = "treesitter")]
 fn callers_refuses_a_name_that_is_not_one_and_the_score_options() {
     let dir = repository_with_calls();
     let bad = ripsem(&dir.path, &["callers", "Index::"]);
