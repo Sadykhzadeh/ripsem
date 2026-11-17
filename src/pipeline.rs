@@ -58,7 +58,7 @@ pub fn drift(config: &Config, index: &Index) -> Result<Drift> {
     let indexed = index.file_hashes();
     let rechunk = index.chunking != chunk::Chunking::of(config);
     let started = fingerprint::now();
-    let walked = scan(config, walk::list(config)?, Some(index), started);
+    let walked = scan(config, walk::list(config)?, Some(index), started, &[]);
     // A file the index holds at this hash has chunks, so it is not blank and
     // need not be read again.
     let present: Vec<(String, u64)> = walked
@@ -108,6 +108,9 @@ pub struct SearchHit {
 pub struct Page {
     pub hits: Vec<SearchHit>,
     pub next: Option<f32>,
+    /// Files a hit was left out for because their text on disk is no longer
+    /// the text the index holds.
+    pub stale: Vec<String>,
 }
 
 impl Page {
@@ -161,12 +164,12 @@ const UNRELATED: [&str; 12] = [
 const NOISE_DRIFT: usize = 10;
 
 pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
-    index_and_keep(config, force).map(|(stats, _)| stats)
+    index_and_keep(config, force, &[]).map(|(stats, _)| stats)
 }
 
 /// [`index_repo`] for a process that exits soon after, such as `ripsem index`.
 pub fn index_repo_once(config: &Config, force: bool) -> Result<IndexStats> {
-    index_and_keep(config, force).map(|(stats, index)| {
+    index_and_keep(config, force, &[]).map(|(stats, index)| {
         leave_to_exit(index);
         stats
     })
@@ -182,8 +185,13 @@ fn leave_to_exit<T>(value: T) {
 /// Like [`index_repo`], and also hands back the index as it now stands on
 /// disk, so a search that refreshed first does not read and decode it again.
 /// `None` when the records in memory are not in the order the file holds them,
-/// which an ANN graph built over that file depends on.
-fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<Index>)> {
+/// which an ANN graph built over that file depends on. The files in `rehash`
+/// are read again whatever their stat says.
+fn index_and_keep(
+    config: &Config,
+    force: bool,
+    rehash: &[String],
+) -> Result<(IndexStats, Option<Index>)> {
     // Loaded on the first chunk that needs a vector: a reindex that finds
     // nothing changed, or only files removed, never needs the model.
     let mut embedder: Option<Box<dyn embed::Embedder>> = None;
@@ -198,7 +206,7 @@ fn index_and_keep(config: &Config, force: bool) -> Result<(IndexStats, Option<In
         },
     );
     let chunking = chunk::Chunking::of(config);
-    let Walked { files, mut empties } = scan(config, listed?, prev.as_ref(), started);
+    let Walked { files, mut empties } = scan(config, listed?, prev.as_ref(), started, rehash);
     if let Some(index) = &mut prev
         && index.dims == dims
         && index.built_for(config.backend, &config.model)
@@ -460,13 +468,15 @@ struct Walked {
 }
 
 /// Hashes the listed files, except those the previous index already knows at
-/// the stat they have now: those take the hash it stored and are not opened.
-/// `started` is when the walk began, which decides what stat is safe to store.
+/// the stat they have now: those take the hash it stored and are not opened,
+/// unless they are in `rehash`. `started` is when the walk began, which decides
+/// what stat is safe to store.
 fn scan(
     config: &Config,
     listed: Vec<(std::path::PathBuf, FileStat)>,
     prev: Option<&Index>,
     started: i64,
+    rehash: &[String],
 ) -> Walked {
     let chunking = chunk::Chunking::of(config);
     let usable = prev.filter(|index| {
@@ -502,13 +512,16 @@ fn scan(
         .into_par_iter()
         .map_init(Vec::new, |buffer, (path, stat)| {
             let rel = relative(&config.root, &path);
+            let reread = rehash.contains(&rel);
             if let Some(&(hash, stored)) = known.get(rel.as_str())
                 && stored.trusts(&stat)
+                && !reread
             {
                 return Some(Ok((path, hash, stored)));
             }
             if let Some(&(hash, stored)) = barren.get(rel.as_str())
                 && stored.trusts(&stat)
+                && !reread
             {
                 return Some(Err((rel, hash, stored)));
             }
@@ -607,6 +620,51 @@ fn refresh_stats(config: &Config, files: &[Hashed], index: &mut Index) {
             file.iter_mut().for_each(|record| record.stat = stat);
         }
     }
+}
+
+/// The bytes of the indexed file `path` under `root`, when they still hash to
+/// `hash`. The index is data on disk, and a repository can ship one: a path
+/// that leaves the root is not a file this index could have been built from.
+fn bytes_matching(root: &Path, path: &str, hash: u64) -> Option<Vec<u8>> {
+    let inside = Path::new(path)
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !inside {
+        return None;
+    }
+    let bytes = std::fs::read(root.join(path)).ok()?;
+    (fingerprint::content_hash(&bytes) == hash).then_some(bytes)
+}
+
+/// The indexed files whose content on disk is not the content the index holds,
+/// found by reading and hashing each one rather than by its stat. A file that
+/// is gone counts as changed.
+pub fn changed_on_disk(config: &Config, index: &Index) -> Vec<String> {
+    let files: Vec<(&str, u64)> = index
+        .records
+        .chunk_by(|a, b| a.path == b.path)
+        .map(|file| (file[0].path.as_str(), file[0].file_hash))
+        .collect();
+    files
+        .par_iter()
+        .filter(|(path, hash)| bytes_matching(&config.root, path, *hash).is_none())
+        .map(|(path, _)| path.to_string())
+        .collect()
+}
+
+/// Adds `path` to a list of stale files, once.
+fn add_stale(stale: &mut Vec<String>, path: &str) {
+    if !stale.iter().any(|p| p == path) {
+        stale.push(path.to_string());
+    }
+}
+
+/// `page` with the files in `stale` added to the ones it names.
+fn with_stale(mut page: Page, stale: Vec<String>) -> Page {
+    for path in stale {
+        add_stale(&mut page.stale, &path);
+    }
+    page
 }
 
 /// Each file's path once, in the order its first record appears.
@@ -1062,10 +1120,14 @@ impl Searcher {
         let k = wanted.saturating_add(SPARE_HITS);
 
         let mut hits = self.ranked(&qv, &terms, &names, k, scope);
+        let mut stale = Vec::new();
         if let Some(text) = text {
-            hits = self.matching(hits, text, end.saturating_add(SPARE_HITS));
+            (hits, stale) = self.matching(hits, text, end.saturating_add(SPARE_HITS));
         }
-        Ok(self.places(hits, &names, &words, offset, end))
+        Ok(with_stale(
+            self.places(hits, &names, &words, offset, end),
+            stale,
+        ))
     }
 
     /// The page of places nearest to the code at `target`. The chunks the
@@ -1147,10 +1209,11 @@ impl Searcher {
             |r| r.path.as_str() == target.path && covered(r),
             scope,
         );
+        let mut stale = Vec::new();
         if let Some(text) = text {
-            hits = self.matching(hits, text, end.saturating_add(SPARE_HITS));
+            (hits, stale) = self.matching(hits, text, end.saturating_add(SPARE_HITS));
         }
-        Ok(self.places(hits, &[], &[], offset, end))
+        Ok(with_stale(self.places(hits, &[], &[], offset, end), stale))
     }
 
     /// The best `k` places for a query embedded as `qv`, through the
@@ -1208,6 +1271,8 @@ impl Searcher {
         let mut out: Vec<SearchHit> = Vec::with_capacity(end.min(hits.len()));
         let mut wider: Vec<(String, usize, usize)> = Vec::new();
         let mut next = None;
+        let mut stale: Vec<String> = Vec::new();
+        let mut checked: HashMap<&str, bool> = HashMap::new();
         for h in hits {
             let record = &self.index.records[h.record_idx];
             let covered = wider.iter().any(|(path, start, end)| {
@@ -1221,6 +1286,13 @@ impl Searcher {
             if out.len() == end {
                 next = Some(h.score);
                 break;
+            }
+            let current = *checked
+                .entry(record.path.as_str())
+                .or_insert_with(|| self.indexed_bytes(record).is_some());
+            if !current {
+                add_stale(&mut stale, record.path.as_str());
+                continue;
             }
             let mut hit = self.hit(h.record_idx, h.score, names);
             if hit.end_line > record.end_line {
@@ -1239,7 +1311,11 @@ impl Searcher {
             out.push(hit);
         }
         out.drain(..skip.min(out.len()));
-        Page { hits: out, next }
+        Page {
+            hits: out,
+            next,
+            stale,
+        }
     }
 
     /// The first hits are shown as their code, up to [`FULL_LINES`]: whoever
@@ -1351,31 +1427,23 @@ impl Searcher {
     /// The file a record was cut from, as it was indexed; `None` when it was
     /// changed since or cannot be read.
     fn indexed_bytes(&self, record: &Record) -> Option<Vec<u8>> {
-        // The index is data on disk, and a repository can ship one: a path that
-        // leaves the root is not a file this index could have been built from.
-        let inside = Path::new(record.path.as_str())
-            .components()
-            .all(|c| matches!(c, std::path::Component::Normal(_)));
-        if !inside {
-            return None;
-        }
-        let bytes = std::fs::read(self.root.join(record.path.as_str())).ok()?;
-        (fingerprint::content_hash(&bytes) == record.file_hash).then_some(bytes)
+        bytes_matching(&self.root, &record.path, record.file_hash)
     }
 
     /// The hits, in their order, whose chunk the pattern matches, up to
-    /// `needed` of them. Chunk text is not held in memory, only a snippet of
-    /// it, so each is read from its file, which is read once however many
-    /// chunks it has. A chunk whose file changed since the index was built is
-    /// matched on its snippet instead.
+    /// `needed` of them, and the files that changed since the index was built.
+    /// Chunk text is not held in memory, only a snippet of it, so each is read
+    /// from its file, which is read once however many chunks it has. A chunk
+    /// whose file changed is matched on its snippet instead.
     fn matching(
         &self,
         hits: Vec<crate::index::Hit>,
         text: &Regex,
         needed: usize,
-    ) -> Vec<crate::index::Hit> {
+    ) -> (Vec<crate::index::Hit>, Vec<String>) {
         let mut files: HashMap<&str, Option<Vec<u8>>> = HashMap::new();
         let mut kept = Vec::new();
+        let mut stale = Vec::new();
         for h in hits {
             if kept.len() == needed {
                 break;
@@ -1394,13 +1462,16 @@ impl Searcher {
                         .collect();
                     text.is_match(&lines.join("\n"))
                 }
-                None => text.is_match(&record.snippet),
+                None => {
+                    add_stale(&mut stale, record.path.as_str());
+                    text.is_match(&record.snippet)
+                }
             };
             if found {
                 kept.push(h);
             }
         }
-        kept
+        (kept, stale)
     }
 
     /// Lines of an indexed file as they were indexed. A file changed since then
@@ -1467,24 +1538,53 @@ pub fn search_page(
     let mut current = None;
     if config.index_path().exists() {
         embedder.warm();
-        current = refresh(config);
+        current = refresh(config, &[]);
     }
-    let searcher = match current {
-        Some(index) => {
-            let mtime = file_mtime(&config.index_path());
-            searcher_over(config, index, Arc::clone(&embedder), mtime)
-        }
-        None => open_with(config, Arc::clone(&embedder)),
-    };
-    let found = searcher.and_then(|searcher| {
-        let found = searcher.query_page(query, limit, offset, scope, text);
-        leave_to_exit(searcher.index);
-        found
-    });
+    let mut found = answer(
+        config, &embedder, current, query, limit, offset, scope, text,
+    );
+    // A file rewritten with the size and time it had is not seen by the stat
+    // check. Its hits were left out, so its files are read again and the query
+    // is answered once more from the index as it now stands.
+    if let Ok(page) = &found
+        && !page.stale.is_empty()
+    {
+        let stale = page.stale.clone();
+        let current = refresh(config, &stale);
+        found = answer(
+            config, &embedder, current, query, limit, offset, scope, text,
+        );
+    }
     if found.is_err() {
         embedder.settle();
     }
     found
+}
+
+/// Answers a query from `current`, or from the index file when there is none.
+#[allow(clippy::too_many_arguments)]
+fn answer(
+    config: &Config,
+    embedder: &Arc<LazyEmbedder>,
+    current: Option<Index>,
+    query: &str,
+    limit: usize,
+    offset: usize,
+    scope: Option<&Scope>,
+    text: Option<&Regex>,
+) -> Result<Page> {
+    let searcher = match current {
+        Some(index) => {
+            let mtime = file_mtime(&config.index_path());
+            searcher_over(config, index, Arc::clone(embedder), mtime)
+        }
+        None => open_with(config, Arc::clone(embedder)),
+    };
+    searcher.and_then(|searcher| {
+        let found = searcher.query_page(query, limit, offset, scope, text);
+        leave_to_exit(searcher.index);
+        found
+    })
 }
 
 /// Code already in the index that `similar` looks for neighbours of: a file, or
@@ -1509,7 +1609,7 @@ pub fn similar_page(
         anyhow::bail!("no index yet; run `ripsem index` in this directory first");
     }
     let embedder = Arc::new(LazyEmbedder::new(config));
-    let searcher = match refresh(config) {
+    let searcher = match refresh(config, &[]) {
         Some(index) => searcher_over(config, index, embedder, file_mtime(&config.index_path())),
         None => open_with(config, embedder),
     }?;
@@ -1523,9 +1623,9 @@ pub fn similar_page(
 /// nothing changed this only walks the tree and reads the files whose size or
 /// time moved. A failure, such as a read-only checkout, leaves the search to
 /// the index as it is. Returns the index it ended with, when it has one that
-/// matches the file.
-fn refresh(config: &Config) -> Option<Index> {
-    match index_and_keep(config, false) {
+/// matches the file. The files in `rehash` are read whatever their stat.
+fn refresh(config: &Config, rehash: &[String]) -> Option<Index> {
+    match index_and_keep(config, false, rehash) {
         Ok((stats, index)) => {
             if stats.embedded > 0 {
                 eprintln!(
@@ -1545,10 +1645,31 @@ fn refresh(config: &Config) -> Option<Index> {
 /// Display `path` relative to `root` with forward slashes, matching the
 /// repo-relative paths the index and search output use.
 pub(crate) fn relative(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
+    below(root, path)
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+/// [`Path::strip_prefix`], answered from the text of the two paths when it can
+/// be: a walk asks this for every file, and comparing components costs far more
+/// than matching bytes. The text is trusted only when the remainder has no empty
+/// or `.` part, since those are the only spellings the components normalise
+/// away. Everything else goes to `strip_prefix`.
+fn below<'a>(root: &Path, path: &'a Path) -> Option<&'a Path> {
+    text_below(root, path).or_else(|| path.strip_prefix(root).ok())
+}
+
+fn text_below<'a>(root: &Path, path: &'a Path) -> Option<&'a Path> {
+    let sep = std::path::MAIN_SEPARATOR;
+    let (root_text, path_text) = (root.to_str()?, path.to_str()?);
+    if root_text.is_empty() || root_text.ends_with(sep) {
+        return None;
+    }
+    let rest = path_text.strip_prefix(root_text)?.strip_prefix(sep)?;
+    rest.split(sep)
+        .all(|part| !part.is_empty() && part != ".")
+        .then(|| Path::new(rest))
 }
 
 /// Strips the indentation every line shares, so a method deep inside a class
@@ -1947,15 +2068,15 @@ mod tests {
                 .unwrap()
         };
 
-        let (_, built) = index_and_keep(&config, false).unwrap();
+        let (_, built) = index_and_keep(&config, false, &[]).unwrap();
         assert_eq!(built.unwrap().encode_body().unwrap(), on_disk());
 
-        let (stats, kept) = index_and_keep(&config, false).unwrap();
+        let (stats, kept) = index_and_keep(&config, false, &[]).unwrap();
         assert_eq!(stats.embedded, 0);
         assert_eq!(kept.unwrap().encode_body().unwrap(), on_disk());
 
         dir.write("b.rs", "fn beta() { gamma() }\n");
-        let (stats, updated) = index_and_keep(&config, false).unwrap();
+        let (stats, updated) = index_and_keep(&config, false, &[]).unwrap();
         assert_eq!(stats.embedded, 1);
         assert_eq!(updated.unwrap().encode_body().unwrap(), on_disk());
     }
@@ -2122,6 +2243,41 @@ mod tests {
         assert_eq!(relative(Path::new("a"), Path::new("a/b\\c")), "b/c");
         // Outside the root: returned as it is.
         assert_eq!(relative(root, Path::new("/other/x.rs")), "/other/x.rs");
+    }
+
+    /// The text shortcut must give what `strip_prefix` gives, including for the
+    /// spellings it leaves to `strip_prefix`.
+    #[test]
+    fn relative_agrees_with_strip_prefix() {
+        let roots = ["/repo", "/repo/", "/repo/sub", "", "repo", "/re"];
+        let paths = [
+            "/repo/src/main.rs",
+            "/repo/./x.rs",
+            "/repo//x.rs",
+            "/repo/x/./y.rs",
+            "/repo/x/",
+            "/repo",
+            "/repo/",
+            "/repository/x.rs",
+            "/repo/src/../x.rs",
+            "/other/x.rs",
+            "repo/src/lib.rs",
+            "repo/a\\b.rs",
+        ];
+        for root in roots {
+            for path in paths {
+                let expected = Path::new(path)
+                    .strip_prefix(root)
+                    .unwrap_or(Path::new(path))
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                assert_eq!(
+                    relative(Path::new(root), Path::new(path)),
+                    expected,
+                    "{root} {path}"
+                );
+            }
+        }
     }
 
     #[test]

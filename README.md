@@ -177,6 +177,7 @@ ripsem search "where is auth set up?"   # updates the index first
 ripsem similar src/auth.rs:40-72  # the code nearest to a location, no model run
 ripsem status                     # index size, counts, model, drift from the tree
 ripsem status --json              # the same as JSON (schema ripsem/status/v1)
+ripsem status --verify            # also read every indexed file and list the ones that changed
 ripsem watch                      # keep the index in sync as files change
 ```
 
@@ -238,9 +239,9 @@ more results below this; pass --offset 2 to see them
   from the current directory, as in the shell: in `src`, `--in auth` means
   `src/auth` and `--in .` means `src`. An absolute path into the repository
   works too.
-- `--lang <LANG>` keeps only hits in files of that language, by name or by
-  extension: `--lang rust`, `--lang py`, `--lang toml`. Repeat the flag or
-  separate values with commas for several: `--lang rust,toml`.
+- `-t, --lang <LANG>` (also `--type`) keeps only hits in files of that language,
+  by name or by extension: `--lang rust`, `-t py`, `--lang toml`. Repeat the flag
+  or separate values with commas for several: `--lang rust,toml`.
 - `-g, --glob <GLOB>` keeps only hits whose path matches, as ripgrep's `-g`
   does, and a leading `!` leaves matching paths out: `-g '*.rs' -g
   '!*_test.rs'`. A directory counts for the files inside it, so
@@ -260,7 +261,7 @@ more results below this; pass --offset 2 to see them
   the whole snippet when the output goes to another program; `0` prints just
   the locations).
 - `--min-score <SCORE>` keeps only strong matches, in both human and JSON output.
-- `--count-by-file` prints hit counts per file instead of the hits.
+- `-c, --count-by-file` prints hit counts per file instead of the hits.
 - `-q, --quiet` prints nothing and sets the exit status: 0 when a hit is left
   after the filters and `--min-score`, 1 when none is, so a script can branch
   on a match. Without it a search with no hits still exits 0.
@@ -300,6 +301,16 @@ is about rather than as its single best chunk. It takes the options of
 `search` and refreshes the index first, as `search` does; an unknown path, a
 line past the end of the file and a range that holds no indexed code are
 errors.
+
+## Exit codes
+
+- `0`: the command ran. A search with no hits also exits 0, unless `-q` is
+  given.
+- `1`: the command failed while running, such as a missing index, a regex or
+  glob that does not parse, or a path outside the repository. A `-q` search
+  with no hit left also exits 1.
+- `2`: the command line was not accepted, such as an unknown flag or a value
+  out of range. The usage message goes to stderr.
 
 ## Models
 
@@ -355,6 +366,10 @@ ripsem install codex              # .codex/config.toml and a note in AGENTS.md
 `install` registers the server, writes `.ripsem/config.toml`, and adds a short
 note that tells the agent to reach for `search` before grepping. Restart the
 agent in the directory and it can call `search` directly.
+
+Running `install` again changes nothing. An agent config that is not plain JSON
+(or TOML for Codex) is left as it is, comments and trailing commas included, and
+the command names the file to fix before it is run again.
 
 The server sends the same note as its MCP instructions. Claude Code loads the
 descriptions of MCP tools only when the model looks a tool up, so the model
@@ -522,8 +537,15 @@ drifted.
 are what they were when it was indexed is not read again, by `index`, `search`,
 `watch`, the MCP server or `status`, so a file rewritten with different
 contents, the same size and the same modification time is not seen as changed.
-Set `RIPSEM_HASH_ALL=1` for a run (`RIPSEM_HASH_ALL=1 ripsem status` shows what
-is out of date) or run `ripsem index --force` to read every file.
+`search` does not print the old text of such a file: before it prints a hit, it
+checks the file's hash against the index, and when they differ it reads that
+file again and searches once more. The MCP server leaves such hits out without
+reading the file, until a `ripsem search` or `ripsem index --force` run reads
+it. Set `RIPSEM_HASH_ALL=1` for a run (`RIPSEM_HASH_ALL=1 ripsem status` shows
+what is out of date) or run `ripsem index --force` to read every file.
+`ripsem status --verify` reads the indexed files and lists the ones whose
+content differs from the index, the same-size rewrites included; a file that is
+gone is listed too.
 
 **Search says the index was built with another model.** The config names a
 different model or backend than the index. `ripsem index` rebuilds it for the

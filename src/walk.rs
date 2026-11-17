@@ -192,8 +192,31 @@ fn walk_files(config: &Config, patterns: bool, max_bytes: u64) -> Result<Vec<(Pa
     drop(sender);
     // Threads finish in any order; the index lists files in one.
     let mut candidates: Vec<(PathBuf, FileStat)> = receiver.into_iter().collect();
-    candidates.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    sort_by_path(&mut candidates);
     Ok(candidates)
+}
+
+/// Orders files the way `Path`'s own ordering does, component by component, so
+/// the index keeps listing them in the same order. On Unix the bytes of a path
+/// give that order once its separator is read as the lowest byte: `a-b` comes
+/// before `a/b` as bytes, but `a` is the shorter component, so `a/b` comes
+/// first. Each key is built once per file, not once per comparison, which costs
+/// far less than walking the components on every comparison.
+#[cfg(unix)]
+fn sort_by_path(files: &mut [(PathBuf, FileStat)]) {
+    use std::os::unix::ffi::OsStrExt;
+    files.sort_by_cached_key(|(path, _)| {
+        path.as_os_str()
+            .as_bytes()
+            .iter()
+            .map(|&byte| if byte == b'/' { 0 } else { byte })
+            .collect::<Vec<u8>>()
+    });
+}
+
+#[cfg(not(unix))]
+fn sort_by_path(files: &mut [(PathBuf, FileStat)]) {
+    files.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 }
 
 fn builder(config: &Config, patterns: bool) -> Result<WalkBuilder> {
@@ -490,6 +513,29 @@ mod tests {
         sorted.sort();
         assert_eq!(collected, sorted);
         assert_eq!(collected.len(), 6);
+    }
+
+    /// Names whose bytes and components order differently: `a-b` sorts before
+    /// `a/b` as bytes, but after `a` as a component.
+    #[cfg(unix)]
+    #[test]
+    fn sort_order_is_the_component_order_of_paths() {
+        let names = [
+            "a-b", "a/b", "a/b/c", "a/bc", "a.b/x", "a/x", "a", "a b/z", "ab", "a/b-c", "a0", "a/0",
+        ];
+        let mut files: Vec<(PathBuf, FileStat)> = names
+            .iter()
+            .rev()
+            .map(|n| (PathBuf::from(format!("/r/{n}")), FileStat::UNKNOWN))
+            .collect();
+        sort_by_path(&mut files);
+        let mut expected: Vec<PathBuf> = names
+            .iter()
+            .map(|n| PathBuf::from(format!("/r/{n}")))
+            .collect();
+        expected.sort();
+        let sorted: Vec<PathBuf> = files.into_iter().map(|(path, _)| path).collect();
+        assert_eq!(sorted, expected);
     }
 
     #[test]

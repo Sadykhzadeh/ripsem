@@ -596,6 +596,98 @@ fn a_language_naming_nothing_is_an_error() {
 }
 
 #[test]
+fn exit_codes_are_0_for_a_run_1_for_a_failure_and_2_for_bad_usage() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn login() { verify password }");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+
+    let hits = ripsem(&dir.path, &["search", "verify password"]);
+    assert_eq!(hits.status.code(), Some(0), "{}", stderr(&hits));
+
+    let no_hit = ripsem(
+        &dir.path,
+        &["search", "verify password", "-e", "nomatchxyz"],
+    );
+    assert_eq!(no_hit.status.code(), Some(0), "{}", stderr(&no_hit));
+    let quiet_no_hit = ripsem(
+        &dir.path,
+        &["search", "verify password", "-e", "nomatchxyz", "-q"],
+    );
+    assert_eq!(quiet_no_hit.status.code(), Some(1));
+
+    let bad_regex = ripsem(&dir.path, &["search", "verify", "-e", "("]);
+    assert_eq!(bad_regex.status.code(), Some(1), "{}", stderr(&bad_regex));
+
+    let bad_flag = ripsem(&dir.path, &["search", "verify", "--nope"]);
+    assert_eq!(bad_flag.status.code(), Some(2), "{}", stderr(&bad_flag));
+}
+
+#[test]
+fn help_has_examples_for_search_and_short_summaries_at_the_top() {
+    let dir = TempDir::new();
+    let search = stdout(&ripsem(&dir.path, &["search", "--help"]));
+    assert!(search.contains("Examples:"), "{search}");
+    assert!(
+        search.contains("ripsem search retry on failure -k 5"),
+        "{search}"
+    );
+
+    let top = stdout(&ripsem(&dir.path, &["--help"]));
+    let similar = top
+        .lines()
+        .find(|line| line.trim_start().starts_with("similar"))
+        .unwrap();
+    assert!(similar.len() <= 100, "{similar}");
+}
+
+#[test]
+fn install_takes_opencode_by_the_name_the_docs_use() {
+    let dir = TempDir::new();
+    let out = ripsem(&dir.path, &["install", "opencode"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(dir.path.join("opencode.json").exists());
+
+    let old = ripsem(&dir.path, &["install", "open-code"]);
+    assert!(old.status.success(), "{}", stderr(&old));
+}
+
+#[test]
+fn ripgrep_short_flags_for_count_and_type_are_accepted() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn login() { verify password }");
+    dir.write("src/auth.py", "def login(): verify password");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+
+    let long = stdout(&ripsem(
+        &dir.path,
+        &[
+            "search",
+            "verify password",
+            "--count-by-file",
+            "--context",
+            "0",
+        ],
+    ));
+    let short = ripsem(
+        &dir.path,
+        &["search", "verify password", "-c", "--context", "0"],
+    );
+    assert!(short.status.success(), "{}", stderr(&short));
+    assert_eq!(stdout(&short), long);
+    assert!(!long.trim().is_empty());
+
+    let typed = ripsem(
+        &dir.path,
+        &["search", "verify password", "-t", "rust", "--context", "0"],
+    );
+    assert_eq!(found_paths(&typed), ["src/auth.rs"]);
+}
+
+#[test]
 fn a_glob_limits_a_search_to_matching_paths() {
     let dir = TempDir::new();
     dir.write("src/auth.rs", "fn login() { verify password }");
@@ -1155,6 +1247,11 @@ fn since_limits_a_search_to_the_files_changed_since_a_revision() {
         "{}",
         stderr(&outside)
     );
+    assert!(
+        !stderr(&outside).contains("fatal:"),
+        "git's own message should not be repeated: {}",
+        stderr(&outside)
+    );
 }
 
 #[test]
@@ -1436,6 +1533,200 @@ fn every_file_is_hashed_when_asked_and_not_otherwise() {
     );
     let found = ripsem(&dir.path, &["search", "sigma echo", "--json", "-k", "1"]);
     assert!(stdout(&found).contains("b.rs"), "{}", stdout(&found));
+}
+
+/// A file rewritten with the size and the time it had keeps its old text in
+/// the index, and a search must not print that text as the file's contents.
+#[test]
+fn a_same_size_rewrite_does_not_print_its_old_text() {
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+    let set_modified = |dir: &TempDir| {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.path.join("a.rs"))
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+    };
+
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie");
+    set_modified(&dir);
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    dir.write("a.rs", "omega bravo charlie");
+    set_modified(&dir);
+    let old = ripsem(&dir.path, &["search", "alpha bravo", "--json"]);
+    assert!(
+        !stdout(&old).contains("alpha bravo charlie"),
+        "{}",
+        stdout(&old)
+    );
+    let new = ripsem(&dir.path, &["search", "omega bravo", "--json", "-k", "1"]);
+    assert!(
+        stdout(&new).contains("omega bravo charlie"),
+        "{}",
+        stdout(&new)
+    );
+}
+
+/// `status --verify` reads the indexed files and names the one whose content
+/// changed under the same size and time, which the stat check cannot see. Plain
+/// `status` still judges the tree by stat, and the JSON gains the list only
+/// when asked for it.
+#[test]
+fn status_verify_names_a_file_the_stat_cannot_show() {
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+    let set_modified = |dir: &TempDir, name: &str| {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.path.join(name))
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+    };
+    let listed = |output: &Output| -> Vec<String> {
+        stdout(output)
+            .lines()
+            .filter_map(|l| l.strip_prefix("  "))
+            .map(String::from)
+            .collect()
+    };
+
+    let dir = TempDir::new();
+    dir.write("a.rs", "alpha bravo charlie");
+    dir.write("b.rs", "delta echo foxtrot");
+    set_modified(&dir, "a.rs");
+    set_modified(&dir, "b.rs");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let clean = ripsem(&dir.path, &["status", "--verify"]);
+    assert!(clean.status.success());
+    assert!(
+        stdout(&clean).contains("every indexed file matches"),
+        "{}",
+        stdout(&clean)
+    );
+
+    dir.write("a.rs", "omega bravo charlie");
+    set_modified(&dir, "a.rs");
+    let plain = ripsem(&dir.path, &["status"]);
+    assert!(plain.status.success());
+    assert!(
+        stdout(&plain).contains("tree:   matches the index"),
+        "{}",
+        stdout(&plain)
+    );
+    assert!(!stdout(&plain).contains("verify:"));
+
+    let verified = ripsem(&dir.path, &["status", "--verify"]);
+    assert!(verified.status.success());
+    assert!(
+        stdout(&verified).contains("verify: 1 file changed on disk"),
+        "{}",
+        stdout(&verified)
+    );
+    assert_eq!(listed(&verified), ["a.rs"], "{}", stdout(&verified));
+
+    let json = ripsem(&dir.path, &["status", "--verify", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&json)).unwrap();
+    assert_eq!(v["index"]["changed_on_disk"], json!(["a.rs"]));
+    let plain_json = ripsem(&dir.path, &["status", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&plain_json)).unwrap();
+    assert!(v["index"].get("changed_on_disk").is_none());
+}
+
+/// Each way a file can differ from its indexed self while the index still
+/// holds the old text: a rewrite that moves lines under the same size and time,
+/// a file that became binary, one deleted, one replaced by a directory, and one
+/// renamed with its content. A search answers from the current file or not at
+/// all, never with the old text, and never panics.
+#[test]
+fn a_search_never_answers_from_text_the_file_no_longer_holds() {
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+    let set_modified = |dir: &TempDir, name: &str| {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.path.join(name))
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+    };
+    let found = |dir: &TempDir, query: &str| -> serde_json::Value {
+        let out = ripsem(&dir.path, &["search", query, "--json"]);
+        assert!(out.status.success(), "{query}: {}", stderr(&out));
+        assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
+        serde_json::from_str(&stdout(&out)).unwrap_or(json!([]))
+    };
+
+    let dir = TempDir::new();
+    dir.write("moved.rs", "fn alpha() {}\nfn bravo() {}\n");
+    dir.write("binary.rs", "fn charlie() {}\n");
+    dir.write("gone.rs", "fn delta() {}\n");
+    dir.write("dir.rs", "fn echo() {}\n");
+    dir.write("renamed.rs", "fn foxtrot() {}\n");
+    for name in ["moved.rs", "binary.rs", "gone.rs", "dir.rs", "renamed.rs"] {
+        set_modified(&dir, name);
+    }
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    dir.write("moved.rs", "fn bravo() {}\nfn alpha() {}\n");
+    set_modified(&dir, "moved.rs");
+    let hits = found(&dir, "bravo");
+    assert_eq!(hits[0]["path"], "moved.rs", "{hits}");
+    assert_eq!(hits[0]["start_line"], 1, "{hits}");
+    assert!(hits[0]["snippet"].as_str().unwrap().starts_with("fn bravo"));
+
+    std::fs::write(
+        dir.path.join("binary.rs"),
+        [0u8, 159, 146, 150, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+    )
+    .unwrap();
+    set_modified(&dir, "binary.rs");
+    assert!(
+        found(&dir, "charlie")
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["path"] != "binary.rs")
+    );
+
+    std::fs::remove_file(dir.path.join("gone.rs")).unwrap();
+    assert!(
+        found(&dir, "delta")
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["path"] != "gone.rs")
+    );
+
+    std::fs::remove_file(dir.path.join("dir.rs")).unwrap();
+    std::fs::create_dir_all(dir.path.join("dir.rs")).unwrap();
+    dir.write("dir.rs/inner.rs", "fn golf() {}\n");
+    assert!(
+        found(&dir, "echo")
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["path"] != "dir.rs")
+    );
+    assert_eq!(found(&dir, "golf")[0]["path"], "dir.rs/inner.rs");
+
+    std::fs::rename(dir.path.join("renamed.rs"), dir.path.join("moved-name.rs")).unwrap();
+    let hits = found(&dir, "foxtrot");
+    assert_eq!(hits[0]["path"], "moved-name.rs", "{hits}");
+    assert!(
+        hits.as_array()
+            .unwrap()
+            .iter()
+            .all(|h| h["path"] != "renamed.rs")
+    );
 }
 
 #[test]

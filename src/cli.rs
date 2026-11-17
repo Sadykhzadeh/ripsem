@@ -84,6 +84,13 @@ pub enum Command {
         dry_run: bool,
     },
     /// Find code by an identifier, an error message or a description.
+    #[command(after_help = "Examples:
+  ripsem search where is auth set up
+  ripsem search retry on failure -k 5 --lang rust
+  ripsem search verify_password -l -0 | xargs -0 wc -l
+  ripsem search -e 'backoff|jitter' retry on failure
+  ripsem search --since main 'retry on failure'
+  echo 'parse_header' | ripsem search - --context 0")]
     Search {
         /// What to look for, in any of those shapes. Several words need no
         /// quotes: `ripsem search where is auth set up` is one query. `-`, or
@@ -94,9 +101,10 @@ pub enum Command {
         #[command(flatten)]
         opts: SearchOpts,
     },
-    /// Find the code nearest to a location already in the index, such as
-    /// `src/auth.rs:40-72`, or a whole file. It uses the stored vectors, so no
-    /// model runs.
+    /// Find the code nearest to a location already in the index.
+    ///
+    /// Takes `src/auth.rs:40-72`, a single line such as `src/auth.rs:40`, or a
+    /// bare path for the whole file. It uses the stored vectors, so no model runs.
     Similar {
         /// `path`, `path:LINE` or `path:START-END`, relative to the current
         /// directory. The lines are 1-based.
@@ -113,6 +121,10 @@ pub enum Command {
         /// exists, is stale, or needs rebuilding.
         #[arg(long)]
         json: bool,
+        /// Read every indexed file and list the ones whose content no longer
+        /// matches the index, including a rewrite that kept its size and time.
+        #[arg(long)]
+        verify: bool,
     },
     /// Run the MCP server over stdio.
     Mcp,
@@ -157,7 +169,7 @@ pub struct SearchOpts {
     /// Keep only hits in files of this language, by name or extension:
     /// `--lang rust`, `--lang py`, `--lang toml`. Repeat the flag or
     /// separate values with commas for several.
-    #[arg(long, value_name = "LANG")]
+    #[arg(short = 't', long, alias = "type", value_name = "LANG")]
     lang: Vec<String>,
     /// Keep only hits whose path matches this glob, as with ripgrep's
     /// `-g`; a leading `!` leaves matching paths out. `-g '*.rs' -g
@@ -190,7 +202,7 @@ pub struct SearchOpts {
     /// instead of listing each hit. Aggregates the top-`k` matches, so pair
     /// it with a larger `-k` for a wider view. Honoured by `--json` too.
     /// Cannot be combined with `-l` or `--vimgrep`.
-    #[arg(long)]
+    #[arg(short = 'c', long)]
     count_by_file: bool,
     /// Print nothing. The exit status says whether a hit is left after the
     /// filters and `--min-score`: 0 when one is, 1 when none is, so a
@@ -270,6 +282,7 @@ pub enum InstallCmd {
     /// Add ripsem to .gemini/settings.json for Gemini CLI.
     Gemini,
     /// Add ripsem to opencode.json for OpenCode.
+    #[command(name = "opencode", alias = "open-code")]
     OpenCode,
     /// Add ripsem to .codex/config.toml for Codex CLI.
     Codex,
@@ -298,7 +311,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Search { query, opts } => cmd_search(&root, &query, &opts),
         Command::Similar { target, opts } => cmd_similar(&root, &target, &opts),
         Command::Watch => watch::run(load_config(&root)?),
-        Command::Status { json } => cmd_status(&root, json),
+        Command::Status { json, verify } => cmd_status(&root, json, verify),
         Command::Mcp => mcp::serve(load_config(&root)?, cli.path.is_some()),
         Command::Model { action } => cmd_model(&root, action),
         Command::Install { target } => cmd_install(&root, target),
@@ -356,6 +369,9 @@ struct IndexFacts {
     written: Option<u64>,
     /// `None` when the tree could not be walked to compare against.
     drift: Option<pipeline::Drift>,
+    /// The indexed files whose content differs, read and hashed; `None`
+    /// unless `status --verify` asked for them.
+    changed: Option<Vec<String>>,
 }
 
 /// How long before `now` the index was written, in one unit of time.
@@ -402,7 +418,7 @@ fn status_json(
 
 /// The document `status --json` prints, for the MCP `index_status` tool.
 pub(crate) fn status_report(config: &Config) -> Value {
-    let (facts, error) = index_facts(config);
+    let (facts, error) = index_facts(config, false);
     status_value(
         &config.model,
         config.backend,
@@ -410,6 +426,14 @@ pub(crate) fn status_report(config: &Config) -> Value {
         facts.as_ref(),
         error.as_deref(),
     )
+}
+
+/// `index` with the files `status --verify` found changed, when it ran.
+fn with_changed(mut index: Value, changed: Option<&[String]>) -> Value {
+    if let Some(changed) = changed {
+        index["changed_on_disk"] = json!(changed);
+    }
+    index
 }
 
 fn status_value(
@@ -420,27 +444,30 @@ fn status_value(
     error: Option<&str>,
 ) -> Value {
     let index_json = match index {
-        Some(f) => json!({
-            "present": true,
-            "path": f.path,
-            "size_bytes": f.size_bytes,
-            "chunks": f.chunks,
-            "files": f.files,
-            "named": f.named,
-            "ann": f.ann,
-            "backend": f.index_backend,
-            "model": f.index_model,
-            "stale": f.stale,
-            "written_unix": f.written,
-            "drift": match f.drift {
-                Some(d) => json!({
-                    "added": d.added,
-                    "modified": d.modified,
-                    "removed": d.removed,
-                }),
-                None => Value::Null,
-            },
-        }),
+        Some(f) => with_changed(
+            json!({
+                "present": true,
+                "path": f.path,
+                "size_bytes": f.size_bytes,
+                "chunks": f.chunks,
+                "files": f.files,
+                "named": f.named,
+                "ann": f.ann,
+                "backend": f.index_backend,
+                "model": f.index_model,
+                "stale": f.stale,
+                "written_unix": f.written,
+                "drift": match f.drift {
+                    Some(d) => json!({
+                        "added": d.added,
+                        "modified": d.modified,
+                        "removed": d.removed,
+                    }),
+                    None => Value::Null,
+                },
+            }),
+            f.changed.as_deref(),
+        ),
         None => json!({ "present": false, "error": error }),
     };
     json!({
@@ -456,7 +483,7 @@ fn status_value(
 /// What the index file on disk holds, and how far the tree has drifted from
 /// it. A missing file and an unreadable index both yield no facts; only the
 /// latter carries an error.
-fn index_facts(config: &Config) -> (Option<IndexFacts>, Option<String>) {
+fn index_facts(config: &Config, verify: bool) -> (Option<IndexFacts>, Option<String>) {
     let path = config.index_path();
     if !path.exists() {
         (None, None)
@@ -485,6 +512,7 @@ fn index_facts(config: &Config) -> (Option<IndexFacts>, Option<String>) {
                     rechunk: index.chunking != crate::chunk::Chunking::of(config),
                     written,
                     drift,
+                    changed: verify.then(|| pipeline::changed_on_disk(config, &index)),
                 };
                 (Some(facts), None)
             }
@@ -493,9 +521,9 @@ fn index_facts(config: &Config) -> (Option<IndexFacts>, Option<String>) {
     }
 }
 
-fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
+fn cmd_status(root: &Path, as_json: bool, verify: bool) -> Result<()> {
     let config = load_config(root)?;
-    let (facts, error) = index_facts(&config);
+    let (facts, error) = index_facts(&config, verify);
 
     if as_json {
         out!(
@@ -526,6 +554,20 @@ fn cmd_status(root: &Path, as_json: bool) -> Result<()> {
             out!("named:  {} with a declaration", plural(f.named, "chunk"));
             if let Some(drift) = &f.drift {
                 out!("tree:   {}", drift_line(drift));
+            }
+            if let Some(changed) = &f.changed {
+                match changed.is_empty() {
+                    true => out!("verify: every indexed file matches its content"),
+                    false => {
+                        out!(
+                            "verify: {} changed on disk since indexed; run `ripsem index --force`",
+                            plural(changed.len(), "file")
+                        );
+                        for path in changed {
+                            out!("  {path}");
+                        }
+                    }
+                }
             }
             if let Some(written) = f.written {
                 let now = std::time::SystemTime::now()
@@ -1543,6 +1585,7 @@ mod tests {
                 modified: 2,
                 removed: 0,
             }),
+            changed: None,
         };
         let out = status_json("bge-small-en-v1.5", Backend::Hash, 384, Some(&facts), None);
         let v: Value = serde_json::from_str(&out).unwrap();
@@ -1724,6 +1767,44 @@ mod tests {
         );
         let note = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
         assert!(note.starts_with("## Code search\n") && note.contains("`search` tool"));
+    }
+
+    /// Every file under `dir`, by path, with its bytes.
+    fn tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        fn walk(dir: &Path, out: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else {
+                    out.insert(path.clone(), std::fs::read(&path).unwrap());
+                }
+            }
+        }
+        let mut out = std::collections::BTreeMap::new();
+        walk(dir, &mut out);
+        out
+    }
+
+    /// A second install changes no byte of any file, for each agent, in a
+    /// directory the first one wrote to.
+    #[test]
+    fn running_install_twice_changes_no_file_for_any_agent() {
+        let targets: [fn() -> InstallCmd; 6] = [
+            || InstallCmd::ClaudeCode,
+            || InstallCmd::Cursor,
+            || InstallCmd::Vscode,
+            || InstallCmd::Gemini,
+            || InstallCmd::OpenCode,
+            || InstallCmd::Codex,
+        ];
+        for target in targets {
+            let dir = crate::testutil::TempDir::new();
+            cmd_install(dir.path(), target()).unwrap();
+            let first = tree(dir.path());
+            cmd_install(dir.path(), target()).unwrap();
+            assert_eq!(tree(dir.path()), first, "{:?}", first.keys());
+        }
     }
 
     #[test]

@@ -432,7 +432,7 @@ fn tool_schema() -> Value {
         "title": "Search the code",
         "annotations": read_only("Search the code"),
         "outputSchema": hits_schema(),
-        "description": "Find code in this repository. Handles both exact terms (identifiers, error strings, constants) and plain-language descriptions of behaviour in the same call, and returns ranked snippets with file paths and line ranges. Prefer this over grepping and reading whole files: it costs one call instead of guessing at the author's wording.",
+        "description": "Find code in this repository. Handles both exact terms (identifiers, error strings, constants) and plain-language descriptions of behaviour in the same call, and returns ranked snippets with file paths and line ranges. Prefer this over grepping and reading whole files: it costs one call instead of guessing at the author's wording. To find the other places that do what one hit does, call `find_similar` on that hit instead.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -504,7 +504,7 @@ fn similar_schema() -> Value {
         "title": "Find similar code",
         "annotations": read_only("Find similar code"),
         "outputSchema": hits_schema(),
-        "description": "Find the code in this repository that does what a given place does: give a file, and optionally a line range, and get the nearest places back as ranked snippets. Reach for it after finding one relevant place, to find the other places that do the same thing, such as a second handler or a copied check.",
+        "description": "Find the code in this repository that does what a given place does: give a file, and optionally a line range, and get the nearest places back as ranked snippets. Reach for it after `search` (or a read) has found one relevant place, to find the other places that do the same thing, such as a second handler or a copied check. For a question with no place in hand yet, use `search`.",
         "inputSchema": {
             "type": "object",
             "properties": properties,
@@ -542,23 +542,26 @@ fn handle_call(
     id: Value,
     request: &Value,
 ) -> Value {
-    match request
-        .get("params")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
-    {
-        Some("search") => {}
-        Some("find_similar") => {
+    let name = match request.get("params").and_then(|p| p.get("name")) {
+        None | Some(Value::Null) => return error(id, -32602, "missing tool name"),
+        Some(Value::String(name)) => name.as_str(),
+        Some(other) => {
+            let message = format!("'name' must be a string, not {other}");
+            return error(id, -32602, &message);
+        }
+    };
+    match name {
+        "search" => {}
+        "find_similar" => {
             return find_similar(config, session, id, &call_arguments(request));
         }
-        Some("index_status") => return index_status(config, id, &call_arguments(request)),
-        Some(other) => {
+        "index_status" => return index_status(config, id, &call_arguments(request)),
+        other => {
             let message = format!(
                 "unknown tool '{other}'; the tools are 'search', 'find_similar' and 'index_status'"
             );
             return error(id, -32602, &message);
         }
-        None => return error(id, -32602, "missing tool name"),
     }
 
     let args = call_arguments(request);
@@ -1201,6 +1204,31 @@ mod tests {
         assert!(status.get("required").is_none());
     }
 
+    /// An agent that has one hit in hand must be told which tool finds its
+    /// copies, and an agent that has a question must be told it is not the
+    /// other one's job.
+    #[test]
+    fn the_two_search_tools_say_when_to_reach_for_each_other() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("tools/list", json!({}))).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let description = |name: &str| -> &str {
+            tools.iter().find(|t| t["name"] == name).unwrap()["description"]
+                .as_str()
+                .unwrap()
+        };
+        assert!(
+            description("search").contains("`find_similar`"),
+            "{}",
+            description("search")
+        );
+        assert!(
+            description("find_similar").contains("`search`"),
+            "{}",
+            description("find_similar")
+        );
+    }
+
     /// Both tools only read, so a client need not ask before each call. The
     /// annotations are hints in fields a 2024-11-05 client does not know and
     /// ignores: what that revision requires of a tool is untouched.
@@ -1531,6 +1559,23 @@ mod tests {
         assert!(message.contains("'search'"), "got: {message}");
     }
 
+    /// A `name` of the wrong type is named as the bad field. Calling it missing
+    /// sends the client looking for a field it did send.
+    #[test]
+    fn a_tool_name_that_is_not_a_string_is_named_as_the_bad_field() {
+        let cfg = Config::default();
+        let resp = handle(&cfg, None, &req("tools/call", json!({ "name": 7 }))).unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        let message = resp["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("'name' must be a string, not 7"),
+            "got: {message}"
+        );
+
+        let resp = handle(&cfg, None, &req("tools/call", json!({}))).unwrap();
+        assert_eq!(resp["error"]["message"], "missing tool name");
+    }
+
     #[test]
     fn a_message_without_a_method_is_an_invalid_request() {
         let cfg = Config::default();
@@ -1835,6 +1880,43 @@ mod tests {
         assert_eq!(replies[0]["id"], Value::Null);
         assert_eq!(replies[1]["error"]["code"], -32700);
         assert_eq!(replies[2]["id"], 1);
+    }
+
+    /// Framing: CRLF lines are read as the lines they are, a last message with no
+    /// line break is answered, and a cancellation or a response from the client
+    /// gets no reply. A message cut off by the end of the input is a parse error.
+    #[test]
+    fn framing_follows_line_endings_and_the_end_of_input() {
+        let replies_to = |input: &[u8]| -> Vec<Value> {
+            let dir = crate::testutil::TempDir::new();
+            let config = Config {
+                root: dir.path().to_path_buf(),
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            serve_on(config, false, |_| {}, input, &mut out).unwrap();
+            out.split(|&b| b == b'\n')
+                .filter(|line| !line.is_empty())
+                .map(|line| serde_json::from_slice(line).unwrap())
+                .collect()
+        };
+        let input = concat!(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\r\n",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":1}}\r\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}",
+        );
+        let replies = replies_to(input.as_bytes());
+        assert_eq!(replies.len(), 2, "{replies:?}");
+        assert_eq!(replies[0]["id"], 1);
+        assert_eq!(replies[0]["result"], json!({}));
+        assert_eq!(replies[1]["id"], 3);
+        assert_eq!(replies[1]["result"], json!({}));
+
+        let replies = replies_to(b"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"pi");
+        assert_eq!(replies.len(), 1, "{replies:?}");
+        assert_eq!(replies[0]["error"]["code"], -32700);
+        assert_eq!(replies[0]["id"], Value::Null);
     }
 
     /// A request line is held whole only up to a size limit. A longer one is
@@ -2474,5 +2556,144 @@ mod tests {
         assert!(text.contains("'regex' must be a string"), "{text}");
         let text = tool_error(json!({ "query": "x", "regex": "((a{100}){100}){100}" }));
         assert!(text.contains("too large"), "{text}");
+    }
+
+    /// Checks `value` against the part of JSON Schema the tool schemas use: `type`
+    /// (one name or several), `properties`, `required`, `items`, `minimum`,
+    /// `maximum` and `additionalProperties: false`. Says where the first
+    /// violation is.
+    fn conforms(value: &Value, schema: &Value, at: &str) -> Result<(), String> {
+        if let Some(declared) = schema.get("type") {
+            let names: Vec<&str> = match declared {
+                Value::String(one) => vec![one.as_str()],
+                Value::Array(many) => many.iter().filter_map(Value::as_str).collect(),
+                _ => return Err(format!("{at}: the schema's type is not a name")),
+            };
+            if !names.iter().any(|name| is_type(value, name)) {
+                return Err(format!("{at}: {value} is not {}", names.join(" or ")));
+            }
+        }
+        if let Some(number) = value.as_f64() {
+            if let Some(min) = schema.get("minimum").and_then(Value::as_f64)
+                && number < min
+            {
+                return Err(format!("{at}: {number} is below {min}"));
+            }
+            if let Some(max) = schema.get("maximum").and_then(Value::as_f64)
+                && number > max
+            {
+                return Err(format!("{at}: {number} is above {max}"));
+            }
+        }
+        if let Some(object) = value.as_object() {
+            let properties = schema.get("properties").and_then(Value::as_object);
+            let required = schema.get("required").and_then(Value::as_array);
+            for name in required.into_iter().flatten().filter_map(Value::as_str) {
+                if !object.contains_key(name) {
+                    return Err(format!("{at}: '{name}' is required"));
+                }
+            }
+            let closed = schema.get("additionalProperties") == Some(&json!(false));
+            for (name, member) in object {
+                match properties.and_then(|p| p.get(name)) {
+                    Some(sub) => conforms(member, sub, &format!("{at}.{name}"))?,
+                    None if closed => return Err(format!("{at}: '{name}' is not allowed")),
+                    None => {}
+                }
+            }
+        }
+        if let (Some(items), Some(item_schema)) = (value.as_array(), schema.get("items")) {
+            for (i, item) in items.iter().enumerate() {
+                conforms(item, item_schema, &format!("{at}[{i}]"))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_type(value: &Value, name: &str) -> bool {
+        match name {
+            "string" => value.is_string(),
+            "integer" => value.is_i64() || value.is_u64(),
+            "number" => value.is_number(),
+            "boolean" => value.is_boolean(),
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "null" => value.is_null(),
+            _ => false,
+        }
+    }
+
+    /// The checker is only worth trusting if it refuses what a schema forbids.
+    #[test]
+    fn the_schema_checker_refuses_what_the_schema_forbids() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "n": { "type": "integer", "minimum": 1 },
+                "next": { "type": ["integer", "null"] },
+                "tags": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["n", "next"],
+            "additionalProperties": false
+        });
+        let ok = json!({ "n": 1, "next": null, "tags": ["a"] });
+        assert!(conforms(&ok, &schema, "t").is_ok());
+        for bad in [
+            json!({ "next": null }),
+            json!({ "n": 0, "next": null }),
+            json!({ "n": 1.5, "next": null }),
+            json!({ "n": 1, "next": "2" }),
+            json!({ "n": 1, "next": null, "tags": [1] }),
+            json!({ "n": 1, "next": null, "extra": true }),
+        ] {
+            assert!(conforms(&bad, &schema, "t").is_err(), "{bad}");
+        }
+    }
+
+    /// Every result a tool returns with structured content holds to the
+    /// outputSchema the server declares for that tool, for paged hits, an empty
+    /// page, a threshold that drops everything, similar places and the status.
+    #[test]
+    fn structured_results_hold_to_the_output_schema_declared_for_them() {
+        let (_dir, config, searcher) = paged_project();
+        let listed = handle(&config, None, &req("tools/list", json!({}))).unwrap();
+        let schema_of = |tool: &str| -> Value {
+            listed["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == tool)
+                .unwrap()["outputSchema"]
+                .clone()
+        };
+        let calls = [
+            ("search", json!({ "query": "verify password" })),
+            (
+                "search",
+                json!({ "query": "verify password", "limit": 2, "offset": 2 }),
+            ),
+            (
+                "search",
+                json!({ "query": "verify password", "offset": 9999 }),
+            ),
+            ("search", json!({ "query": "zzqqx", "min_score": 0.9 })),
+            ("find_similar", json!({ "path": "src/auth0.rs", "line": 1 })),
+            ("index_status", json!({})),
+        ];
+        for (tool, arguments) in calls {
+            let request = req(
+                "tools/call",
+                json!({ "name": tool, "arguments": arguments }),
+            );
+            let resp = handle(&config, Some(&searcher), &request).unwrap();
+            assert_eq!(
+                resp["result"]["isError"], false,
+                "{tool} {arguments}: {resp}"
+            );
+            let structured = &resp["result"]["structuredContent"];
+            assert!(structured.is_object(), "{tool} {arguments}: {resp}");
+            conforms(structured, &schema_of(tool), tool)
+                .unwrap_or_else(|e| panic!("{tool} {arguments}: {e}"));
+        }
     }
 }

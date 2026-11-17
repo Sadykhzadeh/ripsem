@@ -15,6 +15,17 @@
   line break, for `xargs -0` and paths with spaces or newlines.
 - `ripsem search --vimgrep` and `ripsem similar --vimgrep` print one
   `path:line:column:text` line per hit, for Vim's quickfix list and grep tools.
+- `ripsem search` takes ripgrep's short names for two options: `-c` for
+  `--count-by-file` and `-t` for `--lang`, which also accepts `--type`.
+- `ripsem search --help` ends with examples, and the one-line summary of
+  `ripsem similar` in the top-level help is short enough to read.
+- The exit codes are written down in the README: 0 for a run, 1 for a failure
+  while running (and for a `-q` search with no hit), 2 for a command line that
+  is not accepted. The codes did not change.
+- `ripsem search --since <rev>` outside a git repository says only that the
+  directory is not in one. It used to repeat git's own `fatal:` line after it.
+- `ripsem install opencode` is accepted as the README names it; `open-code`,
+  the name the subcommand had, still works.
 - The query is read from stdin with `ripsem search -`, or when `search` gets no
   words and stdin is not a terminal. One trailing line break is not part of it.
 - A file that is not UTF-8 is read as Windows-1252, so `café` in a file saved in
@@ -74,6 +85,17 @@
   once, with the `ripsem index --force` fix, and no panic message is printed.
   Later queries in the same run go straight to the exact scan instead of
   trying the graph again.
+- `ripsem search` no longer prints the old text of a file rewritten with the
+  same size and modification time. Each hit's file is checked against the hash
+  the index holds before the hit is shown. A file that differs is read again,
+  and the search is answered once more from the index as it now stands. The MCP
+  server leaves such hits out until a CLI search or `ripsem index --force` reads
+  the file.
+- `ripsem status --verify` reads every indexed file and lists the ones whose
+  content no longer matches the index, so a rewrite that kept its size and
+  modification time shows up. Plain `status` still judges the tree by stat, and
+  the exit status is unchanged. With `--json` the list is `changed_on_disk` under
+  `index`, and only when `--verify` is given.
 
 ## 0.3.0 (2026-11-15)
 
