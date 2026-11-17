@@ -88,8 +88,32 @@ fn call_of<'t>(node: &Node<'t>, lang: &str, text: &str) -> Option<(Node<'t>, Vec
             callee(node.child_by_field_name("constructor")?, text)
         }
         ("go", "call_expression") => callee(node.child_by_field_name("function")?, text),
+        ("java", "method_invocation") => named_call(node, "name", "object", text),
+        ("java", "object_creation_expression") => callee(node.child_by_field_name("type")?, text),
+        ("csharp", "invocation_expression") => callee(node.child_by_field_name("function")?, text),
+        ("csharp", "object_creation_expression") => callee(node.child_by_field_name("type")?, text),
+        ("c" | "cpp", "call_expression") => callee(node.child_by_field_name("function")?, text),
+        ("ruby", "call") => named_call(node, "method", "receiver", text),
         _ => None,
     }
+}
+
+/// A call whose name and receiver are fields of the call node itself, as Java's
+/// `object.name(...)`.
+fn named_call<'t>(
+    node: &Node<'t>,
+    name: &str,
+    receiver: &str,
+    text: &str,
+) -> Option<(Node<'t>, Vec<String>)> {
+    let name_node = unwrap(node.child_by_field_name(name)?);
+    if !is_name(&name_node) {
+        return None;
+    }
+    Some((
+        name_node,
+        qualifier(node.child_by_field_name(receiver), text),
+    ))
 }
 
 /// A Rust call inside a macro's arguments, which the grammar leaves as tokens:
@@ -210,12 +234,17 @@ fn member<'t>(node: &Node<'t>) -> Option<(Option<Node<'t>>, Node<'t>)> {
         ("qualified_identifier", "scope", "name"),
         ("call", "receiver", "method"),
     ];
+    // A Ruby call with arguments is a call made, not a property to read a
+    // chain through: in `File.read(path).strip` the receiver names no path.
+    if node.kind() == "call" && node.child_by_field_name("arguments").is_some() {
+        return None;
+    }
     let mut bare = None;
     for (kind, receiver, name) in MEMBERS {
         if kind != node.kind() {
             continue;
         }
-        let Some(name_node) = node.child_by_field_name(name) else {
+        let Some(name_node) = node.child_by_field_name(name).map(unwrap) else {
             continue;
         };
         match node.child_by_field_name(receiver) {
@@ -433,6 +462,84 @@ mod tests {
                 "b::Close 13:10 in fn main",
                 "run 14:5 in fn main",
                 "strings::TrimSpace 15:25 in fn main",
+            ]
+        );
+    }
+
+    #[test]
+    fn java_method_calls_and_constructors_keep_their_receivers() {
+        let src = "import java.util.List;\n\n\
+                   class Store {\n\
+                   \x20   // load(x) in a comment\n\
+                   \x20   List<String> load(String path) {\n\
+                   \x20       String s = Files.readString(path);\n\
+                   \x20       return new ArrayList<String>(this.cache.get(path));\n\
+                   \x20   }\n\
+                   }\n";
+        assert_eq!(
+            sites("Store.java", src),
+            [
+                "Files::readString 6:26 in fn Store::load",
+                "ArrayList 7:20 in fn Store::load",
+                "this::cache::get 7:49 in fn Store::load",
+            ]
+        );
+    }
+
+    #[test]
+    fn csharp_member_calls_and_constructors_chain_without_names() {
+        let src = "using System.IO;\n\nclass Store\n{\n\
+                   \x20   // Load() in a comment\n\
+                   \x20   public string Load(string path)\n    {\n\
+                   \x20       var text = File.ReadAllText(path);\n\
+                   \x20       return new StringBuilder().Append(text).ToString();\n    }\n}\n";
+        assert_eq!(
+            sites("Store.cs", src),
+            [
+                "File::ReadAllText 8:25 in fn Store::Load",
+                "StringBuilder 9:20 in fn Store::Load",
+                "Append 9:36 in fn Store::Load",
+                "ToString 9:49 in fn Store::Load",
+            ]
+        );
+    }
+
+    #[test]
+    fn c_calls_through_a_pointer_and_c_plus_plus_qualified_templates() {
+        let c = "#include <stdio.h>\n\nstatic int add(int a, int b) {\n\
+                 \x20   // sum(a) in a comment\n\
+                 \x20   int r = sum(a, b) + ops->scale(b);\n\
+                 \x20   return r;\n}\n";
+        assert_eq!(
+            sites("a.c", c),
+            ["sum 5:13 in fn add", "ops::scale 5:30 in fn add"]
+        );
+        let cpp = "#include <memory>\n\nint open(int n) {\n\
+                   \x20 auto p = std::make_shared<int>(n);\n\
+                   \x20 return Store::build(p->size()).finish(n);\n}\n";
+        assert_eq!(
+            sites("a.cpp", cpp),
+            [
+                "std::make_shared 4:17 in fn open",
+                "Store::build 5:17 in fn open",
+                "p::size 5:26 in fn open",
+                "finish 5:34 in fn open",
+            ]
+        );
+    }
+
+    #[test]
+    fn ruby_calls_with_and_without_parentheses() {
+        let src = "class Store\n  def load(path)\n\
+                   \x20   # save(path) in a comment\n\
+                   \x20   File.read(path).strip\n  end\n\n\
+                   \x20 def open\n    load \"x\"\n  end\nend\n";
+        assert_eq!(
+            sites("store.rb", src),
+            [
+                "File::read 4:10 in fn Store::load",
+                "strip 4:21 in fn Store::load",
+                "load 8:5 in fn Store::open",
             ]
         );
     }

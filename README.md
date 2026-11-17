@@ -363,8 +363,9 @@ is not one. It walks the files the index holds, after updating the index as
 `PATH` limits the files as `--in` does. The output options are `search`'s
 (`--json`, `--vimgrep`, `-l`, `-0`, `--count-by-file`, `-q`, `-k` and
 `--offset`), and so are `--lang`, `-g` and `--in`. `--min-score` and `-e` are
-refused, since no call is ranked. Rust, Python, JavaScript, TypeScript and Go
-are read so far.
+refused, since no call is ranked. Rust, Python, JavaScript, TypeScript, Go,
+Java, C#, C, C++ and Ruby are read. PHP, Kotlin, Scala and Bash are not yet:
+their call nodes were not checked against the grammar.
 
 The match is by name, not by type: `open` on two types gives the calls of
 both. A qualifier narrows it. `Index::load` and `module.load` keep the calls
