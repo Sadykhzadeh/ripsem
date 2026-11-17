@@ -366,6 +366,13 @@ is not one. It walks the files the index holds, after updating the index as
 refused, since no call is ranked. Rust, Python, JavaScript, TypeScript and Go
 are read so far.
 
+The match is by name, not by type: `open` on two types gives the calls of
+both. A qualifier narrows it. `Index::load` and `module.load` keep the calls
+whose path or receiver ends in `Index` or `module`, so `crate::index::Index::load`
+matches. Names are not resolved, so `self.load()` and `Self::load()` do not
+match `Index::load`, and a receiver that is a call, as in `a.b().load()`, is
+not narrowed to any type. Find those by the name alone, or with grep.
+
 
 ## Exit codes
 

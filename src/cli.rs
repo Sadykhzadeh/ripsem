@@ -161,8 +161,10 @@ pub enum Command {
     /// type: a method `open` on two types gives the calls of both.
     Callers {
         /// The function or method name, such as `load`. A qualifier narrows
-        /// the match to calls written with it: `Index::load` or
-        /// `module.load`.
+        /// the match to calls written with it: `Index::load` or `module.load`.
+        /// The type of a receiver is not known, so `self.load()` and
+        /// `Self::load()` are not narrowed to `Index` and do not match
+        /// `Index::load`.
         name: String,
         /// Only files under these paths, as `--in` reads them. With none,
         /// every indexed file is searched.

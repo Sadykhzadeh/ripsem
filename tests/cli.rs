@@ -3624,6 +3624,18 @@ fn callers_takes_paths_and_reports_nothing_with_the_search_exit_codes() {
 }
 
 #[test]
+fn callers_narrows_to_the_qualifier_a_call_was_written_with() {
+    let dir = repository_with_calls();
+    let qualified = ripsem(&dir.path, &["callers", "store::load", "--vimgrep"]);
+    assert_eq!(
+        stdout(&qualified),
+        "src/main.rs:2:23:let text = store::load(\"data.txt\");\n"
+    );
+    let other = ripsem(&dir.path, &["callers", "Index::load", "-q"]);
+    assert_eq!(other.status.code(), Some(1));
+}
+
+#[test]
 fn callers_refuses_a_name_that_is_not_one_and_the_score_options() {
     let dir = repository_with_calls();
     let bad = ripsem(&dir.path, &["callers", "Index::"]);
