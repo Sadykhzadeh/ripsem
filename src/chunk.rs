@@ -669,6 +669,15 @@ mod cutting {
     }
 
     #[test]
+    fn an_object_holds_its_members() {
+        let scala = "object Geometry {\n  def area(r: Double): Double = r\n  val Pi = 3.14\n}\n";
+        assert_eq!(
+            declared_labels("a.scala", scala),
+            ["object Geometry", "fn Geometry::area"]
+        );
+    }
+
+    #[test]
     fn files_with_the_extensions_of_a_language_are_cut_as_that_language() {
         let ruby = "def build(x)\n  x + 1\nend\n";
         assert!(has(&cut_code("Tasks.rake", ruby), 1, 3, "fn build"));

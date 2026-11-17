@@ -24,7 +24,7 @@ impl Symbol {
     pub fn is_container(&self) -> bool {
         matches!(
             self.kind.as_str(),
-            "impl" | "class" | "record" | "trait" | "interface" | "mod"
+            "impl" | "class" | "record" | "object" | "trait" | "interface" | "mod"
         )
     }
 
@@ -131,6 +131,8 @@ fn declared_kind(node_kind: &str) -> Option<&'static str> {
 const KINDS: &[(&str, &str)] = &[
     ("preproc_function_def", "macro"),
     ("preproc_def", "macro"),
+    ("object_definition", "object"),
+    ("object_declaration", "object"),
     ("interface", "interface"),
     ("namespace", "mod"),
     ("constructor", "fn"),
