@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `ripsem search --color <auto|always|never>` colours the path and the line
+  numbers of each hit in a terminal. `auto`, the default, leaves piped output
+  plain, and a `NO_COLOR` set to anything but an empty string turns colour off.
+- The MCP `search` and `find_similar` tools take a `since` git revision, as
+  `--since` does, so an agent can ask for hits in the files a branch changed.
+- `ripsem init` in a subdirectory of a project that already has an index warns
+  on stderr that the new `.ripsem` hides the parent's index from commands run
+  there. The index is still created.
 - `ripsem similar <path>[:LINE[-LINE]]` finds the code nearest to a file, or to
   a line range of it, from the vectors the index already stores, so no model
   runs. The chunks the location covers are left out of the answer. The MCP
