@@ -478,7 +478,8 @@ note in `CLAUDE.md`.
 string or a list, as `--lang` and `--glob`), a `regex` (only hits whose code
 matches it, as `--regex`; an invalid pattern is a tool error), a `limit` (default 5, at most
 50), an `offset` (default 0) to skip results and read the next page, and a
-`min_score`. When more results follow, the text ends with the line `More
+`min_score`, and a `since` git revision (as `--since`: only files that differ
+from it, untracked files included). When more results follow, the text ends with the line `More
 results below this; pass offset=5 to see them.` A client on MCP revision
 2025-06-18 or later also gets the hits as `structuredContent` (`hits` with
 `path`, `start_line`, `end_line`, `score`, `symbol`, `snippet`, and
@@ -488,8 +489,8 @@ result is an answer, not an error: `No further results`. An argument outside the
 error that names what is expected, so the agent can correct the call. The
 `find_similar` tool is `ripsem similar` for the agent: a `path`, and optionally
 `line` and `end_line` (the whole file when `line` is absent), returns the code
-nearest to that place, with `limit`, `offset`, `min_score`, `lang`, `glob` and
-`regex` as `search` takes them. Its errors are the CLI's messages, such as a
+nearest to that place, with `limit`, `offset`, `min_score`, `lang`, `glob`,
+`regex` and `since` as `search` takes them. Its errors are the CLI's messages, such as a
 file that is not in the index or a line past its end. The `index_status` tool,
 which takes no arguments, returns what `ripsem status
 --json` prints (as structured content too, for revision 2025-06-18 and later)

@@ -977,13 +977,10 @@ fn scope_for(config: &Config, opts: &SearchOpts) -> Result<Option<Scope>> {
         None => None,
     };
     let scope = Scope::new(prefix.as_deref(), &opts.lang, &opts.glob)?;
-    Ok(match &opts.since {
-        Some(rev) => {
-            let changed = crate::git::changed_since(&config.root, rev)?;
-            Some(Scope::changed_since(scope, rev, changed))
-        }
-        None => scope,
-    })
+    match &opts.since {
+        Some(rev) => Scope::since_rev(scope, &config.root, rev),
+        None => Ok(scope),
+    }
 }
 
 /// Prints one page of results as the options ask, after `-q` and

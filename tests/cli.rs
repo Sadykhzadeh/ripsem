@@ -1440,9 +1440,8 @@ fn similar_refreshes_the_index_before_it_reads_a_changed_file() {
     assert!(out.status.success(), "{}", stderr(&out));
 }
 
-#[test]
-fn since_limits_a_search_to_the_files_changed_since_a_revision() {
-    let dir = paged_tree();
+/// Makes the repository of `dir` and commits every file in it as `base`.
+fn commit_all(dir: &TempDir) {
     git(&dir.path, &["init", "-q"]);
     git(&dir.path, &["add", "-A"]);
     git(
@@ -1457,6 +1456,12 @@ fn since_limits_a_search_to_the_files_changed_since_a_revision() {
             "base",
         ],
     );
+}
+
+#[test]
+fn since_limits_a_search_to_the_files_changed_since_a_revision() {
+    let dir = paged_tree();
+    commit_all(&dir);
     dir.write(
         "src/auth0.rs",
         "fn auth0() { verify password create session token }\nfn more() {}\n",
@@ -2295,5 +2300,68 @@ fn status_says_when_the_index_was_built_in_both_outputs() {
             .as_u64()
             .is_some_and(|s| s > 1_600_000_000),
         "{json}"
+    );
+}
+
+/// The MCP `since` argument answers as `--since` does: `search` and
+/// `find_similar` keep only the files that differ from the revision, and a
+/// revision the repository does not have is a tool error.
+#[test]
+fn mcp_search_and_find_similar_take_since() {
+    let dir = paged_tree();
+    commit_all(&dir);
+    dir.write(
+        "src/auth0.rs",
+        "fn auth0() { verify password create session token }\nfn more() {}\n",
+    );
+    dir.write("docs/fresh.md", "verify password, written after the commit");
+
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
+    let call = |id: u64, name: &str, arguments: serde_json::Value| {
+        json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": name, "arguments": arguments } })
+            .to_string()
+    };
+    let search = call(
+        2,
+        "search",
+        json!({ "query": "verify password create session token", "since": "HEAD", "limit": 50 }),
+    );
+    let similar = call(
+        3,
+        "find_similar",
+        json!({ "path": "src/auth1.rs", "since": "HEAD", "limit": 50 }),
+    );
+    let unknown = call(
+        4,
+        "search",
+        json!({ "query": "verify password", "since": "no-such-rev" }),
+    );
+    let responses = mcp_over_stdio(&dir.path, &[init, &search, &similar, &unknown]);
+
+    let paths = |response: &serde_json::Value| -> Vec<String> {
+        response["result"]["structuredContent"]["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hit| hit["path"].as_str().unwrap().to_string())
+            .collect()
+    };
+    for found in [paths(&responses[1]), paths(&responses[2])] {
+        assert!(!found.is_empty(), "{responses:?}");
+        assert!(
+            found
+                .iter()
+                .all(|p| p == "src/auth0.rs" || p == "docs/fresh.md"),
+            "{found:?}"
+        );
+    }
+    let failure = &responses[3]["result"];
+    assert_eq!(failure["isError"], true, "{failure}");
+    assert!(
+        failure["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("unknown revision 'no-such-rev'"),
+        "{failure}"
     );
 }

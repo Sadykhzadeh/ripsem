@@ -153,6 +153,13 @@ impl Scope {
         }
     }
 
+    /// `scope`, further limited to the files of the repository at `root` that
+    /// differ from `rev`, as `--since` and the MCP `since` argument read it.
+    pub fn since_rev(scope: Option<Scope>, root: &Path, rev: &str) -> Result<Option<Scope>> {
+        let changed = crate::git::changed_since(root, rev)?;
+        Ok(Some(Scope::changed_since(scope, rev, changed)))
+    }
+
     pub fn under(prefix: &str) -> Scope {
         Scope {
             prefix: Some(prefix.to_string()),

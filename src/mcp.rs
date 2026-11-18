@@ -443,7 +443,8 @@ fn tool_schema() -> Value {
                 "regex": { "type": "string", "description": format!("Only hits whose code matches this regular expression (Rust regex syntax, matched against the whole chunk, so `(?i)` makes it case-insensitive), for \"the place that does X and mentions foo\". Looked for among the {} best-ranked places, so it narrows the answer rather than searching for the pattern; use grep when every occurrence is needed.", pipeline::TEXT_DEPTH) },
                 "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "default": DEFAULT_LIMIT, "description": format!("Maximum number of results (default {DEFAULT_LIMIT}, at most {MAX_LIMIT}).") },
                 "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Results to skip, taken from the ranking after every filter, to read the next page: when more follow, the result ends with the offset to pass. Default 0." },
-                "min_score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Drop hits scoring below this (0–1). 0 is no closer than unrelated text in this repository, 1 is every query term found literally; scores fall with rank, so this keeps the top results. Default: no filter." }
+                "min_score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Drop hits scoring below this (0–1). 0 is no closer than unrelated text in this repository, 1 is every query term found literally; scores fall with rank, so this keeps the top results. Default: no filter." },
+                "since": { "type": "string", "description": "Only hits in files that differ from this git revision, as the working tree has them: committed, staged and unstaged changes and untracked files. Use 'main' to review a branch. Needs a git repository." }
             },
             "required": ["query"],
             "additionalProperties": false
@@ -496,7 +497,15 @@ fn similar_schema() -> Value {
             "description": "Last line of that place, inclusive. Default: the same as `line`."
         }
     });
-    for key in ["lang", "glob", "regex", "limit", "offset", "min_score"] {
+    for key in [
+        "lang",
+        "glob",
+        "regex",
+        "limit",
+        "offset",
+        "min_score",
+        "since",
+    ] {
         properties[key] = search["inputSchema"]["properties"][key].clone();
     }
     json!({
@@ -704,7 +713,7 @@ struct Similar {
     scope: Option<Scope>,
 }
 
-const SIMILAR_ARGUMENTS: [&str; 9] = [
+const SIMILAR_ARGUMENTS: [&str; 10] = [
     "path",
     "line",
     "end_line",
@@ -714,6 +723,7 @@ const SIMILAR_ARGUMENTS: [&str; 9] = [
     "limit",
     "offset",
     "min_score",
+    "since",
 ];
 
 fn parse_similar(args: &Value, root: &Path) -> Result<Similar> {
@@ -725,7 +735,7 @@ fn parse_similar(args: &Value, root: &Path) -> Result<Similar> {
         .find(|k| !SIMILAR_ARGUMENTS.contains(&k.as_str()))
     {
         bail!(
-            "unknown argument '{name}'; the arguments are path, line, end_line, lang, glob, regex, limit, offset and min_score"
+            "unknown argument '{name}'; the arguments are path, line, end_line, lang, glob, regex, limit, offset, min_score and since"
         );
     }
     let given = |name: &str| args.get(name).filter(|v| !v.is_null());
@@ -757,7 +767,13 @@ fn parse_similar(args: &Value, root: &Path) -> Result<Similar> {
         }
     };
     let filters = filters(&given)?;
-    let scope = Scope::new(None, &filters.langs, &filters.globs)?;
+    let scope = scope_of(
+        root,
+        None,
+        &filters.langs,
+        &filters.globs,
+        filters.since.as_deref(),
+    )?;
     Ok(Similar {
         target: pipeline::Target { path, lines },
         filters,
@@ -827,7 +843,7 @@ fn index_status(config: &Config, id: Value, args: &Value) -> Value {
     )
 }
 
-const ARGUMENTS: [&str; 8] = [
+const ARGUMENTS: [&str; 9] = [
     "query",
     "path",
     "lang",
@@ -836,6 +852,7 @@ const ARGUMENTS: [&str; 8] = [
     "limit",
     "offset",
     "min_score",
+    "since",
 ];
 const DEFAULT_LIMIT: usize = 5;
 const MAX_LIMIT: usize = 50;
@@ -858,7 +875,7 @@ fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
         .ok_or_else(|| anyhow!("the arguments must be an object with a 'query'"))?;
     if let Some(name) = args.keys().find(|k| !ARGUMENTS.contains(&k.as_str())) {
         bail!(
-            "unknown argument '{name}'; the arguments are query, path, lang, glob, regex, limit, offset and min_score"
+            "unknown argument '{name}'; the arguments are query, path, lang, glob, regex, limit, offset, min_score and since"
         );
     }
     let given = |name: &str| args.get(name).filter(|v| !v.is_null());
@@ -876,6 +893,7 @@ fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
         langs,
         globs,
         text,
+        since,
     } = filters(&given)?;
     let prefix = match given("path") {
         None => None,
@@ -887,7 +905,7 @@ fn parse_call<'a>(args: &'a Value, root: &Path) -> Result<Call<'a>> {
         limit,
         offset,
         min_score,
-        scope: Scope::new(prefix.as_deref(), &langs, &globs)?,
+        scope: scope_of(root, prefix.as_deref(), &langs, &globs, since.as_deref())?,
         text,
     })
 }
@@ -901,6 +919,23 @@ struct Filters {
     langs: Vec<String>,
     globs: Vec<String>,
     text: Option<regex::Regex>,
+    since: Option<String>,
+}
+
+/// The scope a call's path, language and glob arguments make, limited further
+/// to the files changed since `since` when one is given.
+fn scope_of(
+    root: &Path,
+    prefix: Option<&str>,
+    langs: &[String],
+    globs: &[String],
+    since: Option<&str>,
+) -> Result<Option<Scope>> {
+    let scope = Scope::new(prefix, langs, globs)?;
+    match since {
+        Some(rev) => Scope::since_rev(scope, root, rev),
+        None => Ok(scope),
+    }
 }
 
 fn filters<'a>(given: &dyn Fn(&str) -> Option<&'a Value>) -> Result<Filters> {
@@ -941,6 +976,11 @@ fn filters<'a>(given: &dyn Fn(&str) -> Option<&'a Value>) -> Result<Filters> {
         Some(Value::String(pattern)) => Some(crate::scope::text_pattern(pattern)?),
         Some(other) => bail!("'regex' must be a string, not {other}"),
     };
+    let since = match given("since") {
+        None => None,
+        Some(Value::String(rev)) => Some(rev.clone()),
+        Some(other) => bail!("'since' must be a string, not {other}"),
+    };
     Ok(Filters {
         limit,
         offset,
@@ -948,6 +988,7 @@ fn filters<'a>(given: &dyn Fn(&str) -> Option<&'a Value>) -> Result<Filters> {
         langs: strings("lang", given("lang"))?,
         globs: strings("glob", given("glob"))?,
         text,
+        since,
     })
 }
 
