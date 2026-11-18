@@ -1807,7 +1807,7 @@ pub(crate) fn best_line(lines: &[&str], words: &[String]) -> Option<usize> {
 /// `words`, the first on a tie, cut on character boundaries and marked with
 /// an ellipsis where text was left out. `None` when no word is in it.
 fn around(text: &str, words: &[String], max: usize) -> Option<String> {
-    let lower = text.to_ascii_lowercase();
+    let (lower, starts) = lowered(text);
     let back = max / 4;
     let window = |at: usize| {
         let mut from = at.saturating_sub(back);
@@ -1823,16 +1823,31 @@ fn around(text: &str, words: &[String], max: usize) -> Option<String> {
     let (from, to) = words
         .iter()
         .filter_map(|w| lower.find(w.as_str()))
-        .map(window)
+        .map(|at| window(starts[at]))
         .max_by_key(|&(from, to)| {
-            let named = words
-                .iter()
-                .filter(|w| lower[from..to].contains(w.as_str()));
+            let (inside, _) = lowered(&text[from..to]);
+            let named = words.iter().filter(|w| inside.contains(w.as_str()));
             (named.count(), std::cmp::Reverse(from))
         })?;
     let head = if from > 0 { "…" } else { "" };
     let tail = if to < text.len() { "…" } else { "" };
     Some(format!("{head}{}{tail}", &text[from..to]))
+}
+
+/// The text lowercased the way `query_words` lowercases the query, and for
+/// each byte of that lowercase text the byte of `text` its character starts
+/// at. Lowercasing can change the length of a character, so a position in the
+/// lowercase text is not a position in `text`.
+fn lowered(text: &str) -> (String, Vec<usize>) {
+    let lower = text.to_lowercase();
+    let mut starts = Vec::with_capacity(lower.len());
+    for (at, c) in text.char_indices() {
+        for l in c.to_lowercase() {
+            starts.extend(std::iter::repeat_n(at, l.len_utf8()));
+        }
+    }
+    debug_assert_eq!(starts.len(), lower.len());
+    (lower, starts)
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -2139,6 +2154,15 @@ mod tests {
         assert_eq!(searcher.near(&record, &hit, &query_words("draws")), None);
         assert_eq!(searcher.near(&record, &hit, &query_words("nowhere")), None);
         assert_eq!(searcher.near(&record, &hit, &[]), None);
+    }
+
+    #[test]
+    fn around_finds_an_uppercase_non_ascii_word_and_centres_on_it() {
+        let text = format!("{}CAFÉ au lait", "word ".repeat(60));
+        let shown = around(&text, &query_words("café"), 80).unwrap();
+        assert!(shown.starts_with('…'));
+        assert!(shown.contains("CAFÉ au lait"));
+        assert_eq!(around("ΟΔΟΣ", &query_words("οδος"), 80).unwrap(), "ΟΔΟΣ");
     }
 
     #[test]
