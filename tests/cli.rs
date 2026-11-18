@@ -2390,7 +2390,26 @@ fn color_marks_the_hit_headers_when_asked() {
         always
             .replace("\x1b[1m", "")
             .replace("\x1b[32m", "")
+            .replace("\x1b[1;31m", "")
             .replace("\x1b[0m", ""),
         piped
     );
+}
+
+/// The query's words are painted where they sit in a snippet, and only when
+/// colour is on.
+#[test]
+fn color_marks_the_query_words_in_the_snippet() {
+    let dir = indexed_repository();
+    let always = stdout(&ripsem(
+        &dir.path,
+        &["search", "verify password", "--color", "always"],
+    ));
+    let snippet = always.lines().find(|l| l.contains("verify")).unwrap();
+    assert!(
+        snippet.contains("\x1b[1;31mverify\x1b[0m \x1b[1;31mpassword\x1b[0m"),
+        "{always}"
+    );
+    let piped = stdout(&ripsem(&dir.path, &["search", "verify password"]));
+    assert!(!piped.contains('\x1b'), "{piped}");
 }

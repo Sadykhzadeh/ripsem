@@ -3,8 +3,9 @@
 ## Unreleased
 
 - `ripsem search --color <auto|always|never>` colours the path and the line
-  numbers of each hit in a terminal. `auto`, the default, leaves piped output
-  plain, and a `NO_COLOR` set to anything but an empty string turns colour off.
+  numbers of each hit in a terminal, and the query's words in its snippet.
+  `auto`, the default, leaves piped output plain, and a `NO_COLOR` set to
+  anything but an empty string turns colour off.
 - The MCP `search` and `find_similar` tools take a `since` git revision, as
   `--since` does, so an agent can ask for hits in the files a branch changed.
 - `ripsem init` in a subdirectory of a project that already has an index warns

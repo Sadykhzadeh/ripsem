@@ -190,8 +190,9 @@ pub struct SearchOpts {
     /// Print the results as JSON. Cannot be combined with `--vimgrep` or `-0`.
     #[arg(long)]
     json: bool,
-    /// Colour the path and line numbers of each hit: `auto` colours a
-    /// terminal unless `NO_COLOR` is set, `always` and `never` decide it.
+    /// Colour the path and line numbers of each hit, and the query's words in
+    /// its snippet: `auto` colours a terminal unless `NO_COLOR` is set,
+    /// `always` and `never` decide it.
     #[arg(long, value_enum, default_value_t = ColorWhen::Auto, value_name = "WHEN")]
     color: ColorWhen,
     /// Limit results to a subdirectory, e.g. `--in src/embed`. A relative
@@ -313,6 +314,32 @@ fn paint(text: &str, code: &str, color: bool) -> String {
         true => format!("\x1b[{code}m{text}\x1b[0m"),
         false => text.to_string(),
     }
+}
+
+/// `line` with each word of it that is one of the query's `words` painted,
+/// compared without case. A word is a run of letters and digits, as the
+/// query's words are cut, so `parse_config` holds `parse` and `config`.
+fn highlight(line: &str, words: &[String], color: bool) -> String {
+    if !color {
+        return line.to_string();
+    }
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(start) = rest.find(char::is_alphanumeric) {
+        let (before, from) = rest.split_at(start);
+        let end = from
+            .find(|c: char| !c.is_alphanumeric())
+            .unwrap_or(from.len());
+        let (word, after) = from.split_at(end);
+        out.push_str(before);
+        match words.contains(&word.to_lowercase()) {
+            true => out.push_str(&paint(word, "1;31", true)),
+            false => out.push_str(word),
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 #[derive(Subcommand)]
@@ -1172,7 +1199,7 @@ fn print_hits(
         }
         for l in snippet_lines(&h.snippet, context, words) {
             for piece in wrap(l) {
-                out!("    {piece}");
+                out!("    {}", highlight(&piece, words, color));
             }
         }
         out!();
@@ -1539,6 +1566,21 @@ mod tests {
     fn paint_wraps_text_only_when_colour_is_on() {
         assert_eq!(paint("a.rs", "1", true), "\x1b[1ma.rs\x1b[0m");
         assert_eq!(paint("a.rs", "1", false), "a.rs");
+    }
+
+    #[test]
+    fn highlight_paints_the_query_words_as_whole_words() {
+        let words = pipeline::query_words("parse config");
+        assert_eq!(
+            highlight("fn parse_config(path: &str) {", &words, true),
+            "fn \x1b[1;31mparse\x1b[0m_\x1b[1;31mconfig\x1b[0m(path: &str) {"
+        );
+        assert_eq!(
+            highlight("Config::load() reads PARSE", &words, true),
+            "\x1b[1;31mConfig\x1b[0m::load() reads \x1b[1;31mPARSE\x1b[0m"
+        );
+        assert_eq!(highlight("parser configs", &words, true), "parser configs");
+        assert_eq!(highlight("parse config", &words, false), "parse config");
     }
 
     #[test]
