@@ -194,11 +194,11 @@ impl Stored {
             "its columns disagree about how many records there are"
         );
 
-        let snippets: Arc<str> = snippets.into();
-        let vectors: Arc<[i8]> = vectors.into();
-        let term_hashes: Arc<[u64]> = term_hashes.into();
-        let term_counts: Arc<[u8]> = term_counts.into();
-        let declarations: Arc<[Declaration]> = declarations.into();
+        let snippets = Arc::new(snippets);
+        let vectors = Arc::new(vectors);
+        let term_hashes = Arc::new(term_hashes);
+        let term_counts = Arc::new(term_counts);
+        let declarations = Arc::new(declarations);
         let outside = || anyhow!("a record points outside its column");
 
         let mut records = Vec::with_capacity(count);

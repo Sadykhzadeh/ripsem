@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 /// A range of a shared buffer. Cloning clones the `Arc`, not the elements.
 pub struct Shared<T> {
-    buf: Arc<[T]>,
+    buf: Arc<Vec<T>>,
     start: u32,
     len: u32,
 }
@@ -20,7 +20,7 @@ pub struct Shared<T> {
 impl<T> Shared<T> {
     /// The elements of `range`, or `None` when it lies outside the buffer or
     /// the buffer is too large for a 32-bit offset.
-    pub fn slice_of(buf: &Arc<[T]>, range: Range<usize>) -> Option<Self> {
+    pub fn slice_of(buf: &Arc<Vec<T>>, range: Range<usize>) -> Option<Self> {
         if range.start > range.end || range.end > buf.len() {
             return None;
         }
@@ -56,7 +56,7 @@ impl<T> From<Vec<T>> for Shared<T> {
     fn from(items: Vec<T>) -> Self {
         let len = u32::try_from(items.len()).expect("a record holds fewer than 2^32 elements");
         Self {
-            buf: items.into(),
+            buf: Arc::new(items),
             start: 0,
             len,
         }
@@ -86,7 +86,7 @@ impl<T: fmt::Debug> fmt::Debug for Shared<T> {
 /// A range of a shared string, on character boundaries.
 #[derive(Clone)]
 pub struct SharedStr {
-    buf: Arc<str>,
+    buf: Arc<String>,
     start: u32,
     len: u32,
 }
@@ -94,7 +94,7 @@ pub struct SharedStr {
 impl SharedStr {
     /// The text of `range`, or `None` when it is not on character boundaries
     /// inside the buffer or the buffer is too large for a 32-bit offset.
-    pub fn slice_of(buf: &Arc<str>, range: Range<usize>) -> Option<Self> {
+    pub fn slice_of(buf: &Arc<String>, range: Range<usize>) -> Option<Self> {
         buf.get(range.clone())?;
         Some(Self {
             buf: Arc::clone(buf),
@@ -119,18 +119,18 @@ impl Deref for SharedStr {
 
 impl From<&str> for SharedStr {
     fn from(text: &str) -> Self {
-        let len = u32::try_from(text.len()).expect("a record holds fewer than 4 GiB of text");
-        Self {
-            buf: text.into(),
-            start: 0,
-            len,
-        }
+        text.to_owned().into()
     }
 }
 
 impl From<String> for SharedStr {
     fn from(text: String) -> Self {
-        text.as_str().into()
+        let len = u32::try_from(text.len()).expect("a record holds fewer than 4 GiB of text");
+        Self {
+            buf: Arc::new(text),
+            start: 0,
+            len,
+        }
     }
 }
 
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn a_handle_reads_its_range_of_the_buffer() {
-        let buf: Arc<[u32]> = vec![1, 2, 3, 4, 5].into();
+        let buf = Arc::new(vec![1, 2, 3, 4, 5]);
         let middle = Shared::slice_of(&buf, 1..4).unwrap();
         assert_eq!(&*middle, &[2, 3, 4]);
         assert_eq!(middle, Shared::from(vec![2, 3, 4]));
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn a_range_outside_the_buffer_is_refused() {
-        let buf: Arc<[u8]> = vec![0; 4].into();
+        let buf = Arc::new(vec![0; 4]);
         assert!(Shared::slice_of(&buf, 2..5).is_none());
         assert!(Shared::slice_of(&buf, 5..6).is_none());
         #[allow(clippy::reversed_empty_ranges)]
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn cloning_shares_the_buffer() {
-        let buf: Arc<[u8]> = vec![7; 8].into();
+        let buf = Arc::new(vec![7; 8]);
         let one = Shared::slice_of(&buf, 0..4).unwrap();
         let two = one.clone();
         assert_eq!(Arc::strong_count(&buf), 3);
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn string_handles_to_one_file_share_its_buffer() {
-        let buf: Arc<str> = "alpha beta".into();
+        let buf = Arc::new("alpha beta".to_owned());
         let beta = SharedStr::slice_of(&buf, 6..10).unwrap();
         assert_eq!(beta, "beta");
         assert_eq!(Arc::strong_count(&buf), 2);
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn a_string_range_must_sit_on_character_boundaries() {
-        let buf: Arc<str> = "h\u{e9}llo".into();
+        let buf = Arc::new("h\u{e9}llo".to_owned());
         assert!(SharedStr::slice_of(&buf, 0..2).is_none());
         assert!(SharedStr::slice_of(&buf, 0..7).is_none());
         assert_eq!(SharedStr::slice_of(&buf, 1..3).unwrap(), "\u{e9}");
