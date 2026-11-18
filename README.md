@@ -183,6 +183,9 @@ ripsem watch                      # keep the index in sync as files change
 
 Like git, every command except `init` works from any subdirectory: it uses the
 nearest parent that holds a `.ripsem` directory. `--path <dir>` overrides that.
+`init` in a subdirectory of an indexed project creates a second index there,
+which hides the parent's index from every command run in that subdirectory.
+It warns when that happens; delete the subdirectory's `.ripsem` to go back.
 
 The index stays out of git: `.ripsem/.gitignore` lists it, so `git status`
 shows only `config.toml` (which can be committed) and that `.gitignore`. ripsem

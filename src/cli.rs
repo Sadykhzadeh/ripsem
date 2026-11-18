@@ -371,7 +371,25 @@ fn cmd_init(root: &Path) -> Result<()> {
     }
     out!("model: {} ({:?} backend)", config.model, config.backend);
     warn_about_backend(&config);
+    if let Some(warning) = shadowed_index_warning(root) {
+        eprintln!("{warning}");
+    }
     Ok(())
+}
+
+/// The warning `init` gives in a directory below one that already has an
+/// index. Every command run here then searches the new `.ripsem` and misses
+/// the rest of the project, so the warning names both.
+fn shadowed_index_warning(root: &Path) -> Option<String> {
+    let above = root
+        .ancestors()
+        .skip(1)
+        .find(|dir| dir.join(".ripsem").is_dir())?;
+    Some(format!(
+        "warning: {} already indexes this directory. Commands run here will use {} instead, which holds only this directory. Remove that .ripsem directory to search the whole project again.",
+        show_path(&above.join(".ripsem")),
+        show_path(&root.join(".ripsem")),
+    ))
 }
 
 /// Hashing-backend results look like any others, so every command that builds
@@ -1591,6 +1609,21 @@ mod tests {
             std::fs::read_to_string(dir.path().join(".ripsem/config.toml")).unwrap(),
             "model = ["
         );
+    }
+
+    #[test]
+    fn init_below_an_index_says_which_index_it_hides() {
+        let dir = crate::testutil::TempDir::new();
+        cmd_init(dir.path()).unwrap();
+        let sub = dir.path().join("src/util");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(shadowed_index_warning(dir.path()), None);
+        let warning = shadowed_index_warning(&sub).unwrap();
+        assert!(warning.starts_with("warning: "));
+        assert!(warning.contains(&dir.path().join(".ripsem").display().to_string()));
+        assert!(warning.contains(&sub.join(".ripsem").display().to_string()));
+        cmd_init(&sub).unwrap();
+        assert!(sub.join(".ripsem/config.toml").exists());
     }
 
     #[test]
