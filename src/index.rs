@@ -367,7 +367,7 @@ impl Index {
                 record_idx: i,
             })
             .collect();
-        sort_and_truncate(&mut ranked, depth);
+        sort_and_truncate(&mut ranked, depth, &self.records);
         ranked
     }
 
@@ -391,7 +391,7 @@ impl Index {
                 record_idx: i,
             })
             .collect();
-        sort_and_truncate(&mut ranked, candidate_depth(k));
+        sort_and_truncate(&mut ranked, candidate_depth(k), &self.records);
         let floor = self.noise_floor.unwrap_or(0.0);
         let mut taken: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
         let mut split: std::collections::HashSet<(&str, &Symbol)> =
@@ -454,7 +454,7 @@ impl Index {
                 record_idx: i,
             })
             .collect();
-        sort_and_truncate(&mut ranked, depth);
+        sort_and_truncate(&mut ranked, depth, &self.records);
         LexicalRanking {
             ranked,
             weights,
@@ -504,7 +504,13 @@ impl Index {
                 }
             })
             .collect();
-        candidates.sort_unstable_by(Candidate::rank);
+        candidates.sort_unstable_by(|a, b| {
+            Candidate::rank(a, b)
+                .then_with(|| {
+                    place(&self.records[a.record_idx]).cmp(&place(&self.records[b.record_idx]))
+                })
+                .then(a.record_idx.cmp(&b.record_idx))
+        });
         self.best_of_each_place(candidates, k)
     }
 
@@ -656,7 +662,6 @@ impl Candidate {
                     .partial_cmp(&a.confidence())
                     .unwrap_or(Ordering::Equal)
             })
-            .then(a.record_idx.cmp(&b.record_idx))
     }
 }
 
@@ -687,12 +692,16 @@ impl LexicalRanking {
 }
 
 /// Keeps the best `k`. Partitioning them off first is linear in the index;
-/// sorting everything is not.
-fn sort_and_truncate(scored: &mut Vec<Hit>, k: usize) {
+/// sorting everything is not. Equal scores are ordered by place in the file,
+/// not by position in the index, which an update changes by appending the
+/// files it re-cuts.
+fn sort_and_truncate(scored: &mut Vec<Hit>, k: usize, records: &[Record]) {
     let by_score = |a: &Hit, b: &Hit| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| place(&records[a.record_idx]).cmp(&place(&records[b.record_idx])))
+            .then(a.record_idx.cmp(&b.record_idx))
     };
     if k == 0 {
         scored.clear();
@@ -703,6 +712,11 @@ fn sort_and_truncate(scored: &mut Vec<Hit>, k: usize) {
         scored.truncate(k);
     }
     scored.sort_unstable_by(by_score);
+}
+
+/// Where a record sits in its file, the order ties are broken by.
+fn place(record: &Record) -> (&str, usize, usize) {
+    (record.path.as_str(), record.start_line, record.end_line)
 }
 
 /// `bge-small-en-v1.5 (Hash backend)`, in the form `ripsem init` prints.
@@ -1320,7 +1334,7 @@ mod tests {
         };
         let kept = |k: usize| {
             let mut scored = hits();
-            sort_and_truncate(&mut scored, k);
+            sort_and_truncate(&mut scored, k, &[]);
             scored.iter().map(|h| h.score).collect::<Vec<f32>>()
         };
         assert_eq!(kept(3), vec![0.9, 0.8, 0.7]);

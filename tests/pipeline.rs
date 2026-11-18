@@ -2006,4 +2006,23 @@ mod stat_cache {
         let again = pipeline::index_repo(&config, false).unwrap();
         assert_eq!(counts(&again), (2, 0, 2, 2));
     }
+
+    #[test]
+    fn identical_copies_rank_in_the_same_order_after_an_update_and_a_rebuild() {
+        let dir = TempDir::new();
+        let body = "fn copy_me() { retry_backoff(); }\n";
+        dir.write("z.rs", body);
+        let config = config_for(&dir.path);
+        pipeline::index_repo(&config, false).unwrap();
+        dir.write("a.rs", body);
+        pipeline::index_repo(&config, false).unwrap();
+        let paths = |hits: Vec<pipeline::SearchHit>| -> Vec<String> {
+            hits.into_iter().map(|h| h.path).collect()
+        };
+        let updated = paths(pipeline::search(&config, "retry backoff", 5).unwrap());
+        pipeline::index_repo(&config, true).unwrap();
+        let rebuilt = paths(pipeline::search(&config, "retry backoff", 5).unwrap());
+        assert_eq!(updated, ["a.rs", "z.rs"]);
+        assert_eq!(updated, rebuilt);
+    }
 }
