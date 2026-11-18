@@ -190,6 +190,10 @@ pub struct SearchOpts {
     /// Print the results as JSON. Cannot be combined with `--vimgrep` or `-0`.
     #[arg(long)]
     json: bool,
+    /// Colour the path and line numbers of each hit: `auto` colours a
+    /// terminal unless `NO_COLOR` is set, `always` and `never` decide it.
+    #[arg(long, value_enum, default_value_t = ColorWhen::Auto, value_name = "WHEN")]
+    color: ColorWhen,
     /// Limit results to a subdirectory, e.g. `--in src/embed`. A relative
     /// path starts from the current directory, as in the shell, so `.`
     /// is the directory you are in; a path outside the repository is an
@@ -284,6 +288,31 @@ pub struct SearchOpts {
 pub enum SortBy {
     Score,
     Path,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ColorWhen {
+    Auto,
+    Always,
+    Never,
+}
+
+/// Whether hit headers get colour. `auto` colours a terminal, and a
+/// `NO_COLOR` that is set to anything but an empty string turns it off.
+fn use_color(when: ColorWhen, terminal: bool, no_color: bool) -> bool {
+    match when {
+        ColorWhen::Always => true,
+        ColorWhen::Never => false,
+        ColorWhen::Auto => terminal && !no_color,
+    }
+}
+
+/// `text` in the SGR code `code`, or `text` as it is when `color` is off.
+fn paint(text: &str, code: &str, color: bool) -> String {
+    match color {
+        true => format!("\x1b[{code}m{text}\x1b[0m"),
+        false => text.to_string(),
+    }
 }
 
 #[derive(Subcommand)]
@@ -995,6 +1024,11 @@ fn show(page: pipeline::Page, opts: &SearchOpts, context: usize, words: &[String
         hits.sort_by(|a, b| a.path.cmp(&b.path).then(a.start_line.cmp(&b.start_line)));
     }
     let next = more.then_some(opts.offset + hits.len());
+    let color = use_color(
+        opts.color,
+        std::io::stdout().is_terminal(),
+        std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
+    );
     print_hits(
         &hits,
         opts.json,
@@ -1006,6 +1040,7 @@ fn show(page: pipeline::Page, opts: &SearchOpts, context: usize, words: &[String
         opts.vimgrep,
         opts.offset,
         next,
+        color,
     )
 }
 
@@ -1047,6 +1082,7 @@ fn print_hits(
     vimgrep: bool,
     offset: usize,
     next: Option<usize>,
+    color: bool,
 ) -> Result<()> {
     if vimgrep {
         for h in hits {
@@ -1125,22 +1161,14 @@ fn print_hits(
         return Ok(());
     }
     for h in hits {
+        let place = format!(
+            "{}:{}",
+            paint(&h.path, "1", color),
+            paint(&format!("{}-{}", h.start_line, h.end_line), "32", color)
+        );
         match &h.symbol {
-            Some(s) => out!(
-                "{}:{}-{}  {}  ({})",
-                h.path,
-                h.start_line,
-                h.end_line,
-                s.label(),
-                show_score(h.score)
-            ),
-            None => out!(
-                "{}:{}-{}  ({})",
-                h.path,
-                h.start_line,
-                h.end_line,
-                show_score(h.score)
-            ),
+            Some(s) => out!("{place}  {}  ({})", s.label(), show_score(h.score)),
+            None => out!("{place}  ({})", show_score(h.score)),
         }
         for l in snippet_lines(&h.snippet, context, words) {
             for piece in wrap(l) {
@@ -1495,6 +1523,22 @@ mod tests {
         assert!(pieces.iter().all(|p| p.chars().count() <= WRAP));
         assert_eq!(pieces.join(" "), prose);
         assert_eq!(wrap("    let  x = 1;"), vec!["    let  x = 1;"]);
+    }
+
+    #[test]
+    fn color_follows_the_flag_and_a_terminal_unless_no_color_is_set() {
+        use ColorWhen::*;
+        assert!(use_color(Always, false, true));
+        assert!(!use_color(Never, true, false));
+        assert!(use_color(Auto, true, false));
+        assert!(!use_color(Auto, false, false));
+        assert!(!use_color(Auto, true, true));
+    }
+
+    #[test]
+    fn paint_wraps_text_only_when_colour_is_on() {
+        assert_eq!(paint("a.rs", "1", true), "\x1b[1ma.rs\x1b[0m");
+        assert_eq!(paint("a.rs", "1", false), "a.rs");
     }
 
     #[test]

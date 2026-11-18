@@ -2365,3 +2365,32 @@ fn mcp_search_and_find_similar_take_since() {
         "{failure}"
     );
 }
+
+/// Hit headers are coloured when `--color always` asks for it, and a piped
+/// search, which `auto` leaves alone, has no escape codes in it.
+#[test]
+fn color_marks_the_hit_headers_when_asked() {
+    let dir = indexed_repository();
+    let piped = stdout(&ripsem(&dir.path, &["search", "verify password"]));
+    assert!(!piped.contains('\x1b'), "{piped}");
+    let never = stdout(&ripsem(
+        &dir.path,
+        &["search", "verify password", "--color", "never"],
+    ));
+    assert!(!never.contains('\x1b'), "{never}");
+    let always = stdout(&ripsem(
+        &dir.path,
+        &["search", "verify password", "--color", "always"],
+    ));
+    assert_eq!(always.lines().count(), piped.lines().count(), "{always}");
+    let header = always.lines().next().unwrap();
+    assert!(header.starts_with("\x1b[1m"), "{header}");
+    assert!(header.contains("\x1b[32m"), "{header}");
+    assert_eq!(
+        always
+            .replace("\x1b[1m", "")
+            .replace("\x1b[32m", "")
+            .replace("\x1b[0m", ""),
+        piped
+    );
+}

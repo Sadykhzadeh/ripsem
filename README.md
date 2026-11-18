@@ -263,6 +263,10 @@ more results below this; pass --offset 2 to see them
 - `--context <N>` sets how many snippet lines print per hit (3 in a terminal,
   the whole snippet when the output goes to another program; `0` prints just
   the locations).
+- `--color <auto|always|never>` colours the path and the line numbers of each
+  hit. `auto`, the default, colours a terminal and leaves output piped to
+  another program plain; a `NO_COLOR` set to anything but an empty string
+  turns it off.
 - `--min-score <SCORE>` keeps only strong matches, in both human and JSON output.
 - `-c, --count-by-file` prints hit counts per file instead of the hits.
 - `-q, --quiet` prints nothing and sets the exit status: 0 when a hit is left
