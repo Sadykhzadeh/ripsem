@@ -175,6 +175,7 @@ ripsem init                       # write .ripsem/config.toml
 ripsem index                      # build the index (incremental on re-runs)
 ripsem search "where is auth set up?"   # updates the index first
 ripsem similar src/auth.rs:40-72  # the code nearest to a location, no model run
+ripsem outline src/auth.rs        # the declarations the index holds for a file
 ripsem status                     # index size, counts, model, drift from the tree
 ripsem status --json              # the same as JSON (schema ripsem/status/v1)
 ripsem status --verify            # also read every indexed file and list the ones that changed
@@ -314,6 +315,13 @@ is about rather than as its single best chunk. It takes the options of
 line past the end of the file and a range that holds no indexed code are
 errors.
 
+`ripsem outline <path>` lists the declarations the index holds for one file, in
+the order they start: `40-72  fn Session::refresh`, one line each, with the
+JSON form under [JSON output](#json-output). It is the file's outline as the
+index holds it. A file changed since the index was built is read again first,
+as `search` does, and no model runs unless that file has to be embedded again.
+A Markdown file has no declarations, so its outline is empty.
+
 ## Exit codes
 
 - `0`: the command ran. A search with no hits also exits 0, unless `-q` is
@@ -326,10 +334,10 @@ errors.
 
 ## JSON output
 
-`search`, `similar` and `status` print one JSON document with `--json`. The
-tables below list every field with its type and meaning. A test runs each
-command on a small repository and fails when the fields in a table and the
-keys the command prints differ, so the tables stay true.
+`search`, `similar`, `outline` and `status` print one JSON document with
+`--json`. The tables below list every field with its type and meaning. A test
+runs each command on a small repository and fails when the fields in a table
+and the keys the command prints differ, so the tables stay true.
 
 ### `search`
 
@@ -368,6 +376,17 @@ gives. Each element has the fields of `search`:
 | `kind` | string or null | The declaration kind, such as `fn`; `null` outside any declaration. |
 | `symbol` | string or null | The declaration's name, such as `Session::refresh`; `null` outside any declaration. |
 | `snippet` | string | The code of the hit, the whole snippet. |
+
+### `outline`
+
+An array of the declarations of the file, in the order they start:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `kind` | string | The declaration kind, such as `fn`, `struct` or `impl`. |
+| `symbol` | string | The declaration's name, such as `Session::refresh`. |
+| `start_line` | number | The first line of the declaration, 1-based. |
+| `end_line` | number | The last line of the declaration, 1-based and inclusive. |
 
 ### `status`
 

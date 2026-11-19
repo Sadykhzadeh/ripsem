@@ -124,6 +124,17 @@ pub enum Command {
         #[command(flatten)]
         opts: SearchOpts,
     },
+    /// List the declarations the index holds for a file, in order.
+    #[command(after_long_help = "Examples:
+  ripsem outline src/auth.rs
+  ripsem outline src/auth.rs --json | jq -r '.[].symbol'")]
+    Outline {
+        /// The file, relative to the current directory.
+        file: String,
+        /// Print the declarations as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Index and keep the index in sync as files change.
     #[command(after_long_help = "Examples:
   ripsem watch
@@ -398,6 +409,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Index { force, dry_run } => cmd_index(&root, force, dry_run),
         Command::Search { query, opts } => cmd_search(&root, &query, &opts),
         Command::Similar { target, opts } => cmd_similar(&root, &target, &opts),
+        Command::Outline { file, json } => cmd_outline(&root, &file, json),
         Command::Watch => watch::run(load_config(&root)?),
         Command::Status { json, verify } => cmd_status(&root, json, verify),
         Command::Mcp => mcp::serve(load_config(&root)?, cli.path.is_some()),
@@ -994,6 +1006,39 @@ fn cmd_similar(root: &Path, target: &str, opts: &SearchOpts) -> Result<()> {
     .map_err(|e| similar_line_hint(raw, e))?;
     show(page, opts, context_lines(opts), &[])?;
     warn_about_backend(&config);
+    Ok(())
+}
+
+fn cmd_outline(root: &Path, raw: &str, as_json: bool) -> Result<()> {
+    let config = load_config(root)?;
+    anyhow::ensure!(
+        !config.root.join(from_here(raw, &config.root)).is_dir(),
+        "{raw} is a directory; `outline` takes a file"
+    );
+    let path = mcp::scope_prefix(&from_here(raw, &config.root), &config.root)?
+        .ok_or_else(|| anyhow::anyhow!("'{raw}' names no file"))?;
+    let declarations = pipeline::outline(&config, &path)?;
+    if as_json {
+        let rows: Vec<Value> = declarations
+            .iter()
+            .map(|d| {
+                json!({
+                    "kind": d.symbol.kind,
+                    "symbol": d.symbol.name,
+                    "start_line": d.start_line,
+                    "end_line": d.end_line,
+                })
+            })
+            .collect();
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if declarations.is_empty() {
+        out!("no declarations in {path}");
+    }
+    for d in &declarations {
+        out!("{}-{}  {}", d.start_line, d.end_line, d.symbol.label());
+    }
     Ok(())
 }
 

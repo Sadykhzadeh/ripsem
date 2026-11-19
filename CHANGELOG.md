@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `ripsem outline <path>` lists the declarations the index holds for a file,
+  in the order they start, as `start-end  kind name` lines or as a JSON array
+  with `--json`. It reads the index; a file changed since the index was built
+  is read again first, and no model runs unless that file has to be embedded.
 - A `.ripsem` that is a symbolic link, or anything other than a directory, is
   refused with an error. Before, a repository that shipped `.ripsem` as a link
   had its index and configuration written to the directory the link named.

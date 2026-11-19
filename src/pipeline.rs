@@ -13,6 +13,7 @@ use crate::fingerprint::FileStat;
 use crate::index::{Index, Record};
 use crate::lexical::TermHash;
 use crate::scope::Scope;
+use crate::symbol::Declaration;
 use crate::{chunk, embed, fingerprint, quant, walk};
 
 #[derive(Debug)]
@@ -1705,6 +1706,44 @@ pub fn similar_page(
     let found = similar_answer(config, &searcher, target, limit, offset, scope, text);
     leave_to_exit(searcher.index);
     found
+}
+
+/// The declarations the index holds for the file `path`, in the order they
+/// start. The file is read again first when it changed, and no model runs
+/// unless a changed file has to be embedded.
+pub fn outline(config: &Config, path: &str) -> Result<Vec<Declaration>> {
+    if !config.index_path().exists() {
+        anyhow::bail!("no index yet; run `ripsem index` in this directory first");
+    }
+    let index = match refresh(config, &[path.to_string()]) {
+        Some(index) => index,
+        None => Index::load(&config.index_path())?,
+    };
+    let records: Vec<&Record> = index
+        .records
+        .iter()
+        .filter(|record| record.path.as_str() == path)
+        .collect();
+    if records.is_empty() {
+        anyhow::bail!(
+            "{path} is not in the index; check the path, or run `ripsem index` if the file is new"
+        );
+    }
+    let mut found: Vec<Declaration> = records
+        .iter()
+        .flat_map(|record| record.declarations.iter().cloned())
+        .collect();
+    found.sort_by(|a, b| {
+        (a.start_line, a.end_line, &a.symbol.kind, &a.symbol.name).cmp(&(
+            b.start_line,
+            b.end_line,
+            &b.symbol.kind,
+            &b.symbol.name,
+        ))
+    });
+    found.dedup();
+    leave_to_exit(index);
+    Ok(found)
 }
 
 /// Brings the index up to date with the tree while the model loads, so an

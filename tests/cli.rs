@@ -92,6 +92,45 @@ fn commands_find_the_index_from_a_subdirectory() {
 }
 
 #[test]
+fn outline_lists_the_declarations_of_a_file_in_order() {
+    let dir = TempDir::new();
+    dir.write(
+        "src/auth.rs",
+        "fn verify(p: &str) -> bool {\n    !p.is_empty()\n}\n\nstruct Session {\n    id: u32,\n}\n\nimpl Session {\n    fn refresh(&mut self) {\n        self.id += 1;\n    }\n}\n",
+    );
+    assert!(ripsem(&dir.path, &["init"]).status.success());
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let out = ripsem(&dir.path, &["outline", "src/auth.rs"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "1-3  fn verify\n5-7  struct Session\n9-13  impl Session\n10-12  fn Session::refresh\n"
+    );
+
+    let below = dir.path.join("src");
+    let from_below = ripsem(&below, &["outline", "auth.rs"]);
+    assert_eq!(stdout(&from_below), stdout(&out));
+
+    let dir_out = ripsem(&dir.path, &["outline", "src"]);
+    assert!(!dir_out.status.success());
+    assert!(
+        stderr(&dir_out).contains("takes a file"),
+        "{}",
+        stderr(&dir_out)
+    );
+
+    let missing = ripsem(&dir.path, &["outline", "src/nope.rs"]);
+    assert!(!missing.status.success());
+    assert!(
+        stderr(&missing).contains("not in the index"),
+        "{}",
+        stderr(&missing)
+    );
+}
+
+#[test]
 fn an_explicit_path_is_used_as_given() {
     let dir = TempDir::new();
     dir.write("src/auth.rs", "fn authenticate(user) { verify password }");
@@ -740,13 +779,14 @@ fn the_json_tables_in_the_readme_name_every_key_the_commands_print() {
 
     let readme =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
-    let cases: [(&str, &[&str]); 4] = [
+    let cases: [(&str, &[&str]); 5] = [
         ("### `search`", &["search", "retry", "--json"]),
         (
             "### `search --count-by-file`",
             &["search", "retry", "--count-by-file", "--json"],
         ),
         ("### `similar`", &["similar", "src/retry.rs", "--json"]),
+        ("### `outline`", &["outline", "src/retry.rs", "--json"]),
         ("### `status`", &["status", "--json"]),
     ];
     for (heading, args) in cases {
