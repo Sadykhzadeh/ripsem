@@ -141,7 +141,7 @@ fn watch_directories(watcher: &mut RecommendedWatcher, dir: &Path, report: &impl
     let Some(first) = failed.first() else {
         return;
     };
-    let shown = crate::cli::show_path(first);
+    let shown = crate::cli::printable(&crate::cli::show_path(first)).into_owned();
     match failed.len() {
         1 => report(format!(
             "could not watch {shown}; changes in it will not be seen"

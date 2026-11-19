@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -710,6 +711,23 @@ pub(crate) fn plural(n: usize, noun: &str) -> String {
     }
 }
 
+/// Text from the repository as a terminal shows it. A control character, such
+/// as the escape that starts a sequence for the terminal to act on, is written
+/// as `\u{1b}`; a tab is left as it is.
+pub(crate) fn printable(text: &str) -> Cow<'_, str> {
+    if !text.chars().any(|c| c.is_control() && c != '\t') {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c.is_control() && c != '\t' {
+            true => out.extend(c.escape_unicode()),
+            false => out.push(c),
+        }
+    }
+    Cow::Owned(out)
+}
+
 pub(crate) fn show_path(path: &Path) -> String {
     let shown = path.display().to_string();
     shown
@@ -772,7 +790,11 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
 /// The unreadable files a run skipped, as one line naming the first three.
 fn skipped_line(paths: &[String]) -> String {
     const SHOWN: usize = 3;
-    let shown = paths[..paths.len().min(SHOWN)].join(", ");
+    let shown = paths[..paths.len().min(SHOWN)]
+        .iter()
+        .map(|path| printable(path).into_owned())
+        .collect::<Vec<_>>()
+        .join(", ");
     let more = paths.len().saturating_sub(SHOWN);
     let what = plural(paths.len(), "unreadable file");
     match more {
@@ -1114,7 +1136,7 @@ fn print_hits(
     if vimgrep {
         for h in hits {
             let (line, text) = first_text_line(h);
-            out!("{}:{line}:1:{text}", h.path);
+            out!("{}:{line}:1:{}", printable(&h.path), printable(text));
         }
         return Ok(());
     }
@@ -1140,7 +1162,7 @@ fn print_hits(
             out!("{}", no_hits_message(offset));
         } else {
             for path in paths {
-                out!("{path}");
+                out!("{}", printable(path));
             }
         }
         return Ok(());
@@ -1158,7 +1180,7 @@ fn print_hits(
             out!("{}", no_hits_message(offset));
         } else {
             for (path, count) in counts {
-                out!("{count:>5}  {path}");
+                out!("{count:>5}  {}", printable(&path));
             }
         }
         return Ok(());
@@ -1190,15 +1212,19 @@ fn print_hits(
     for h in hits {
         let place = format!(
             "{}:{}",
-            paint(&h.path, "1", color),
+            paint(&printable(&h.path), "1", color),
             paint(&format!("{}-{}", h.start_line, h.end_line), "32", color)
         );
         match &h.symbol {
-            Some(s) => out!("{place}  {}  ({})", s.label(), show_score(h.score)),
+            Some(s) => out!(
+                "{place}  {}  ({})",
+                printable(&s.label()),
+                show_score(h.score)
+            ),
             None => out!("{place}  ({})", show_score(h.score)),
         }
         for l in snippet_lines(&h.snippet, context, words) {
-            for piece in wrap(l) {
+            for piece in wrap(&printable(l)) {
                 out!("    {}", highlight(&piece, words, color));
             }
         }

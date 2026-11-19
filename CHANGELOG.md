@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Control characters in a file, or in a file name, are printed as escapes such
+  as `\u{1b}` in the text output of `search`, `similar`, `index` and `watch`, so
+  a file cannot clear the screen, set the title or write the clipboard of the
+  terminal that shows a hit. A tab is printed as it is. `--json` and `-l -0`
+  print the text as before.
 - A file whose name is not UTF-8 is left out of the index and named with the
   unreadable files in the warning from `ripsem index`. Before, it was indexed
   under a name with replacement characters that no search could open, so its

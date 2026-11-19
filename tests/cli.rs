@@ -2531,3 +2531,35 @@ fn a_file_whose_name_is_not_utf8_is_skipped_and_named() {
     assert!(stdout(&found).contains("src/auth.rs"), "{}", stdout(&found));
     assert!(!stdout(&found).contains("latin_name"), "{}", stdout(&found));
 }
+
+/// A file can carry terminal control sequences. The text a search prints shows
+/// them as escapes, so they cannot clear the screen, set a title or write the
+/// clipboard of the terminal that prints them.
+#[test]
+fn control_characters_in_a_file_are_printed_as_escapes() {
+    let dir = TempDir::new();
+    dir.write(
+        "src/evil.rs",
+        "fn evil() { /* \x1b]52;c;ZXZpbA==\x07 \x1b[2J */ }\nfn quiet() {}\n",
+    );
+    #[cfg(unix)]
+    std::fs::write(dir.path.join("src/ti\x1b[31mtle.rs"), "fn titled() {}\n").unwrap();
+    assert!(ripsem(&dir.path, &["init"]).status.success());
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let search = stdout(&ripsem(&dir.path, &["search", "evil"]));
+    assert!(
+        !search.contains('\x1b') && !search.contains('\x07'),
+        "{search:?}"
+    );
+    assert!(search.contains(r"\u{1b}]52;c;ZXZpbA==\u{7}"), "{search}");
+    let vimgrep = stdout(&ripsem(&dir.path, &["search", "evil", "--vimgrep"]));
+    assert!(!vimgrep.contains('\x1b'), "{vimgrep:?}");
+    #[cfg(unix)]
+    {
+        let names = stdout(&ripsem(&dir.path, &["search", "-l", "titled"]));
+        assert!(!names.contains('\x1b'), "{names:?}");
+        assert!(names.contains(r"ti\u{1b}[31mtle.rs"), "{names}");
+    }
+}
