@@ -2504,3 +2504,30 @@ fn the_server_does_not_watch_a_tree_a_symlink_points_to() {
     let found = search_until_found(&mut server, "symlinked ledger total", "src/fresh.rs");
     assert!(found.contains("symlinked_ledger_total"), "{found}");
 }
+
+/// A file whose name is not UTF-8 cannot be named in a hit or read back by its
+/// path, so it is left out with the unreadable files, and the rest of the tree
+/// is indexed as usual.
+#[cfg(unix)]
+#[test]
+fn a_file_whose_name_is_not_utf8_is_skipped_and_named() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = indexed_repository();
+    let odd = dir
+        .path
+        .join("src")
+        .join(std::ffi::OsStr::from_bytes(b"caf\xe9.rs"));
+    std::fs::write(&odd, "fn latin_name() {}\n").unwrap();
+
+    let index = ripsem(&dir.path, &["index"]);
+    assert!(index.status.success(), "{}", stderr(&index));
+    assert!(
+        stderr(&index).contains("skipped 1 unreadable file: src/caf"),
+        "{}",
+        stderr(&index)
+    );
+    let found = ripsem(&dir.path, &["search", "authenticate"]);
+    assert!(stdout(&found).contains("src/auth.rs"), "{}", stdout(&found));
+    assert!(!stdout(&found).contains("latin_name"), "{}", stdout(&found));
+}

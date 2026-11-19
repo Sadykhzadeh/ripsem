@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A file whose name is not UTF-8 is left out of the index and named with the
+  unreadable files in the warning from `ripsem index`. Before, it was indexed
+  under a name with replacement characters that no search could open, so its
+  hits were dropped from every result.
 - `ripsem watch` and `ripsem mcp` keep the index current when a directory in
   the tree cannot be read. The directories that can be read are still watched,
   and a line on stderr names the first one left out. Before, one unreadable

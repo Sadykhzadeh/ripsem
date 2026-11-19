@@ -71,6 +71,9 @@ enum Kind {
 }
 
 fn kind_of(path: &Path) -> Kind {
+    if path.to_str().is_none() {
+        return Kind::Unreadable;
+    }
     let Ok(bytes) = std::fs::read(path) else {
         return Kind::Unreadable;
     };

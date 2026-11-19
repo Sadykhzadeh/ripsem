@@ -522,6 +522,9 @@ fn scan(
         .into_par_iter()
         .map_init(Vec::new, |buffer, (path, stat)| {
             let rel = relative(&config.root, &path);
+            if path.to_str().is_none() {
+                return Err(rel);
+            }
             let reread = rehash.contains(&rel);
             if let Some(&(hash, stored)) = known.get(rel.as_str())
                 && stored.trusts(&stat)
