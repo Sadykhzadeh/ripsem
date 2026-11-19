@@ -2627,3 +2627,28 @@ fn a_config_that_is_a_symbolic_link_is_neither_read_nor_written() {
         "this is = not toml [\n"
     );
 }
+
+/// A repository's data directory is a directory of the project. A link in its
+/// place is refused, so the index and the configuration are not written to a
+/// directory outside the project.
+#[cfg(unix)]
+#[test]
+fn a_data_directory_that_is_a_symbolic_link_is_refused() {
+    let dir = TempDir::new();
+    dir.write("src/a.rs", "fn a() {}\n");
+    assert!(ripsem(&dir.path, &["init"]).status.success());
+    let outside = TempDir::new();
+    std::fs::remove_dir_all(dir.path.join(".ripsem")).unwrap();
+    std::os::unix::fs::symlink(&outside.path, dir.path.join(".ripsem")).unwrap();
+
+    let index = ripsem(&dir.path, &["index"]);
+    assert_eq!(index.status.code(), Some(1), "{}", stdout(&index));
+    assert!(
+        stderr(&index).contains("symbolic link"),
+        "{}",
+        stderr(&index)
+    );
+    let init = ripsem(&dir.path, &["init"]);
+    assert!(!init.status.success(), "{}", stdout(&init));
+    assert!(std::fs::read_dir(&outside.path).unwrap().next().is_none());
+}

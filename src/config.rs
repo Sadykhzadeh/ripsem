@@ -123,6 +123,7 @@ impl Config {
     /// survives every run.
     pub fn create_data_dir(&self) -> Result<()> {
         let dir = self.data_dir();
+        check_data_dir(&dir)?;
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", show_path(&dir)))?;
         let path = dir.join(".gitignore");
         match std::fs::OpenOptions::new()
@@ -153,6 +154,7 @@ impl Config {
             root: root.to_path_buf(),
             ..Default::default()
         };
+        check_data_dir(&cfg.data_dir())?;
         let path = cfg.config_path();
         check_config_file(&path)?;
         if path.exists() {
@@ -223,6 +225,23 @@ impl Config {
         check_config_file(&path)?;
         std::fs::write(path, text)?;
         Ok(())
+    }
+}
+
+/// Refuses a data directory that is a symbolic link or any other non-directory.
+/// A link would send the index and the configuration to a directory outside
+/// the project.
+fn check_data_dir(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_symlink() => anyhow::bail!(
+            "{} is a symbolic link; ripsem keeps its data in a directory of the project itself",
+            show_path(path)
+        ),
+        Ok(meta) if !meta.is_dir() => anyhow::bail!(
+            "{} is not a directory; ripsem keeps its data in a directory of the project itself",
+            show_path(path)
+        ),
+        _ => Ok(()),
     }
 }
 
