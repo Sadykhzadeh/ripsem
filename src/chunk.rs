@@ -15,9 +15,10 @@ pub struct Chunk {
     pub declarations: Vec<Declaration>,
 }
 
-/// Changes whenever the same file and settings would give other chunks, so an
-/// index cut by an older ripsem is cut again. A test pins it to the output.
-const REVISION: u32 = 19;
+/// Changes whenever the same file and settings would give other chunks or other
+/// terms for them, so an index cut by an older ripsem is cut again. A test pins
+/// it to the output.
+const REVISION: u32 = 20;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -257,7 +258,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (19, expected),
+            (20, expected),
             "{seen}"
         );
     }

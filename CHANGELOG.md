@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A query written in Japanese or Chinese finds the code and comments that use
+  the same characters. Scripts written without spaces, such as Han, Hiragana
+  and Katakana, were one word to the lexical side, so `日本語` matched only a
+  run that was exactly that word. Such a run is now indexed as pairs of
+  neighbouring characters, so a query of two or more characters finds it inside
+  a longer run. A single character is found only where it stands alone. The chunking revision moves from 19 to 20, so the
+  first `ripsem index` after upgrading reads every file once.
 - `.ripsem/config.toml` that is a symbolic link, or anything other than a file,
   is refused with an error instead of being followed. Before, a link to a file
   outside the project was read, and a TOML error quoted one of its lines, and

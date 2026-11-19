@@ -93,16 +93,63 @@ fn collect_terms(text: &str, buffer: &mut String, out: &mut Vec<TermHash>) {
     // Reused across words, so splitting an identifier allocates nothing.
     let mut pieces = Vec::new();
     for word in text.split(|c: char| !c.is_alphanumeric() && c != '_') {
-        if word.is_empty() {
-            continue;
-        }
-        push_term(word, buffer, out);
-        split_identifier_into(word, &mut pieces);
-        if pieces.len() > 1 {
-            for piece in &pieces {
-                push_term(piece, buffer, out);
+        for segment in unspaced_runs(word) {
+            if segment.chars().next().is_some_and(is_unspaced) {
+                push_pairs(segment, buffer, out);
+                continue;
+            }
+            push_term(segment, buffer, out);
+            split_identifier_into(segment, &mut pieces);
+            if pieces.len() > 1 {
+                for piece in &pieces {
+                    push_term(piece, buffer, out);
+                }
             }
         }
+    }
+}
+
+/// Scripts written without spaces between words: Hiragana, Katakana and Han.
+fn is_unspaced(c: char) -> bool {
+    matches!(
+        c,
+        '\u{3040}'..='\u{30FF}'
+            | '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{FF66}'..='\u{FF9F}'
+            | '\u{20000}'..='\u{2FA1F}'
+    )
+}
+
+/// The parts of a word that are unspaced script and the parts that are not, in
+/// order. Each part is a slice of the word.
+fn unspaced_runs(word: &str) -> impl Iterator<Item = &str> {
+    let mut rest = word;
+    std::iter::from_fn(move || {
+        let first = rest.chars().next()?;
+        let unspaced = is_unspaced(first);
+        let end = rest
+            .find(|c| is_unspaced(c) != unspaced)
+            .unwrap_or(rest.len());
+        let (run, tail) = rest.split_at(end);
+        rest = tail;
+        Some(run)
+    })
+}
+
+/// A run of unspaced script has no word boundaries to find, so it is cut into
+/// pairs of neighbouring characters. A query's pair then finds the same pair
+/// inside a longer run. A run of one character is a term of its own, but a
+/// single character inside a longer run is not a term.
+fn push_pairs(run: &str, buffer: &mut String, out: &mut Vec<TermHash>) {
+    let starts: Vec<usize> = run.char_indices().map(|(at, _)| at).collect();
+    if starts.len() == 1 {
+        push_term(run, buffer, out);
+    }
+    for i in 0..starts.len().saturating_sub(1) {
+        let stop = starts.get(i + 2).copied().unwrap_or(run.len());
+        push_term(&run[starts[i]..stop], buffer, out);
     }
 }
 
@@ -440,6 +487,41 @@ mod tests {
         assert_eq!(terms_of("cache CACHE cache").len(), 1);
         let long: String = (0..200).map(|i| format!("token{i} ")).collect();
         assert_eq!(terms_of(&long).len(), MAX_QUERY_TERMS);
+    }
+
+    #[test]
+    fn a_run_of_unspaced_script_is_found_by_its_pairs() {
+        let vector = TermVector::new("// 日本語のテキストを処理する", "x.rs", None);
+        let query = terms_of("日本語");
+        assert_eq!(query.len(), 2);
+        assert_eq!(
+            vector.presence(&query).count_ones() as usize,
+            query.len(),
+            "a query inside a longer run"
+        );
+        let text = terms_of("テキスト");
+        assert_eq!(vector.presence(&text).count_ones() as usize, text.len());
+        assert_eq!(
+            TermVector::new("fn unrelated() { 天気 }", "y.rs", None).presence(&query),
+            0
+        );
+    }
+
+    #[test]
+    fn a_lone_character_is_a_term_only_where_it_stands_alone() {
+        let alone = TermVector::new("fn lookup() { 語 }", "x.rs", None);
+        assert_eq!(alone.presence(&terms_of("語")).count_ones(), 1);
+        let inside = TermVector::new("// 日本語の処理", "y.rs", None);
+        assert_eq!(inside.presence(&terms_of("語")), 0);
+    }
+
+    #[test]
+    fn a_word_mixing_script_and_latin_keeps_both() {
+        let vector = TermVector::new("let ユーザーID = 1;", "x.rs", None);
+        let id = terms_of("id");
+        assert_eq!(vector.presence(&id).count_ones() as usize, id.len());
+        let user = terms_of("ユーザー");
+        assert_eq!(vector.presence(&user).count_ones() as usize, user.len());
     }
 
     #[test]
