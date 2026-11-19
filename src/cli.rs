@@ -1001,9 +1001,9 @@ fn cmd_similar(root: &Path, target: &str, opts: &SearchOpts) -> Result<()> {
 /// in the index, says what a line range looks like: a colon in a path is
 /// otherwise taken for a path that is simply missing.
 fn similar_line_hint(raw: &str, err: anyhow::Error) -> anyhow::Error {
-    let asks_for_lines = raw.rsplit_once(':').is_some_and(|(_, spec)| {
-        !spec.is_empty() && !spec.bytes().all(|b| b.is_ascii_digit() || b == b'-')
-    });
+    let asks_for_lines = raw
+        .rsplit_once(':')
+        .is_some_and(|(_, spec)| !spec.is_empty() && !is_line_spec(spec));
     if asks_for_lines && err.to_string().contains("is not in the index") {
         anyhow::anyhow!(
             "{err}; a line range is PATH:LINE or PATH:LINE-LINE, such as src/auth.rs:40-72"
@@ -1016,15 +1016,8 @@ fn similar_line_hint(raw: &str, err: anyhow::Error) -> anyhow::Error {
 /// Splits `path`, `path:LINE` or `path:START-END`. A colon that is not
 /// followed by line numbers belongs to the path.
 fn parse_target(raw: &str) -> Result<(&str, Option<(usize, usize)>)> {
-    let line_numbers = |spec: &str| {
-        let parts: Vec<&str> = spec.split('-').collect();
-        parts.len() <= 2
-            && parts
-                .iter()
-                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-    };
     let (path, spec) = match raw.rsplit_once(':') {
-        Some((path, spec)) if !path.is_empty() && line_numbers(spec) => (path, spec),
+        Some((path, spec)) if !path.is_empty() && is_line_spec(spec) => (path, spec),
         _ => return Ok((raw, None)),
     };
     let (first, last) = spec.split_once('-').unwrap_or((spec, spec));
@@ -1034,6 +1027,15 @@ fn parse_target(raw: &str) -> Result<(&str, Option<(usize, usize)>)> {
     };
     let (first, last) = line_range(raw, number(first)?, number(last)?)?;
     Ok((path, Some((first, last))))
+}
+
+/// `LINE` or `START-END`, both made of digits and neither empty.
+fn is_line_spec(spec: &str) -> bool {
+    let parts: Vec<&str> = spec.split('-').collect();
+    parts.len() <= 2
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// A 1-based line range as `similar` takes it, from `raw` as the user wrote it.

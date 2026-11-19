@@ -1399,6 +1399,14 @@ fn similar_names_its_errors() {
             "src/auth0.rs:abc",
             "a line range is PATH:LINE or PATH:LINE-LINE",
         ),
+        (
+            "src/auth0.rs:1-",
+            "a line range is PATH:LINE or PATH:LINE-LINE",
+        ),
+        (
+            "src/auth0.rs:1-2-3",
+            "a line range is PATH:LINE or PATH:LINE-LINE",
+        ),
         ("src", "is a directory; `similar` takes a file"),
     ] {
         let out = ripsem(&dir.path, &["similar", target]);
