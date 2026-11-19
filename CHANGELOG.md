@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A `.ripsem` that is a symbolic link, or anything other than a directory, is
+  refused with an error. Before, a repository that shipped `.ripsem` as a link
+  had its index and configuration written to the directory the link named.
+- `ripsem model set` and `ripsem model backend` change one setting and leave
+  the rest of `.ripsem/config.toml` as it was, comments included. Before, they
+  rewrote the whole file from the settings they read, and dropped every comment
+  a user had written in it.
 - A glob that starts with `./`, in `exclude` or in `search --glob`, is taken
   from the project root, as a glob that starts with `/` is. Before, the `./`
   was dropped, so `./vendor` excluded every directory named `vendor`, nested

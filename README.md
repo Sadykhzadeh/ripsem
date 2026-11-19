@@ -190,6 +190,10 @@ It warns when that happens; delete the subdirectory's `.ripsem` to go back.
 The index stays out of git: `.ripsem/.gitignore` lists it, so `git status`
 shows only `config.toml` (which can be committed) and that `.gitignore`. ripsem
 writes the file when it is missing and never changes an existing one.
+`.ripsem` itself must be a directory. A link in its place is refused, so the
+index and the configuration are never written to a directory outside the
+project. `ripsem model set` and `ripsem model backend` change only their own
+setting in `config.toml`, and the comments and layout a user wrote are kept.
 
 `status` also reports how far the index has drifted from the files. Hits carry
 the line range their file had when it was indexed, so `tree: out of date: 3
@@ -606,8 +610,9 @@ anyway.
    IoAdapter::mapPayload`), so a method cut out of its class still says what it
    belongs to. The vector is stored as int8, next to a set of terms in which
    identifiers are kept whole and also split at `snake_case` and `camelCase`
-   boundaries. Every chunk also lists the declarations it holds, with their
-   lines.
+   boundaries. Text in a script written without spaces between words, such as
+   Han, Hiragana or Katakana, is kept as pairs of neighbouring characters.
+   Every chunk also lists the declarations it holds, with their lines.
 4. **Search.** The query runs through both arms and their rankings are merged
    by reciprocal rank fusion. With the hashing backend the vectors do not
    vote, since they only record which words occur: the lexical arm ranks, and
