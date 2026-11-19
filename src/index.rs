@@ -744,10 +744,14 @@ fn scope_matches(path: &str, prefix: &str, fold_case: bool) -> bool {
     same && path.get(prefix.len()).is_none_or(|&b| b == b'/')
 }
 
-/// Named per process: `ripsem watch` and `ripsem index` can save at once, and
-/// with one shared name each would truncate the file the other is writing.
+/// Named per process and per save: `ripsem watch` and `ripsem index` can save at
+/// once, and the MCP server's watcher and a search can save from two threads of
+/// one process. With one shared name each would truncate the file the other is
+/// writing, or rename it away before the other renames it.
 fn temp_sibling(path: &Path) -> std::path::PathBuf {
-    let suffix = format!(".{}.tmp", std::process::id());
+    static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let save = SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let suffix = format!(".{}.{save}.tmp", std::process::id());
     match path.file_name() {
         Some(name) => {
             let mut tmp = name.to_os_string();
@@ -1629,6 +1633,30 @@ mod tests {
         assert!(index.built_for(Backend::Hash, "test"));
         assert!(!index.built_for(Backend::Fastembed, "test"));
         assert!(!index.built_for(Backend::Hash, "other"));
+    }
+
+    /// Saves from several threads of one process at once, as the MCP server
+    /// does when its watcher and a search both refresh the index. Each save
+    /// writes its own temporary file, so none renames another's away.
+    #[test]
+    fn concurrent_saves_in_one_process_do_not_share_a_temporary_file() {
+        let dir = TempDir::new();
+        let path = dir.path().join(".ripsem/index.bin");
+        let index = std::sync::Arc::new(Index::new(2, Backend::Hash, "hash".into()));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let (index, path) = (std::sync::Arc::clone(&index), path.clone());
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        index.save(&path).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert!(Index::load(&path).is_ok());
     }
 
     #[test]
