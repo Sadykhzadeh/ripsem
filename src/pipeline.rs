@@ -639,14 +639,24 @@ fn refresh_stats(config: &Config, files: &[Hashed], index: &mut Index) {
     }
 }
 
+/// Whether the file at `path` can be the one `stat` describes, judged from its
+/// metadata alone. A file that is not regular, such as a pipe, or whose size
+/// moved is not read: a pipe would block the read, and a file that grew can be
+/// far larger than anything the index holds. A stat the index stored as unknown
+/// says nothing about the size, so only the kind is checked then.
+fn may_be_indexed(path: &Path, stat: FileStat) -> bool {
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && (stat.mtime == i64::MIN || meta.len() == stat.size))
+}
+
 /// The bytes of the indexed file `path` under `root`, when they still hash to
 /// `hash`. The index is data on disk, and a repository can ship one: a path
 /// that leaves the root is not a file this index could have been built from.
-fn bytes_matching(root: &Path, path: &str, hash: u64) -> Option<Vec<u8>> {
+fn bytes_matching(root: &Path, path: &str, hash: u64, stat: FileStat) -> Option<Vec<u8>> {
     let inside = Path::new(path)
         .components()
         .all(|c| matches!(c, std::path::Component::Normal(_)));
-    if !inside {
+    if !inside || !may_be_indexed(&root.join(path), stat) {
         return None;
     }
     let bytes = std::fs::read(root.join(path)).ok()?;
@@ -657,15 +667,15 @@ fn bytes_matching(root: &Path, path: &str, hash: u64) -> Option<Vec<u8>> {
 /// found by reading and hashing each one rather than by its stat. A file that
 /// is gone counts as changed.
 pub fn changed_on_disk(config: &Config, index: &Index) -> Vec<String> {
-    let files: Vec<(&str, u64)> = index
+    let files: Vec<(&str, u64, FileStat)> = index
         .records
         .chunk_by(|a, b| a.path == b.path)
-        .map(|file| (file[0].path.as_str(), file[0].file_hash))
+        .map(|file| (file[0].path.as_str(), file[0].file_hash, file[0].stat))
         .collect();
     files
         .par_iter()
-        .filter(|(path, hash)| bytes_matching(&config.root, path, *hash).is_none())
-        .map(|(path, _)| path.to_string())
+        .filter(|(path, hash, stat)| bytes_matching(&config.root, path, *hash, *stat).is_none())
+        .map(|(path, _, _)| path.to_string())
         .collect()
 }
 
@@ -1206,8 +1216,15 @@ impl Searcher {
                 target.path
             );
         };
-        let bytes = std::fs::read(self.root.join(&target.path))
-            .with_context(|| format!("reading {}", target.path))?;
+        let full = self.root.join(&target.path);
+        if !may_be_indexed(&full, self.index.records[first].stat) {
+            return Ok(Page {
+                hits: Vec::new(),
+                next: None,
+                stale: vec![target.path.clone()],
+            });
+        }
+        let bytes = std::fs::read(&full).with_context(|| format!("reading {}", target.path))?;
         if fingerprint::content_hash(&bytes) != self.index.records[first].file_hash {
             return Ok(Page {
                 hits: Vec::new(),
@@ -1482,8 +1499,8 @@ impl Searcher {
         if let Some(found) = self.reads.borrow().get(record.path.as_str()) {
             return found.clone();
         }
-        let found =
-            bytes_matching(&self.root, &record.path, record.file_hash).map(std::rc::Rc::new);
+        let found = bytes_matching(&self.root, &record.path, record.file_hash, record.stat)
+            .map(std::rc::Rc::new);
         self.reads
             .borrow_mut()
             .insert(record.path.to_string(), found.clone());
@@ -2503,5 +2520,42 @@ mod tests {
         let current = Index::load(&path).unwrap();
         assert!(!current.outdated);
         assert!(current.records.iter().all(|r| r.stat != FileStat::UNKNOWN));
+    }
+
+    #[test]
+    fn an_indexed_file_whose_size_moved_is_not_read_again() {
+        use std::io::Write;
+        let dir = crate::testutil::TempDir::new();
+        dir.write("a.rs", "fn alpha() {}\n");
+        let path = dir.path().join("a.rs");
+        let stat = FileStat::of(&std::fs::metadata(&path).unwrap());
+        let hash = fingerprint::content_hash(&std::fs::read(&path).unwrap());
+        assert!(bytes_matching(dir.path(), "a.rs", hash, stat).is_some());
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"fn beta() {}\n")
+            .unwrap();
+        assert!(!may_be_indexed(&path, stat));
+        assert!(bytes_matching(dir.path(), "a.rs", hash, stat).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_indexed_path_that_is_now_a_pipe_is_not_read() {
+        let dir = crate::testutil::TempDir::new();
+        let pipe = dir.path().join("a.rs");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&pipe)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let stat = FileStat { size: 14, mtime: 1 };
+        assert!(!may_be_indexed(&pipe, stat));
+        assert!(!may_be_indexed(&pipe, FileStat::UNKNOWN));
     }
 }
