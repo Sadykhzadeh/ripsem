@@ -1211,10 +1211,7 @@ impl Searcher {
             .filter(|&i| self.index.records[i].path.as_str() == target.path)
             .collect();
         let Some(&first) = own.first() else {
-            anyhow::bail!(
-                "{} is not in the index; check the path, or run `ripsem index` if the file is new",
-                target.path
-            );
+            return Err(not_indexed(&target.path));
         };
         let full = self.root.join(&target.path);
         if !may_be_indexed(&full, self.index.records[first].stat) {
@@ -1701,6 +1698,15 @@ pub struct Target {
     pub lines: Option<(usize, usize)>,
 }
 
+/// The error for a path the index does not hold. A file can be left out for
+/// reasons its path does not show, so the message names them and the command
+/// that counts them.
+fn not_indexed(path: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{path} is not in the index; check the path, or run `ripsem index` if the file is new. A file can also be left out when it is binary, minified, blank, over max_file_kb or matched by an exclude pattern; `ripsem index --dry-run` counts the files left out for each reason"
+    )
+}
+
 /// Like [`search_page`], for the places nearest to the code at `target`. The
 /// stored vectors answer it, so no model is loaded unless a file changed since
 /// the index was built and has to be embedded again first.
@@ -1742,9 +1748,7 @@ pub fn outline(config: &Config, path: &str) -> Result<Vec<Declaration>> {
         .filter(|record| record.path.as_str() == path)
         .collect();
     if records.is_empty() {
-        anyhow::bail!(
-            "{path} is not in the index; check the path, or run `ripsem index` if the file is new"
-        );
+        return Err(not_indexed(path));
     }
     let mut found: Vec<Declaration> = records
         .iter()
