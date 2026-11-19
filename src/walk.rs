@@ -268,14 +268,19 @@ fn builder(config: &Config, patterns: bool) -> Result<WalkBuilder> {
 
 /// Globs treat a backslash as an escape, but on Windows it is the separator
 /// and cannot be part of a name, so `vendor\third_party` means `vendor/third_party`.
-/// A leading `./` names the root, where a glob is anchored already, so it is
-/// dropped; left in, it would match nothing.
+/// A leading `./` names the root as a leading `/` does, so it becomes one: a
+/// glob without a slash matches at any depth, and dropping the `./` would
+/// exclude `src/vendor` for `./vendor`.
 pub(crate) fn glob_text(pattern: &str, windows: bool) -> String {
     let text = match windows && pattern.contains('\\') {
         true => pattern.replace('\\', "/"),
         false => pattern.to_string(),
     };
-    text.strip_prefix("./").unwrap_or(&text).to_string()
+    match text.strip_prefix("./") {
+        Some("") => String::new(),
+        Some(rest) => format!("/{rest}"),
+        None => text,
+    }
 }
 
 /// Whether a change at any of these paths can alter what [`collect`] returns:
@@ -649,20 +654,28 @@ mod tests {
         let dir = TempDir::new();
         dir.write("keep.rs", "fn main() {}\n");
         dir.write("vendor/skip.rs", "fn main() {}\n");
+        dir.write("src/vendor/kept.rs", "fn main() {}\n");
         let mut config = config_at(dir.path());
         config.exclude = vec!["./vendor".into()];
 
-        assert_eq!(names(&collect(&config).unwrap()), ["keep.rs"]);
+        let mut found = names(&collect(&config).unwrap());
+        found.sort();
+        assert_eq!(found, ["keep.rs", "kept.rs"]);
+        config.exclude = vec!["/vendor".into()];
+        let mut same = names(&collect(&config).unwrap());
+        same.sort();
+        assert_eq!(same, found);
     }
 
     #[test]
     fn a_glob_reads_its_separators_as_the_platform_does() {
         assert_eq!(glob_text("vendor\\third_party", true), "vendor/third_party");
         assert_eq!(glob_text("vendor\\", true), "vendor/");
-        assert_eq!(glob_text(".\\vendor\\x", true), "vendor/x");
+        assert_eq!(glob_text(".\\vendor\\x", true), "/vendor/x");
         assert_eq!(glob_text("vendor\\x", false), "vendor\\x");
-        assert_eq!(glob_text("./vendor/x", false), "vendor/x");
-        assert_eq!(glob_text("./vendor/x", true), "vendor/x");
+        assert_eq!(glob_text("./vendor/x", false), "/vendor/x");
+        assert_eq!(glob_text("./vendor/x", true), "/vendor/x");
+        assert_eq!(glob_text("./", false), "");
         assert_eq!(glob_text("src/**/*.rs", true), "src/**/*.rs");
         assert_eq!(glob_text("my dir/a b.rs", true), "my dir/a b.rs");
     }

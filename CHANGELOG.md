@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A glob that starts with `./`, in `exclude` or in `search --glob`, is taken
+  from the project root, as a glob that starts with `/` is. Before, the `./`
+  was dropped, so `./vendor` excluded every directory named `vendor`, nested
+  ones included. A `vendor` excluded in the same way is unchanged.
 - A query written in Japanese or Chinese finds the code and comments that use
   the same characters. Scripts written without spaces, such as Han, Hiragana
   and Katakana, were one word to the lexical side, so `日本語` matched only a

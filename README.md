@@ -554,10 +554,11 @@ to half of a smaller window, so `max_chunk_lines = 5` on its own works. After ch
 `ripsem index` cuts every file again and embeds only the chunks whose text
 changed (on axum, `chunk_lines` from 40 to 30 embedded 50 of 4,213 chunks).
 Files larger than `max_file_kb` are skipped. `exclude` takes gitignore-style
-globs, on top of `.gitignore` and an optional `.ripsemignore`. Globs are
-relative to the project root: `vendor` excludes the top-level directory, and
-`/vendor` and `./vendor` mean the same, and `src/sub/` with a trailing slash
-excludes that directory too. On Windows a backslash is a separator too, so
+globs, on top of `.gitignore` and an optional `.ripsemignore`. A glob without a
+slash matches at any depth, as in `.gitignore`: `vendor` excludes every
+directory named `vendor`. `/vendor` and `./vendor` mean the same and exclude
+only the one at the project root, and `src/sub/` with a trailing slash excludes
+that directory. On Windows a backslash is a separator too, so
 `vendor\third_party` is `vendor/third_party`. A glob cannot start with `!`;
 put negations in `.ripsemignore`.
 `backend = "hash"` matches words instead of meaning; builds without the
