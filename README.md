@@ -44,7 +44,7 @@ ranges.
 
 1. Install ripsem:
 
-    **npm (any platform):**
+    **npm (macOS on Apple silicon, Linux x64, Windows x64):**
     ```bash
     npm install -g ripsem
     ```
@@ -71,7 +71,7 @@ ranges.
     ```
 
 3. Hand the same search to your coding agent with `ripsem install claude-code`,
-   `ripsem install cursor`, `ripsem install vscode`, `ripsem install gemini` or
+   `ripsem install cursor`, `ripsem install vscode`, `ripsem install gemini`,
    `ripsem install opencode` or `ripsem install codex` (see
    [below](#use-with-coding-agents)).
 
@@ -100,12 +100,14 @@ opening the file.
 
 ## Install
 
-npm and the install scripts put the prebuilt binary from the latest
-[release](https://github.com/Sadykhzadeh/ripsem/releases) on your `PATH`, after
-checking it against the release's `SHA256SUMS`. The scripts install to
-`~/.local/bin` and `%LOCALAPPDATA%\Programs\ripsem`; `RIPSEM_INSTALL_DIR`
-overrides that. The release archives can also be unpacked by hand; on Windows,
-keep `DirectML.dll` next to `ripsem.exe`.
+npm installs the prebuilt binary from the latest
+[release](https://github.com/Sadykhzadeh/ripsem/releases) as a global command.
+The install scripts download the binary and check it against the release's
+`SHA256SUMS` before they put it anywhere. `install.sh` puts it in `~/.local/bin`
+and says how to add that to your `PATH` if it is not there yet. `install.ps1`
+puts it in `%LOCALAPPDATA%\Programs\ripsem` and adds that to your user `PATH`.
+`RIPSEM_INSTALL_DIR` overrides either directory. The release archives can also
+be unpacked by hand; on Windows, keep `DirectML.dll` next to `ripsem.exe`.
 
 | platform | runs on |
 | --- | --- |
