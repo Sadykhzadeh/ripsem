@@ -2413,3 +2413,94 @@ fn color_marks_the_query_words_in_the_snippet() {
     let piped = stdout(&ripsem(&dir.path, &["search", "verify password"]));
     assert!(!piped.contains('\x1b'), "{piped}");
 }
+
+/// A directory made unreadable for the length of a test. Its permissions come
+/// back on drop, so the temporary tree can be removed.
+#[cfg(unix)]
+struct Unreadable(std::path::PathBuf);
+
+#[cfg(unix)]
+impl Unreadable {
+    fn lock(path: &Path) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Self(path.to_path_buf())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Unreadable {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// Asks the server until a search answers with `needle`, as the watcher reads a
+/// new file in after a short delay, and fails after twenty seconds.
+#[cfg(unix)]
+fn search_until_found(server: &mut McpServer, query: &str, needle: &str) -> String {
+    let started = std::time::Instant::now();
+    let message = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"search","arguments":{{"query":"{query}"}}}}}}"#
+    );
+    loop {
+        let text = tool_text(&server.request(&message));
+        if text.contains(needle) {
+            return text;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "no hit for '{query}' after twenty seconds: {text}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// An unreadable directory under the root does not end the watch: the server
+/// still picks up a file added afterwards.
+#[cfg(unix)]
+#[test]
+fn the_server_keeps_watching_past_an_unreadable_directory() {
+    let dir = indexed_repository();
+    dir.write("vendor/locked/inner.rs", "fn inner() {}\n");
+    let locked = dir.path.join("vendor/locked");
+    let _lock = Unreadable::lock(&locked);
+    if std::fs::read_dir(&locked).is_ok() {
+        return;
+    }
+
+    let mut server = McpServer::start(&dir.path);
+    server.request(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+    );
+    dir.write("src/fresh.rs", "fn quarantine_ledger_total() {}\n");
+    let found = search_until_found(&mut server, "quarantine ledger total", "src/fresh.rs");
+    assert!(found.contains("quarantine_ledger_total"), "{found}");
+}
+
+/// A symbolic link to a tree elsewhere is not followed, so an unreadable
+/// directory in that tree neither ends the watch nor is watched at all.
+#[cfg(unix)]
+#[test]
+fn the_server_does_not_watch_a_tree_a_symlink_points_to() {
+    let dir = indexed_repository();
+    let outside = TempDir::new();
+    outside.write("locked/inner.rs", "fn inner() {}\n");
+    let locked = outside.path.join("locked");
+    let _lock = Unreadable::lock(&locked);
+    if std::fs::read_dir(&locked).is_ok() {
+        return;
+    }
+    std::os::unix::fs::symlink(&outside.path, dir.path.join("linked")).unwrap();
+
+    let mut server = McpServer::start(&dir.path);
+    server.request(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+    );
+    dir.write("src/fresh.rs", "fn symlinked_ledger_total() {}\n");
+    let found = search_until_found(&mut server, "symlinked ledger total", "src/fresh.rs");
+    assert!(found.contains("symlinked_ledger_total"), "{found}");
+}

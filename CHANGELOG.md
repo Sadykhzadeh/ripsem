@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `ripsem watch` and `ripsem mcp` keep the index current when a directory in
+  the tree cannot be read. The directories that can be read are still watched,
+  and a line on stderr names the first one left out. Before, one unreadable
+  directory ended the watch, and an MCP server went on answering from an index
+  that no longer followed the files. The watcher no longer follows a symbolic
+  link, so a tree a link points to outside the repository is not watched.
 - `ripsem search --color <auto|always|never>` colours the path and the line
   numbers of each hit in a terminal, and the query's words in its snippet.
   `auto`, the default, leaves piped output plain, and a `NO_COLOR` set to

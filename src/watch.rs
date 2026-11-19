@@ -1,11 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
 use anyhow::Result;
 use notify::event::ModifyKind;
-use notify::{EventKind, RecursiveMode, Watcher};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::cli::plural;
 use crate::config::Config;
@@ -49,10 +49,13 @@ fn keep_current(mut config: Config, strict: bool, report: impl Fn(String)) -> Re
     // Watching starts first, so an edit made while the first index is built
     // still reaches it.
     let (tx, rx) = channel();
-    let mut watcher = notify::recommended_watcher(move |res| {
-        let _ = tx.send(res);
-    })?;
-    watcher.watch(&config.root, RecursiveMode::Recursive)?;
+    let mut watcher = RecommendedWatcher::new(
+        move |res| {
+            let _ = tx.send(res);
+        },
+        notify::Config::default().with_follow_symlinks(false),
+    )?;
+    let recursive = watch_tree(&mut watcher, &config.root, &report);
 
     match index(&config) {
         Ok(stats) => report(format!(
@@ -70,6 +73,15 @@ fn keep_current(mut config: Config, strict: bool, report: impl Fn(String)) -> Re
         std::thread::sleep(Duration::from_millis(300));
         while let Ok(more) = rx.try_recv() {
             burst.add(more);
+        }
+        // Directories made since the watch began get their own watches when
+        // the watch is one directory at a time.
+        if !recursive {
+            for path in &burst.paths {
+                if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) {
+                    watch_directories(&mut watcher, path, &report);
+                }
+            }
         }
         // `ripsem model set` and a rebuild may have happened since the last
         // burst. Indexing under the old settings would overwrite that index.
@@ -93,6 +105,52 @@ fn keep_current(mut config: Config, strict: bool, report: impl Fn(String)) -> Re
         }
     }
     Ok(())
+}
+
+/// Watches `root` and everything under it. Where the system refuses a
+/// directory, as it does one the process cannot read, the tree is watched one
+/// directory at a time instead, so the rest of it stays watched. Returns whether
+/// the recursive watch holds.
+fn watch_tree(watcher: &mut RecommendedWatcher, root: &Path, report: &impl Fn(String)) -> bool {
+    if watcher.watch(root, RecursiveMode::Recursive).is_ok() {
+        return true;
+    }
+    let _ = watcher.unwatch(root);
+    watch_directories(watcher, root, report);
+    false
+}
+
+/// Watches each directory under `dir` on its own, without following symbolic
+/// links, and reports the ones that could not be watched.
+fn watch_directories(watcher: &mut RecommendedWatcher, dir: &Path, report: &impl Fn(String)) {
+    let mut failed: Vec<PathBuf> = Vec::new();
+    for entry in ignore::WalkBuilder::new(dir)
+        .standard_filters(false)
+        .hidden(false)
+        .build()
+        .flatten()
+    {
+        if entry.file_type().is_some_and(|t| t.is_dir())
+            && watcher
+                .watch(entry.path(), RecursiveMode::NonRecursive)
+                .is_err()
+        {
+            failed.push(entry.into_path());
+        }
+    }
+    let Some(first) = failed.first() else {
+        return;
+    };
+    let shown = crate::cli::show_path(first);
+    match failed.len() {
+        1 => report(format!(
+            "could not watch {shown}; changes in it will not be seen"
+        )),
+        n => report(format!(
+            "could not watch {}, starting with {shown}; changes in them will not be seen",
+            plural(n, "directory")
+        )),
+    }
 }
 
 fn index(config: &Config) -> Result<IndexStats> {
