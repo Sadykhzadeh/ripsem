@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Protocol buffer output (`*.pb.go`, `*.pb.gw.go`, `*_pb2.py`, `*_pb2_grpc.py`,
+  `*.pb.h` and `*.pb.cc`) is left out with `skip_generated`, which is on by
+  default, as the lock files and minified bundles already are. These files are
+  long and machine-written, and their names filled results. An index built
+  before drops them on the next `ripsem index`.
 - `ripsem outline <path>` lists the declarations the index holds for a file,
   in the order they start, as `start-end  kind name` lines or as a JSON array
   with `--json`. It reads the index; a file changed since the index was built

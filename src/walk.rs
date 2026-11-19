@@ -21,6 +21,12 @@ const GENERATED: &[&str] = &[
     "*.min.js",
     "*.min.css",
     "*.map",
+    "*.pb.go",
+    "*.pb.gw.go",
+    "*_pb2.py",
+    "*_pb2_grpc.py",
+    "*.pb.h",
+    "*.pb.cc",
 ];
 
 pub fn collect(config: &Config) -> Result<Vec<PathBuf>> {
@@ -620,6 +626,23 @@ mod tests {
         assert_eq!(
             names(&collect(&config_at(dir.path())).unwrap()),
             ["keep.rs"]
+        );
+    }
+
+    #[test]
+    fn protocol_buffer_output_is_skipped_without_configuration() {
+        let dir = TempDir::new();
+        dir.write("keep.go", "package api\n");
+        dir.write("api/service.pb.go", "package api\n");
+        dir.write("api/service.pb.gw.go", "package api\n");
+        dir.write("api/service_pb2.py", "import google\n");
+        dir.write("api/service_pb2_grpc.py", "import grpc\n");
+        dir.write("api/service.pb.h", "#pragma once\n");
+        dir.write("api/service.pb.cc", "#include \"service.pb.h\"\n");
+
+        assert_eq!(
+            names(&collect(&config_at(dir.path())).unwrap()),
+            ["keep.go"]
         );
     }
 

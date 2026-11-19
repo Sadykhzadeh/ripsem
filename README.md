@@ -598,7 +598,9 @@ project. The variables that change a run are `RIPSEM_HASH_ALL`,
 `RIPSEM_NO_GPU` and `RIPSEM_MODEL_DIR`, each described where it applies.
 
 `skip_generated` leaves out files that are committed but written by a machine:
-lock files, `go.sum`, `*.min.js`, `*.min.css` and source maps. `.gitignore`
+lock files, `go.sum`, `*.min.js`, `*.min.css`, source maps and protocol buffer
+output (`*.pb.go`, `*.pb.gw.go`, `*_pb2.py`, `*_pb2_grpc.py`, `*.pb.h`,
+`*.pb.cc`). `.gitignore`
 does not cover them because they are committed on purpose, and a single lock
 file can outweigh everything written by hand. Set it to `false` to index them
 anyway.
