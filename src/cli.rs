@@ -1355,11 +1355,18 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
     Ok(())
 }
 
-/// Refuses an install target that leaves the project through a link: the file
-/// itself, or a directory between it and the root, that points outside the
+/// Refuses an install target that is not a regular file, such as a pipe, which
+/// would block the read, and one that leaves the project through a link: the
+/// file itself, or a directory between it and the root, that points outside the
 /// root or nowhere. A link that stays inside the project, such as a `CLAUDE.md`
 /// that names `AGENTS.md`, is written through as usual.
 fn check_inside_root(root: &Path, path: &Path) -> Result<()> {
+    anyhow::ensure!(
+        std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
+            || std::fs::symlink_metadata(path).is_err(),
+        "{} is not a regular file; ripsem writes its setup only into regular files",
+        show_path(path)
+    );
     let real_root = root.canonicalize()?;
     for link in path.ancestors().take_while(|p| *p != root) {
         if !std::fs::symlink_metadata(link).is_ok_and(|meta| meta.is_symlink()) {

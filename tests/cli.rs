@@ -2809,3 +2809,47 @@ fn an_index_that_is_a_symbolic_link_is_not_read_through() {
     );
     assert!(!std::fs::symlink_metadata(&index).unwrap().is_symlink());
 }
+
+/// Runs `ripsem` in `dir` and fails the test if it is still running after a
+/// minute. A read that blocks on a pipe would otherwise block the test too.
+#[cfg(unix)]
+fn ripsem_with_deadline(dir: &Path, args: &[&str]) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ripsem"))
+        .args(args)
+        .current_dir(dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("ripsem {args:?} blocked on a pipe in {}", dir.display());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    child.wait_with_output().unwrap()
+}
+
+/// An agent's file that is a pipe is refused before `install` reads it, so the
+/// command ends with an error instead of waiting for a writer.
+#[cfg(unix)]
+#[test]
+fn install_refuses_an_agent_file_that_is_a_pipe_without_blocking() {
+    let dir = TempDir::new();
+    assert!(
+        Command::new("mkfifo")
+            .arg(dir.path.join("CLAUDE.md"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let install = ripsem_with_deadline(&dir.path, &["install", "claude-code"]);
+    assert_eq!(install.status.code(), Some(1), "{}", stdout(&install));
+    assert!(
+        stderr(&install).contains("not a regular file"),
+        "{}",
+        stderr(&install)
+    );
+}
