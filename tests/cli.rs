@@ -2587,3 +2587,37 @@ fn a_root_whose_path_is_not_utf8_still_indexes_its_files() {
     let found = ripsem(&root, &["search", "authenticate"]);
     assert!(stdout(&found).contains("src/auth.rs"), "{}", stdout(&found));
 }
+
+/// A repository's configuration is read and written in the repository only. A
+/// link in its place is refused, so a file outside the project is neither
+/// read, as its lines would appear in the error, nor overwritten by a
+/// `model set`.
+#[cfg(unix)]
+#[test]
+fn a_config_that_is_a_symbolic_link_is_neither_read_nor_written() {
+    let dir = TempDir::new();
+    dir.write("src/a.rs", "fn a() {}\n");
+    assert!(ripsem(&dir.path, &["init"]).status.success());
+    let outside = TempDir::new();
+    outside.write("creds.txt", "this is = not toml [\n");
+    let target = outside.path.join("creds.txt");
+    let config = dir.path.join(".ripsem/config.toml");
+    std::fs::remove_file(&config).unwrap();
+    std::os::unix::fs::symlink(&target, &config).unwrap();
+
+    let status = ripsem(&dir.path, &["status"]);
+    assert_eq!(status.status.code(), Some(1), "{}", stdout(&status));
+    assert!(
+        stderr(&status).contains("not a regular file"),
+        "{}",
+        stderr(&status)
+    );
+    assert!(!stderr(&status).contains("not toml"), "{}", stderr(&status));
+
+    let set = ripsem(&dir.path, &["model", "set", "bge-small-en-v1.5"]);
+    assert!(!set.status.success(), "{}", stdout(&set));
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "this is = not toml [\n"
+    );
+}

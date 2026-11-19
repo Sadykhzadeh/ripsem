@@ -154,6 +154,7 @@ impl Config {
             ..Default::default()
         };
         let path = cfg.config_path();
+        check_config_file(&path)?;
         if path.exists() {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", show_path(&path)))?;
@@ -218,8 +219,22 @@ impl Config {
     pub fn save(&self) -> Result<()> {
         self.create_data_dir()?;
         let text = toml::to_string_pretty(self)?;
-        std::fs::write(self.config_path(), text)?;
+        let path = self.config_path();
+        check_config_file(&path)?;
+        std::fs::write(path, text)?;
         Ok(())
+    }
+}
+
+/// Refuses a configuration path that is a symbolic link or any other non-file.
+/// A link can name a file outside the project, and a FIFO would block a read.
+fn check_config_file(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if !meta.is_file() => anyhow::bail!(
+            "{} is not a regular file; ripsem keeps its configuration in a file of the project itself",
+            show_path(path)
+        ),
+        _ => Ok(()),
     }
 }
 

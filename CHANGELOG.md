@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `.ripsem/config.toml` that is a symbolic link, or anything other than a file,
+  is refused with an error instead of being followed. Before, a link to a file
+  outside the project was read, and a TOML error quoted one of its lines, and
+  `ripsem model set` wrote the new settings into that file.
 - Control characters in a file, or in a file name, are printed as escapes such
   as `\u{1b}` in the text output of `search`, `similar`, `index` and `watch`, so
   a file cannot clear the screen, set the title or write the clipboard of the
