@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `--lang` takes a leading `!` to leave a language out, as `--glob` takes one
+  for paths, so `--lang '!json'` skips JSON files. The MCP `lang` argument
+  takes it too.
 - Protocol buffer output (`*.pb.go`, `*.pb.gw.go`, `*_pb2.py`, `*_pb2_grpc.py`,
   `*.pb.h` and `*.pb.cc`) is left out with `skip_generated`, which is on by
   default, as the lock files and minified bundles already are. These files are

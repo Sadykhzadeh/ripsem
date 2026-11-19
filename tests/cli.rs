@@ -616,6 +616,38 @@ fn a_scope_is_read_from_the_current_directory() {
     assert!(paths.is_empty() && error.contains("outside"), "{error}");
 }
 
+#[test]
+fn a_language_with_a_bang_is_left_out_of_a_search() {
+    let dir = TempDir::new();
+    dir.write(
+        "src/auth.rs",
+        "fn verify_password(p: &str) -> bool {\n    !p.is_empty()\n}\n",
+    );
+    dir.write(
+        "src/auth.py",
+        "def verify_password(p):\n    return bool(p)\n",
+    );
+    assert!(ripsem(&dir.path, &["init"]).status.success());
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let out = ripsem(
+        &dir.path,
+        &[
+            "search",
+            "verify password",
+            "--lang",
+            "!rust",
+            "-k",
+            "5",
+            "--context",
+            "0",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(found_paths(&out), ["src/auth.py"]);
+}
+
 /// The paths a search prints, sorted.
 fn found_paths(output: &std::process::Output) -> Vec<String> {
     let mut paths: Vec<String> = stdout(output)

@@ -249,7 +249,8 @@ more results below this; pass --offset 2 to see them
   works too.
 - `-t, --lang <LANG>` (also `--type`) keeps only hits in files of that language,
   by name or by extension: `--lang rust`, `-t py`, `--lang toml`. Repeat the flag
-  or separate values with commas for several: `--lang rust,toml`.
+  or separate values with commas for several: `--lang rust,toml`. A leading `!`
+  leaves a language out: `--lang '!json'`.
 - `-g, --glob <GLOB>` keeps only hits whose path matches, as ripgrep's `-g`
   does, and a leading `!` leaves matching paths out: `-g '*.rs' -g
   '!*_test.rs'`. A directory counts for the files inside it, so

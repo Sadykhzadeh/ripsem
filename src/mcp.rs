@@ -438,7 +438,7 @@ fn tool_schema() -> Value {
             "properties": {
                 "query": { "type": "string", "description": "What you are looking for: an identifier, an error message, or a description of the behaviour." },
                 "path": { "type": "string", "description": "Optional subdirectory (relative to the repo) to limit results to, e.g. 'src/embed'." },
-                "lang": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only files of these languages or extensions, e.g. 'rust' or ['py', 'ts']." },
+                "lang": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only files of these languages or extensions, e.g. 'rust' or ['py', 'ts']; a '!' before a name leaves it out, e.g. '!json'." },
                 "glob": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only paths matching these globs; a leading ! excludes, e.g. ['*.rs', '!*_test.rs']." },
                 "regex": { "type": "string", "description": format!("Only hits whose code matches this regular expression (Rust regex syntax, matched against the whole chunk, so `(?i)` makes it case-insensitive), for \"the place that does X and mentions foo\". Looked for among the {} best-ranked places, so it narrows the answer rather than searching for the pattern; use grep when every occurrence is needed.", pipeline::TEXT_DEPTH) },
                 "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "default": DEFAULT_LIMIT, "description": format!("Maximum number of results (default {DEFAULT_LIMIT}, at most {MAX_LIMIT}).") },

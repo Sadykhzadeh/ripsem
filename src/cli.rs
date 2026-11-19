@@ -215,7 +215,8 @@ pub struct SearchOpts {
     within: Option<String>,
     /// Keep only hits in files of this language, by name or extension:
     /// `--lang rust`, `--lang py`, `--lang toml`. Repeat the flag or
-    /// separate values with commas for several.
+    /// separate values with commas for several. A leading `!` leaves a
+    /// language out: `--lang '!json'`.
     #[arg(short = 't', long, alias = "type", value_name = "LANG")]
     lang: Vec<String>,
     /// Keep only hits whose path matches this glob, as with ripgrep's

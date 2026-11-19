@@ -16,6 +16,8 @@ pub struct Scope {
     prefix: Option<String>,
     /// Lowercase extensions, with the languages as given for messages.
     langs: Option<(Vec<String>, Vec<String>)>,
+    /// The same for the languages a `!` puts out: a file of one is left out.
+    not_langs: Option<(Vec<String>, Vec<String>)>,
     globs: Option<Globs>,
     /// The revision the files were changed since, and those files.
     changed: Option<(String, HashSet<String>)>,
@@ -110,30 +112,46 @@ pub fn text_pattern(raw: &str) -> Result<Regex> {
 
 impl Scope {
     /// `None` when nothing limits the search. A `lang` may hold several values
-    /// separated by commas.
+    /// separated by commas, and one with a leading `!` leaves its language out.
     pub fn new(prefix: Option<&str>, langs: &[String], globs: &[String]) -> Result<Option<Scope>> {
         let mut given = Vec::new();
         let mut exts = Vec::new();
+        let mut not_given = Vec::new();
+        let mut not_exts = Vec::new();
         for raw in langs {
             for piece in raw.split(',') {
-                let found = crate::lang::extensions(piece);
+                let (negated, name) = match piece.trim().strip_prefix('!') {
+                    Some(rest) => (true, rest),
+                    None => (false, piece),
+                };
+                let found = crate::lang::extensions(name);
                 if found.is_empty() {
                     bail!(
                         "'{raw}' names no language; give a name such as rust or an extension such as toml"
                     );
                 }
-                given.push(piece.trim().to_string());
-                exts.extend(found);
+                match negated {
+                    true => {
+                        not_given.push(piece.trim().to_string());
+                        not_exts.extend(found);
+                    }
+                    false => {
+                        given.push(piece.trim().to_string());
+                        exts.extend(found);
+                    }
+                }
             }
         }
         let langs = (!exts.is_empty()).then_some((exts, given));
+        let not_langs = (!not_exts.is_empty()).then_some((not_exts, not_given));
         let globs = Globs::new(globs)?;
-        if prefix.is_none() && langs.is_none() && globs.is_none() {
+        if prefix.is_none() && langs.is_none() && not_langs.is_none() && globs.is_none() {
             return Ok(None);
         }
         Ok(Some(Scope {
             prefix: prefix.map(str::to_string),
             langs,
+            not_langs,
             globs,
             changed: None,
         }))
@@ -147,6 +165,7 @@ impl Scope {
             None => Scope {
                 prefix: None,
                 langs: None,
+                not_langs: None,
                 globs: None,
                 changed,
             },
@@ -164,6 +183,7 @@ impl Scope {
         Scope {
             prefix: Some(prefix.to_string()),
             langs: None,
+            not_langs: None,
             globs: None,
             changed: None,
         }
@@ -183,6 +203,12 @@ impl Scope {
                 return false;
             }
         }
+        if let Some((exts, _)) = &self.not_langs {
+            let ext = Path::new(path).extension().and_then(|e| e.to_str());
+            if ext.is_some_and(|ext| exts.iter().any(|e| e.eq_ignore_ascii_case(ext))) {
+                return false;
+            }
+        }
         if let Some((_, paths)) = &self.changed
             && !paths.contains(path)
         {
@@ -193,14 +219,25 @@ impl Scope {
 
     /// The report for a scope no indexed file satisfies.
     pub fn nothing_matches(&self) -> String {
-        match (&self.prefix, &self.langs, &self.globs, &self.changed) {
-            (Some(prefix), None, None, None) => format!("nothing is indexed under '{prefix}'"),
+        match (
+            &self.prefix,
+            &self.langs,
+            &self.not_langs,
+            &self.globs,
+            &self.changed,
+        ) {
+            (Some(prefix), None, None, None, None) => {
+                format!("nothing is indexed under '{prefix}'")
+            }
             _ => {
                 let mut parts = Vec::new();
                 if let Some(prefix) = &self.prefix {
                     parts.push(format!("path '{prefix}'"));
                 }
                 if let Some((_, langs)) = &self.langs {
+                    parts.push(format!("lang {}", langs.join(",")));
+                }
+                if let Some((_, langs)) = &self.not_langs {
                     parts.push(format!("lang {}", langs.join(",")));
                 }
                 if let Some(globs) = &self.globs {
@@ -250,6 +287,31 @@ mod tests {
             assert!(both.admits(path), "{path}");
         }
         assert!(!both.admits("a.go"));
+    }
+
+    #[test]
+    fn a_negated_language_leaves_its_files_out() {
+        let not_js = scope(None, &["!js"], &[]);
+        assert!(!not_js.admits("web/app.js"));
+        assert!(!not_js.admits("web/app.mjs"));
+        assert!(not_js.admits("src/a.rs"));
+        assert!(not_js.admits("Makefile"));
+
+        let rust_not_test = scope(None, &["rust,!rs"], &[]);
+        assert!(!rust_not_test.admits("src/a.rs"));
+        assert!(!rust_not_test.admits("src/b.py"));
+
+        let rust_only = scope(Some("src"), &["rust", "!toml"], &[]);
+        assert!(rust_only.admits("src/a.rs"));
+        assert!(!rust_only.admits("src/a.toml"));
+    }
+
+    #[test]
+    fn the_report_names_a_negated_language() {
+        assert_eq!(
+            scope(None, &["!js"], &[]).nothing_matches(),
+            "no indexed file matches lang !js"
+        );
     }
 
     #[test]
