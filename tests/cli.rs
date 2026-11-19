@@ -2732,3 +2732,46 @@ fn a_data_directory_that_is_a_symbolic_link_is_refused() {
     assert!(!init.status.success(), "{}", stdout(&init));
     assert!(std::fs::read_dir(&outside.path).unwrap().next().is_none());
 }
+
+/// `install` writes an agent's files inside the project. A note file or a
+/// directory on the way to one that is a link out of the project is refused
+/// before anything is written, and a link that stays inside is followed.
+#[cfg(unix)]
+#[test]
+fn install_does_not_write_through_a_link_out_of_the_project() {
+    let dir = TempDir::new();
+    let outside = TempDir::new();
+    let note = outside.path.join("bashrc");
+    std::fs::write(&note, "export PATH=$PATH:~/bin\n").unwrap();
+    std::os::unix::fs::symlink(&note, dir.path.join("CLAUDE.md")).unwrap();
+
+    let install = ripsem(&dir.path, &["install", "claude-code"]);
+    assert_eq!(install.status.code(), Some(1), "{}", stdout(&install));
+    assert!(
+        stderr(&install).contains("link out of the project"),
+        "{}",
+        stderr(&install)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&note).unwrap(),
+        "export PATH=$PATH:~/bin\n"
+    );
+
+    std::fs::remove_file(dir.path.join("CLAUDE.md")).unwrap();
+    std::os::unix::fs::symlink(&outside.path, dir.path.join(".cursor")).unwrap();
+    let install = ripsem(&dir.path, &["install", "cursor"]);
+    assert!(!install.status.success(), "{}", stdout(&install));
+    assert!(!outside.path.join("mcp.json").exists());
+    assert!(!outside.path.join("rules").exists());
+
+    std::fs::remove_file(dir.path.join(".cursor")).unwrap();
+    dir.write("AGENTS.md", "# Notes\n");
+    std::os::unix::fs::symlink(dir.path.join("AGENTS.md"), dir.path.join("CLAUDE.md")).unwrap();
+    let install = ripsem(&dir.path, &["install", "claude-code"]);
+    assert!(install.status.success(), "{}", stderr(&install));
+    assert!(
+        std::fs::read_to_string(dir.path.join("AGENTS.md"))
+            .unwrap()
+            .contains("indexed by ripsem")
+    );
+}

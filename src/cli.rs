@@ -1355,6 +1355,28 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
     Ok(())
 }
 
+/// Refuses an install target that leaves the project through a link: the file
+/// itself, or a directory between it and the root, that points outside the
+/// root or nowhere. A link that stays inside the project, such as a `CLAUDE.md`
+/// that names `AGENTS.md`, is written through as usual.
+fn check_inside_root(root: &Path, path: &Path) -> Result<()> {
+    let real_root = root.canonicalize()?;
+    for link in path.ancestors().take_while(|p| *p != root) {
+        if !std::fs::symlink_metadata(link).is_ok_and(|meta| meta.is_symlink()) {
+            continue;
+        }
+        let inside = link
+            .canonicalize()
+            .is_ok_and(|real| real.starts_with(&real_root));
+        anyhow::ensure!(
+            inside,
+            "{} is a link out of the project; ripsem writes only inside it",
+            show_path(link)
+        );
+    }
+    Ok(())
+}
+
 fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
     let (path, note) = match target {
         InstallCmd::ClaudeCode => (
@@ -1381,6 +1403,7 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
             format!("## Code search\n\n{}\n", mcp::INSTRUCTIONS),
         ),
     };
+    check_inside_root(root, &path)?;
     let existing = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -1459,6 +1482,7 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
         InstallCmd::Codex => (".codex/config.toml", "mcp_servers"),
     };
     let path = root.join(rel);
+    check_inside_root(root, &path)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
