@@ -1263,7 +1263,7 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
                 return Ok(());
             }
             config.model = id.clone();
-            config.save()?;
+            config.save_setting("model")?;
             out!("model set to {id} (run `ripsem index --force` to rebuild)");
             Ok(())
         }
@@ -1279,7 +1279,7 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
                 return Ok(());
             }
             config.backend = backend;
-            config.save()?;
+            config.save_setting("backend")?;
             out!("backend set to {name} (run `ripsem index --force` to rebuild)");
             Ok(())
         }

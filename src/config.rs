@@ -226,6 +226,86 @@ impl Config {
         std::fs::write(path, text)?;
         Ok(())
     }
+
+    /// Writes one setting, `key`, into a configuration file that exists, and
+    /// leaves the rest of the file as it is: its comments, order and layout.
+    /// Writes the whole configuration when there is no file yet.
+    pub fn save_setting(&self, key: &str) -> Result<()> {
+        let path = self.config_path();
+        check_config_file(&path)?;
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return self.save(),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", show_path(&path))),
+        };
+        let fresh: toml::Table = toml::from_str(&toml::to_string(self)?)?;
+        let value = fresh
+            .get(key)
+            .with_context(|| format!("no setting named {key}"))?;
+        let updated = set_setting(&text, key, &value.to_string());
+        let loaded: toml::Table = toml::from_str(&updated)
+            .with_context(|| format!("could not set {key} in {}", show_path(&path)))?;
+        anyhow::ensure!(
+            loaded.get(key) == Some(value),
+            "could not set {key} in {}; edit it by hand",
+            show_path(&path)
+        );
+        std::fs::write(path, updated)?;
+        Ok(())
+    }
+}
+
+/// `text` with the statement that assigns `key` replaced by `key = value`.
+/// A byte order mark at the start stays where it is.
+fn set_setting(text: &str, key: &str, value: &str) -> String {
+    match text.strip_prefix('\u{feff}') {
+        Some(rest) => format!("\u{feff}{}", set_statement(rest, key, value)),
+        None => set_statement(text, key, value),
+    }
+}
+
+/// Keeps a comment that ends the line of a one-line statement. A key the file
+/// does not name is added at the end. A statement that spans lines ends at the
+/// first line where it parses on its own.
+fn set_statement(text: &str, key: &str, value: &str) -> String {
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(start) = lines.iter().position(|line| assigns(line, key)) else {
+        let mut out = text.to_string();
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push_str(eol);
+        }
+        out.push_str(&format!("{key} = {value}{eol}"));
+        return out;
+    };
+    let end = (start..lines.len())
+        .find(|&end| toml::from_str::<toml::Table>(&lines[start..=end].join("\n")).is_ok())
+        .unwrap_or(start);
+    let comment = match start == end {
+        true => lines[start].find('#').map(|at| &lines[start][at..]),
+        false => None,
+    };
+    let mut replaced = format!("{key} = {value}");
+    if let Some(comment) = comment {
+        replaced = format!("{replaced}  {comment}");
+    }
+    let mut out: Vec<&str> = lines[..start].to_vec();
+    out.push(&replaced);
+    out.extend_from_slice(&lines[end + 1..]);
+    let mut joined = out.join(eol);
+    if text.ends_with('\n') {
+        joined.push_str(eol);
+    }
+    joined
+}
+
+/// Whether `line` assigns `key`, written bare or in quotes.
+fn assigns(line: &str, key: &str) -> bool {
+    let line = line.trim_start();
+    ["", "\"", "'"]
+        .iter()
+        .find_map(|quote| line.strip_prefix(format!("{quote}{key}{quote}").as_str()))
+        .is_some_and(|rest| rest.trim_start().starts_with('='))
 }
 
 /// Refuses a data directory that is a symbolic link or any other non-directory.
@@ -334,6 +414,95 @@ mod tests {
         assert_eq!(loaded.model, "bge-base-en-v1.5");
         assert_eq!(loaded.chunk_lines, 64);
         assert_eq!(loaded.root, dir.path());
+    }
+
+    #[test]
+    fn a_setting_saved_alone_keeps_the_comments_and_layout_around_it() {
+        let dir = TempDir::new();
+        let mut cfg = Config {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        cfg.save().unwrap();
+        std::fs::write(
+            cfg.config_path(),
+            "# Keep the vendored code out.\nbackend = \"fastembed\"  # local only\nexclude = [\n    \"vendor\", # generated\n]\n",
+        )
+        .unwrap();
+
+        cfg = Config::load(dir.path()).unwrap();
+        cfg.backend = Backend::Hash;
+        cfg.save_setting("backend").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(cfg.config_path()).unwrap(),
+            "# Keep the vendored code out.\nbackend = \"hash\"  # local only\nexclude = [\n    \"vendor\", # generated\n]\n"
+        );
+    }
+
+    #[test]
+    fn a_byte_order_mark_stays_at_the_start_of_the_file() {
+        let dir = TempDir::new();
+        let mut cfg = Config {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        cfg.save().unwrap();
+        std::fs::write(
+            cfg.config_path(),
+            "\u{feff}backend = \"hash\"\nchunk_lines = 40\n",
+        )
+        .unwrap();
+
+        cfg = Config::load(dir.path()).unwrap();
+        cfg.backend = Backend::Fastembed;
+        cfg.save_setting("backend").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(cfg.config_path()).unwrap(),
+            "\u{feff}backend = \"fastembed\"\nchunk_lines = 40\n"
+        );
+    }
+
+    #[test]
+    fn a_quoted_key_is_replaced_in_place() {
+        let dir = TempDir::new();
+        let mut cfg = Config {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        cfg.save().unwrap();
+        std::fs::write(
+            cfg.config_path(),
+            "\"model\" = \"bge-small-en-v1.5\"  # keep\nchunk_lines = 40\n",
+        )
+        .unwrap();
+
+        cfg = Config::load(dir.path()).unwrap();
+        cfg.model = "bge-base-en-v1.5".into();
+        cfg.save_setting("model").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(cfg.config_path()).unwrap(),
+            "model = \"bge-base-en-v1.5\"  # keep\nchunk_lines = 40\n"
+        );
+    }
+
+    #[test]
+    fn a_setting_the_file_does_not_name_is_added_at_the_end() {
+        let dir = TempDir::new();
+        let mut cfg = Config {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        cfg.save().unwrap();
+        std::fs::write(cfg.config_path(), "chunk_lines = 40").unwrap();
+
+        cfg = Config::load(dir.path()).unwrap();
+        cfg.model = "bge-base-en-v1.5".into();
+        cfg.save_setting("model").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(cfg.config_path()).unwrap(),
+            "chunk_lines = 40\nmodel = \"bge-base-en-v1.5\"\n"
+        );
+        assert_eq!(Config::load(dir.path()).unwrap().model, "bge-base-en-v1.5");
     }
 
     #[test]
