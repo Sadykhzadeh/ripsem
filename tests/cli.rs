@@ -2518,7 +2518,10 @@ fn a_file_whose_name_is_not_utf8_is_skipped_and_named() {
         .path
         .join("src")
         .join(std::ffi::OsStr::from_bytes(b"caf\xe9.rs"));
-    std::fs::write(&odd, "fn latin_name() {}\n").unwrap();
+    // APFS refuses a name that is not UTF-8, so there is no such file to skip.
+    if std::fs::write(&odd, "fn latin_name() {}\n").is_err() {
+        return;
+    }
 
     let index = ripsem(&dir.path, &["index"]);
     assert!(index.status.success(), "{}", stderr(&index));
@@ -2573,7 +2576,10 @@ fn a_root_whose_path_is_not_utf8_still_indexes_its_files() {
 
     let dir = TempDir::new();
     let root = dir.path.join(std::ffi::OsStr::from_bytes(b"repo\xff"));
-    std::fs::create_dir_all(root.join("src")).unwrap();
+    // APFS refuses a name that is not UTF-8, so there is no such root to index.
+    if std::fs::create_dir_all(root.join("src")).is_err() {
+        return;
+    }
     std::fs::write(
         root.join("src/auth.rs"),
         "fn authenticate(user) { verify password }",
