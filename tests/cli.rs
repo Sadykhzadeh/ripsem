@@ -91,6 +91,7 @@ fn commands_find_the_index_from_a_subdirectory() {
     assert!(!below.join(".ripsem").exists());
 }
 
+#[cfg(feature = "treesitter")]
 #[test]
 fn outline_lists_the_declarations_of_a_file_in_order() {
     let dir = TempDir::new();
@@ -811,16 +812,18 @@ fn the_json_tables_in_the_readme_name_every_key_the_commands_print() {
 
     let readme =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
-    let cases: [(&str, &[&str]); 5] = [
+    let mut cases: Vec<(&str, &[&str])> = vec![
         ("### `search`", &["search", "retry", "--json"]),
         (
             "### `search --count-by-file`",
             &["search", "retry", "--count-by-file", "--json"],
         ),
         ("### `similar`", &["similar", "src/retry.rs", "--json"]),
-        ("### `outline`", &["outline", "src/retry.rs", "--json"]),
         ("### `status`", &["status", "--json"]),
     ];
+    if cfg!(feature = "treesitter") {
+        cases.push(("### `outline`", &["outline", "src/retry.rs", "--json"]));
+    }
     for (heading, args) in cases {
         let out = ripsem(&dir.path, args);
         assert!(out.status.success(), "{args:?}: {}", stderr(&out));
@@ -1128,6 +1131,22 @@ fn every_shell_gets_a_completion_script() {
         assert!(output.status.success(), "{shell}");
         assert!(stdout(&output).contains("completions"), "{shell}");
     }
+}
+
+/// Without the treesitter feature a file has no declarations, so `outline`
+/// says so instead of printing an empty list as if the file had none.
+#[cfg(not(feature = "treesitter"))]
+#[test]
+fn outline_says_when_the_build_cannot_name_declarations() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn verify() {}\n");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let out = ripsem(&dir.path, &["outline", "src/auth.rs"]);
+    assert!(!out.status.success(), "{}", stdout(&out));
+    assert!(stderr(&out).contains("treesitter"), "{}", stderr(&out));
 }
 
 /// An agent reads the output through a pipe, and a hit shown as three lines
