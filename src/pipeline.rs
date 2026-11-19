@@ -522,7 +522,7 @@ fn scan(
         .into_par_iter()
         .map_init(Vec::new, |buffer, (path, stat)| {
             let rel = relative(&config.root, &path);
-            if path.to_str().is_none() {
+            if !walk::utf8_below(&config.root, &path) {
                 return Err(rel);
             }
             let reread = rehash.contains(&rel);

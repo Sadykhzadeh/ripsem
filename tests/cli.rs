@@ -2563,3 +2563,27 @@ fn control_characters_in_a_file_are_printed_as_escapes() {
         assert!(names.contains(r"ti\u{1b}[31mtle.rs"), "{names}");
     }
 }
+
+/// A project whose own directory name is not UTF-8 is indexed like any other:
+/// only the names below the root decide what can be read back.
+#[cfg(unix)]
+#[test]
+fn a_root_whose_path_is_not_utf8_still_indexes_its_files() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = TempDir::new();
+    let root = dir.path.join(std::ffi::OsStr::from_bytes(b"repo\xff"));
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/auth.rs"),
+        "fn authenticate(user) { verify password }",
+    )
+    .unwrap();
+    assert!(ripsem(&root, &["init"]).status.success());
+    ripsem(&root, &["model", "backend", "hash"]);
+    let index = ripsem(&root, &["index"]);
+    assert!(index.status.success(), "{}", stderr(&index));
+    assert!(!stderr(&index).contains("skipped"), "{}", stderr(&index));
+    let found = ripsem(&root, &["search", "authenticate"]);
+    assert!(stdout(&found).contains("src/auth.rs"), "{}", stdout(&found));
+}

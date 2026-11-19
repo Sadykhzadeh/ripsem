@@ -70,8 +70,13 @@ enum Kind {
     Unreadable,
 }
 
-fn kind_of(path: &Path) -> Kind {
-    if path.to_str().is_none() {
+pub(crate) fn utf8_below(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root)
+        .is_ok_and(|rest| rest.to_str().is_some())
+}
+
+fn kind_of(root: &Path, path: &Path) -> Kind {
+    if !utf8_below(root, path) {
         return Kind::Unreadable;
     }
     let Ok(bytes) = std::fs::read(path) else {
@@ -105,7 +110,7 @@ pub fn tally(config: &Config) -> Result<(Vec<PathBuf>, Tally)> {
     let kinds: Vec<(PathBuf, Kind)> = kept
         .into_par_iter()
         .map(|(path, _)| {
-            let kind = kind_of(&path);
+            let kind = kind_of(&config.root, &path);
             (path, kind)
         })
         .collect();
