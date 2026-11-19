@@ -2775,3 +2775,37 @@ fn install_does_not_write_through_a_link_out_of_the_project() {
             .contains("indexed by ripsem")
     );
 }
+
+/// The index is a file of the project. A link in its place is not read through,
+/// so a repository cannot point ripsem at a file elsewhere, and the index is
+/// built again in the project's own place.
+#[cfg(unix)]
+#[test]
+fn an_index_that_is_a_symbolic_link_is_not_read_through() {
+    let dir = TempDir::new();
+    dir.write("src/a.rs", "fn a() {}\n");
+    assert!(ripsem(&dir.path, &["init"]).status.success());
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+    let outside = TempDir::new();
+    let target = outside.path.join("index.bin");
+    std::fs::write(&target, "not ripsem's index\n").unwrap();
+    let index = dir.path.join(".ripsem/index.bin");
+    std::fs::remove_file(&index).unwrap();
+    std::os::unix::fs::symlink(&target, &index).unwrap();
+
+    let status = ripsem(&dir.path, &["status"]);
+    assert!(
+        stdout(&status).contains("not a regular file"),
+        "{}",
+        stdout(&status)
+    );
+
+    let search = ripsem(&dir.path, &["search", "fn a"]);
+    assert!(search.status.success(), "{}", stderr(&search));
+    assert!(stdout(&search).contains("src/a.rs"), "{}", stdout(&search));
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "not ripsem's index\n"
+    );
+    assert!(!std::fs::symlink_metadata(&index).unwrap().is_symlink());
+}

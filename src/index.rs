@@ -205,6 +205,19 @@ pub struct Hit {
     pub record_idx: usize,
 }
 
+/// Refuses an index path that is a symbolic link or any other non-file. A link
+/// can name a file outside the project, and a device such as `/dev/zero` would
+/// be read until memory ran out.
+fn check_index_file(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if !meta.is_file() => anyhow::bail!(
+            "{} is not a regular file; ripsem keeps its index in a file of the project itself",
+            show_path(path)
+        ),
+        _ => Ok(()),
+    }
+}
+
 impl Index {
     pub fn new(dims: usize, backend: Backend, model: String) -> Self {
         Self {
@@ -224,6 +237,7 @@ impl Index {
     /// Frees the file's bytes before the records are built, so they and the
     /// buffers the records point into are not in memory together.
     pub fn load(path: &Path) -> Result<Self> {
+        check_index_file(path)?;
         let bytes =
             std::fs::read(path).with_context(|| format!("reading index {}", show_path(path)))?;
         let decoded = Decoded::parse(&bytes)?;
