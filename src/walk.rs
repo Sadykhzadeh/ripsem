@@ -148,16 +148,23 @@ pub enum Sniffed {
 /// calls.
 pub fn read_hashed(path: &Path, buffer: &mut Vec<u8>) -> Sniffed {
     buffer.clear();
-    if std::fs::File::open(path)
-        .and_then(|mut file| file.read_to_end(buffer))
-        .is_err()
-    {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return Sniffed::Unreadable;
+    };
+    // The text check looks at the first bytes only, so a binary file is not
+    // read past them.
+    if (&mut file).take(SNIFF_BYTES).read_to_end(buffer).is_err() {
         return Sniffed::Unreadable;
     }
-    let sniffed = &buffer[..buffer.len().min(SNIFF_BYTES as usize)];
-    match reads_as_text(sniffed) && !is_minified(buffer) {
-        true => Sniffed::Text(content_hash(buffer)),
-        false => Sniffed::Binary,
+    if !reads_as_text(buffer) {
+        return Sniffed::Binary;
+    }
+    if file.read_to_end(buffer).is_err() {
+        return Sniffed::Unreadable;
+    }
+    match is_minified(buffer) {
+        true => Sniffed::Binary,
+        false => Sniffed::Text(content_hash(buffer)),
     }
 }
 
