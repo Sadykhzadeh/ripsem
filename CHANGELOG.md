@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `ripsem index --dry-run` counts an empty file among the blank files it
+  leaves out, so the files seen add up to the files in the tree. Before,
+  empty files were not counted anywhere.
 - An index that cannot be read is built again from the files, and the run
   says why: `ripsem index`, `watch` and the refresh that a search makes
   print `rebuilt the index, which could not be read` with the reason. Before,

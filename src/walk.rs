@@ -181,11 +181,14 @@ fn is_minified(bytes: &[u8]) -> bool {
     bytes.len() >= MINIFIED_BYTES && bytes.len() / lines >= MINIFIED_LINE
 }
 
-/// Every file the walk reaches within the size limit, in path order, with its
-/// [`FileStat`]. Nothing is read: the size and time come from the directory
-/// listing, which on Windows costs no system call.
+/// Every file the walk reaches within the size limit, except empty ones, in path
+/// order, with its [`FileStat`]. Nothing is read: the size and time come from
+/// the directory listing, which on Windows costs no system call.
 pub fn list(config: &Config) -> Result<Vec<(PathBuf, FileStat)>> {
-    walk_files(config, true, config.max_file_kb.saturating_mul(1024))
+    let mut files = walk_files(config, true, config.max_file_kb.saturating_mul(1024))?;
+    // An empty file has nothing to index; `tally` counts it as blank.
+    files.retain(|(_, stat)| stat.size > 0);
+    Ok(files)
 }
 
 /// [`list`] with the exclude patterns and the size limit applied only when asked
@@ -202,7 +205,6 @@ fn walk_files(config: &Config, patterns: bool, max_bytes: u64) -> Result<Vec<(Pa
             if let Ok(entry) = result
                 && entry.file_type().is_some_and(|t| t.is_file())
                 && let Ok(meta) = entry.metadata()
-                && meta.len() > 0
                 && meta.len() <= max_bytes
             {
                 let _ = sender.send((entry.into_path(), FileStat::of(&meta)));
@@ -906,6 +908,7 @@ mod tests {
         dir.write("big.rs", &"fn a() {}\n".repeat(2000));
         std::fs::write(dir.path().join("blob.dat"), b"\0\x01\x02 binary\n").unwrap();
         dir.write("generated.rs", "fn g() {}\n");
+        dir.write("empty.rs", "");
         let mut config = config_at(dir.path());
         config.max_file_kb = 16;
         config.exclude = vec!["generated.rs".into()];
@@ -919,12 +922,13 @@ mod tests {
                 indexed: 1,
                 binary: 1,
                 minified: 1,
+                blank: 1,
                 too_large: 1,
                 excluded: 1,
                 ..Tally::default()
             }
         );
-        assert_eq!(counts.seen(), 5);
+        assert_eq!(counts.seen(), 6);
     }
 
     #[test]
