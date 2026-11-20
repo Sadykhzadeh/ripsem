@@ -129,6 +129,14 @@ fn outline_lists_the_declarations_of_a_file_in_order() {
         "{}",
         stderr(&missing)
     );
+
+    let ranged = ripsem(&dir.path, &["outline", "src/auth.rs:9-13"]);
+    assert_eq!(ranged.status.code(), Some(1));
+    assert!(
+        stderr(&ranged).contains("run `ripsem outline src/auth.rs`"),
+        "{}",
+        stderr(&ranged)
+    );
 }
 
 #[test]

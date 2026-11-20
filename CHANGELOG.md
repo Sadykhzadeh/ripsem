@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `ripsem outline` given a line range, as `src/auth.rs:40-72` appears in
+  search output, says that it takes a file and names the command to run.
+  Before, it reported the whole argument as a path that was not in the index.
 - A plural acronym such as `URLs`, `IDs` or `APIs` is one word to the lexical
   search. Before, `getURLs` was split into `get`, `UR` and `Ls`, so a query for
   `urls` did not find it. An index built before is cut again on the next

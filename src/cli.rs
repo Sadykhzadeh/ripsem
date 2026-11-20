@@ -1012,6 +1012,11 @@ fn cmd_similar(root: &Path, target: &str, opts: &SearchOpts) -> Result<()> {
 
 fn cmd_outline(root: &Path, raw: &str, as_json: bool) -> Result<()> {
     let config = load_config(root)?;
+    let (file, lines) = parse_target(raw)?;
+    anyhow::ensure!(
+        lines.is_none(),
+        "{raw} names lines, but `outline` takes a file; run `ripsem outline {file}`"
+    );
     anyhow::ensure!(
         !config.root.join(from_here(raw, &config.root)).is_dir(),
         "{raw} is a directory; `outline` takes a file"
