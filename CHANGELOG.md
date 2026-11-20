@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `--lang md` and `--lang markdown` find `.md`, `.markdown` and `.mdx` files
+  alike, and `--lang yml` finds `.yml` and `.yaml` files. Before, a name that
+  was not a listed language matched only the one extension it spelled, so
+  `--lang markdown` skipped `README.md`. A value with a leading dot, such as
+  `--lang .md`, still matches only that extension.
 - `--lang` takes a leading `!` to leave a language out, as `--glob` takes one
   for paths, so `--lang '!json'` skips JSON files. The MCP `lang` argument
   takes it too.

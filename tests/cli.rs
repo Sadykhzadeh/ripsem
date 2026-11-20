@@ -702,6 +702,38 @@ fn a_language_limits_a_search_to_its_files() {
 }
 
 #[test]
+fn a_language_name_covers_every_extension_it_is_written_with() {
+    let dir = TempDir::new();
+    dir.write("docs/a.md", "# Auth\n\nverify password\n");
+    dir.write("docs/b.markdown", "# Auth\n\nverify password\n");
+    dir.write("config/c.yml", "verify: password\n");
+    dir.write("config/d.yaml", "verify: password\n");
+    dir.write("src/auth.rs", "fn login() { verify password }");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+
+    let search = |lang: &str| {
+        found_paths(&ripsem(
+            &dir.path,
+            &[
+                "search",
+                "verify password",
+                "--lang",
+                lang,
+                "--context",
+                "0",
+            ],
+        ))
+    };
+    assert_eq!(search("md"), ["docs/a.md", "docs/b.markdown"]);
+    assert_eq!(search("markdown"), ["docs/a.md", "docs/b.markdown"]);
+    assert_eq!(search(".md"), ["docs/a.md"]);
+    assert_eq!(search("yml"), ["config/c.yml", "config/d.yaml"]);
+    assert_eq!(search("yaml"), ["config/c.yml", "config/d.yaml"]);
+}
+
+#[test]
 fn a_language_naming_nothing_is_an_error() {
     let dir = TempDir::new();
     dir.write("src/auth.rs", "fn login() { verify password }");

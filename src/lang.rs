@@ -108,17 +108,40 @@ const LANGS: &[Lang] = &[
     },
 ];
 
+/// Languages without a grammar. They name their files for `--lang` only, and
+/// their files are chunked by lines, as any text is.
+const TEXT_LANGS: &[Lang] = &[
+    Lang {
+        name: "markdown",
+        aliases: &["md"],
+        exts: &["md", "markdown", "mdx"],
+    },
+    Lang {
+        name: "yaml",
+        aliases: &["yml"],
+        exts: &["yaml", "yml"],
+    },
+];
+
 /// The file extensions a `--lang` value stands for. A language name or alias
-/// gives its extensions; anything else is taken as a bare extension, so
-/// `toml` and `.md` work without being listed. Empty when nothing is named.
+/// gives its extensions; a value with a leading dot is that extension alone,
+/// and anything else is taken as a bare extension, so `toml` works without
+/// being listed. Empty when nothing is named.
 pub fn extensions(value: &str) -> Vec<String> {
     let value = value.trim().to_ascii_lowercase();
+    if let Some(ext) = value.strip_prefix('.') {
+        return match ext {
+            "" => Vec::new(),
+            ext => vec![ext.to_string()],
+        };
+    }
     match LANGS
         .iter()
+        .chain(TEXT_LANGS)
         .find(|l| l.name == value || l.aliases.contains(&value.as_str()))
     {
         Some(l) => l.exts.iter().map(|e| e.to_string()).collect(),
-        None => match value.trim_start_matches('.') {
+        None => match value.as_str() {
             "" => Vec::new(),
             ext => vec![ext.to_string()],
         },
@@ -168,6 +191,9 @@ mod tests {
         assert_eq!(extensions("c#"), ["cs"]);
         assert_eq!(extensions("shell"), ["sh", "bash", "zsh"]);
         assert_eq!(extensions("kt"), ["kt", "kts"]);
+        assert_eq!(extensions("md"), ["md", "markdown", "mdx"]);
+        assert_eq!(extensions("markdown"), extensions("md"));
+        assert_eq!(extensions("yml"), ["yaml", "yml"]);
     }
 
     #[test]
@@ -181,6 +207,8 @@ mod tests {
     fn anything_else_is_a_bare_extension() {
         assert_eq!(extensions("toml"), ["toml"]);
         assert_eq!(extensions(".md"), ["md"]);
+        assert_eq!(extensions(".py"), ["py"]);
+        assert_eq!(extensions(".sh"), ["sh"]);
         assert_eq!(extensions("h"), ["h"]);
         assert!(extensions("").is_empty());
         assert!(extensions(" . ").is_empty());
