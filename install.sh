@@ -24,7 +24,13 @@ case $dir in
   *) dir=$PWD/$dir ;;
 esac
 
-latest=$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest")
+# A connection that stops answering fails the download rather than hanging the
+# script: it gives up when it is slower than a byte a second for a minute.
+fetch() {
+  curl -fsSL --connect-timeout 30 --speed-limit 1 --speed-time 60 "$@"
+}
+
+latest=$(fetch -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest")
 tag=${latest##*/}
 name=ripsem-$tag-$target
 base=https://github.com/$repo/releases/download/$tag
@@ -32,8 +38,8 @@ base=https://github.com/$repo/releases/download/$tag
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 echo "downloading ripsem $tag for $target"
-curl -fsSL -o "$tmp/$name.tar.gz" "$base/$name.tar.gz"
-curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
+fetch -o "$tmp/$name.tar.gz" "$base/$name.tar.gz"
+fetch -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
 
 cd "$tmp"
 grep " $name.tar.gz\$" SHA256SUMS > expected || {

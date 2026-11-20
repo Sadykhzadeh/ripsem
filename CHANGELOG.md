@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `install.sh` gives up on a download that stops answering: a connection that
+  does not open within 30 seconds, or a transfer that moves less than a byte a
+  second for a minute, fails with curl's message. Before, a stalled download
+  hung the install with no output.
 - The npm `ripsem` command ends with the signal that ended the binary, so a
   search killed by a signal is not reported as status 1, which `search -q`
   means as no match.
