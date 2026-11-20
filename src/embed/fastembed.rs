@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, anyhow};
@@ -6,6 +6,7 @@ use directories::ProjectDirs;
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 
 use super::Embedder;
+use crate::cli::show_path;
 
 pub struct FastEmbedder {
     model: Mutex<TextEmbedding>,
@@ -20,7 +21,7 @@ impl FastEmbedder {
     pub fn new(model_id: &str, gpu: bool, queries_only: bool) -> Result<Self> {
         let (embedding_model, dims, query_prefix) = map_model(model_id)?;
         let cache = cache_dir();
-        std::fs::create_dir_all(&cache).ok();
+        create_cache(&cache)?;
         let options = TextInitOptions::new(embedding_model)
             .with_cache_dir(cache.clone())
             .with_show_download_progress(true);
@@ -48,6 +49,13 @@ impl FastEmbedder {
             query_prefix,
         })
     }
+}
+
+/// A cache the disk refuses is named as such, rather than failing the download
+/// with a message that blames the network.
+fn create_cache(cache: &Path) -> Result<()> {
+    std::fs::create_dir_all(cache)
+        .with_context(|| format!("creating the model cache {}", show_path(cache)))
 }
 
 /// `RIPSEM_MODEL_DIR` when it is set, so the models can live on another disk or
@@ -121,6 +129,16 @@ mod tests {
             let known = TextEmbedding::get_model_info(&mapped).unwrap();
             assert_eq!(known.dim, info.dims, "{}", info.id);
         }
+    }
+
+    #[test]
+    fn a_model_cache_that_cannot_be_created_is_named() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("file", "not a directory\n");
+        let err = create_cache(&dir.path().join("file").join("models")).unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.starts_with("creating the model cache "), "{text}");
+        assert!(text.contains("models"), "{text}");
     }
 
     #[test]

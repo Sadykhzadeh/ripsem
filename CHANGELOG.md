@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A model cache directory that cannot be created is named in the error. Before,
+  the failure was reported as a download that needs the network.
 - `install.sh` gives up on a download that stops answering: a connection that
   does not open within 30 seconds, or a transfer that moves less than a byte a
   second for a minute, fails with curl's message. Before, a stalled download
