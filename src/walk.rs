@@ -269,8 +269,13 @@ fn builder(config: &Config, patterns: bool) -> Result<WalkBuilder> {
                 !pattern.starts_with('!'),
                 "exclude pattern '{pattern}' cannot start with '!'; put a negation in .ripsemignore"
             );
+            let text = glob_text(pattern, cfg!(windows));
+            anyhow::ensure!(
+                !text.trim().is_empty(),
+                "exclude pattern '{pattern}' names no path, or only the project root; remove it from exclude"
+            );
             overrides
-                .add(&format!("!{}", glob_text(pattern, cfg!(windows))))
+                .add(&format!("!{text}"))
                 .with_context(|| format!("invalid exclude pattern '{pattern}'"))?;
         }
         builder.overrides(overrides.build().context("building exclude overrides")?);
@@ -716,6 +721,18 @@ mod tests {
         let mut config = config_at(dir.path());
         config.exclude = vec!["[".into()];
         assert!(collect(&config).is_err());
+    }
+
+    #[test]
+    fn a_blank_exclude_is_an_error_not_an_exclusion_of_everything() {
+        let dir = TempDir::new();
+        dir.write("keep.rs", "fn main() {}\n");
+        let mut config = config_at(dir.path());
+        for blank in ["", "./"] {
+            config.exclude = vec![blank.into()];
+            let err = format!("{:#}", collect(&config).unwrap_err());
+            assert!(err.contains("remove it from exclude"), "{err}");
+        }
     }
 
     #[test]

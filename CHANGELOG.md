@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A blank entry in `exclude`, or `./` alone, is an error that names it. Before,
+  `exclude = [""]` and `exclude = ["./"]` matched every path, so the index came
+  out empty with no message.
 - `--lang md` and `--lang markdown` find `.md`, `.markdown` and `.mdx` files
   alike, and `--lang yml` finds `.yml` and `.yaml` files. Before, a name that
   was not a listed language matched only the one extension it spelled, so
