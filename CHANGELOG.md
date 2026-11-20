@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A file that ripsem replaces, such as `CLAUDE.md` or `.ripsem/config.toml`,
+  takes the temporary files that a killed write left beside it with it on
+  the next write, once they are an hour old. Only names of that form are
+  removed. Before, each killed write left a copy of the file behind for good.
 - `ripsem index --dry-run` counts an empty file among the blank files it
   leaves out, so the files seen add up to the files in the tree. Before,
   empty files were not counted anywhere.

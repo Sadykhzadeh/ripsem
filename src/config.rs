@@ -357,8 +357,8 @@ static REPLACEMENTS: AtomicU64 = AtomicU64::new(0);
 /// it names is the one replaced and the link stays.
 ///
 /// An interrupted run (killed, or its machine lost power) leaves the target as
-/// it was, but can leave its new file behind as `.<name>.<pid>.<n>.tmp`; nothing
-/// removes that file later.
+/// it was, but can leave its new file behind as `.<name>.<pid>.<n>.tmp`. The
+/// next replacement of the same target removes those once they are old.
 pub(crate) fn replace_file(path: &Path, text: &str) -> std::io::Result<()> {
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     match std::fs::OpenOptions::new().write(true).open(&target) {
@@ -381,8 +381,51 @@ pub(crate) fn replace_file(path: &Path, text: &str) -> std::io::Result<()> {
     let written = staged.and_then(|()| std::fs::rename(&temp, &target));
     if written.is_err() {
         let _ = std::fs::remove_file(&temp);
+    } else {
+        remove_stale_replacements(&target);
     }
     written
+}
+
+/// A replacement still running writes its temporary file in one pass, so one
+/// that has not changed for this long was left by a replacement that was killed.
+const STALE_REPLACEMENT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Removes the temporary files that replacements of `target` left behind when
+/// they were killed. Only names of the form `.<name>.<pid>.<n>.tmp` are removed,
+/// and only once they are older than [`STALE_REPLACEMENT`].
+fn remove_stale_replacements(target: &Path) {
+    let (Some(dir), Some(name)) = (target.parent(), target.file_name().and_then(|n| n.to_str()))
+    else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file = entry.file_name();
+        let Some(rest) = file
+            .to_str()
+            .and_then(|f| f.strip_prefix('.'))
+            .and_then(|f| f.strip_prefix(name))
+            .and_then(|r| r.strip_prefix('.'))
+            .and_then(|r| r.strip_suffix(".tmp"))
+        else {
+            continue;
+        };
+        let shaped = rest
+            .split_once('.')
+            .is_some_and(|(pid, n)| pid.parse::<u32>().is_ok() && n.parse::<u64>().is_ok());
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= STALE_REPLACEMENT);
+        if shaped && old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// The name [`replace_file`] stages `target` under for replacement `n`.
@@ -686,6 +729,33 @@ mod tests {
         (next..next + 64)
             .map(|n| replacement_temp(target, n))
             .collect()
+    }
+
+    #[test]
+    fn a_replacement_removes_the_temporary_files_a_killed_one_left() {
+        let dir = TempDir::new();
+        dir.write("notes.md", "old\n");
+        let target = dir.path().join("notes.md");
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 60 * 60);
+        let killed = dir.path().join(".notes.md.4242.7.tmp");
+        let other = dir.path().join(".notes.md.notes.tmp");
+        let running = dir.path().join(".notes.md.4243.0.tmp");
+        for file in [&killed, &other] {
+            std::fs::write(file, "partial").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(file)
+                .unwrap()
+                .set_modified(long_ago)
+                .unwrap();
+        }
+        std::fs::write(&running, "partial").unwrap();
+
+        replace_file(&target, "new\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new\n");
+        assert!(!killed.exists());
+        assert!(other.exists());
+        assert!(running.exists());
     }
 
     #[test]
