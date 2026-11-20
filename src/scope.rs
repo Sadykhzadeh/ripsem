@@ -127,7 +127,8 @@ impl Scope {
                 let found = crate::lang::extensions(name);
                 if found.is_empty() {
                     bail!(
-                        "'{raw}' names no language; give a name such as rust or an extension such as toml"
+                        "'{}' names no language; give a name such as rust or an extension such as toml",
+                        piece.trim()
                     );
                 }
                 match negated {
@@ -390,10 +391,25 @@ mod tests {
 
     #[test]
     fn a_value_naming_no_language_is_an_error() {
-        for bad in ["", "  ", "rust,", ".", ","] {
+        for (bad, entry) in [("", ""), ("  ", ""), (".", "."), (",", ""), ("rust,", "")] {
             let err = Scope::new(None, &[bad.to_string()], &[]).unwrap_err();
-            assert!(err.to_string().contains(&format!("'{bad}'")), "{err}");
+            assert!(
+                err.to_string()
+                    .starts_with(&format!("'{entry}' names no language")),
+                "{err}"
+            );
         }
+    }
+
+    #[test]
+    fn the_error_names_the_entry_that_names_no_language() {
+        let err = Scope::new(None, &["rust,,py".to_string()], &[]).unwrap_err();
+        assert!(err.to_string().starts_with("'' names no language"), "{err}");
+        let err = Scope::new(None, &["rust, !".to_string()], &[]).unwrap_err();
+        assert!(
+            err.to_string().starts_with("'!' names no language"),
+            "{err}"
+        );
     }
 
     #[test]

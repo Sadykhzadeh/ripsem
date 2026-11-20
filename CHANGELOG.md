@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A `--lang` value with an entry that names no language, such as `rs,,py`, is
+  refused with that entry named. Before, the error quoted the whole value,
+  which made `rs,,py` look like a language that does not exist.
 - `search --offset` given a value that is not a whole number says that it must
   be a whole number, 0 or more, as `-k` does. Before, `--offset 1e3` was
   answered with the parser's own text, `invalid digit found in string`.
