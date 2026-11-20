@@ -21,7 +21,7 @@ if (-not $dir) { $dir = Join-Path $env:LOCALAPPDATA 'Programs\ripsem' }
 $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
 function Get-Url($url, $path) {
     if (Test-Path $curl) {
-        & $curl -fsSL -o $path $url
+        & $curl -fsSL --connect-timeout 30 --speed-limit 1 --speed-time 60 -o $path $url
         if ($LASTEXITCODE -ne 0) { throw "downloading $url failed" }
     } else {
         Invoke-WebRequest $url -OutFile $path -UseBasicParsing

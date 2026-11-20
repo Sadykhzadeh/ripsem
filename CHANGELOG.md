@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `install.ps1` gives up on a download that stops answering, with the same
+  limits as `install.sh`. Before, a stalled download hung the install with no
+  output.
 - `ripsem init` that cannot write its config no longer leaves an empty
   `.ripsem/.gitignore` behind. Before, the empty file stayed, so the index was
   not ignored by git from then on.
