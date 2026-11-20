@@ -36,7 +36,10 @@ curl -fsSL -o "$tmp/$name.tar.gz" "$base/$name.tar.gz"
 curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
 
 cd "$tmp"
-grep " $name.tar.gz\$" SHA256SUMS > expected
+grep " $name.tar.gz\$" SHA256SUMS > expected || {
+  echo "SHA256SUMS has no entry for $name.tar.gz; not installing" >&2
+  exit 1
+}
 if command -v sha256sum >/dev/null 2>&1; then
   sha256sum -c expected >/dev/null
 else

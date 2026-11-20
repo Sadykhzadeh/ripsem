@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `install.sh` says so when the release's `SHA256SUMS` has no line for the
+  archive, and installs nothing. Before, it exited with status 1 and no message.
 - A `--lang` value with an entry that names no language, such as `rs,,py`, is
   refused with that entry named. Before, the error quoted the whole value,
   which made `rs,,py` look like a language that does not exist.
