@@ -167,13 +167,55 @@ const UNRELATED: [&str; 12] = [
 /// too little to matter.
 const NOISE_DRIFT: usize = 10;
 
+/// The shortest time between two saves of an index build's progress, once it
+/// has embedded something since the last one. A build that is interrupted
+/// keeps the files it finished, and the next run embeds only the rest.
+const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How many times as long as a save took the build waits before its next save,
+/// so saving a large index takes a small share of the build.
+const CHECKPOINT_SPACING: u32 = 30;
+
+/// When a build saves its progress. `every` is the shortest wait between saves,
+/// as [`CHECKPOINT_EVERY`] is for a run. `halt_after` ends the build after that
+/// many files have been passed, the way an interrupt would, once the index so
+/// far is on disk.
+#[derive(Clone, Copy)]
+struct Pace {
+    every: std::time::Duration,
+    #[cfg(test)]
+    halt_after: Option<usize>,
+}
+
+impl Pace {
+    #[cfg(test)]
+    fn halts_after(self, done: usize) -> bool {
+        self.halt_after == Some(done)
+    }
+
+    #[cfg(not(test))]
+    fn halts_after(self, _done: usize) -> bool {
+        false
+    }
+}
+
+impl Default for Pace {
+    fn default() -> Self {
+        Self {
+            every: CHECKPOINT_EVERY,
+            #[cfg(test)]
+            halt_after: None,
+        }
+    }
+}
+
 pub fn index_repo(config: &Config, force: bool) -> Result<IndexStats> {
-    index_and_keep(config, force, &[]).map(|(stats, _)| stats)
+    index_and_keep(config, force, &[], Pace::default()).map(|(stats, _)| stats)
 }
 
 /// [`index_repo`] for a process that exits soon after, such as `ripsem index`.
 pub fn index_repo_once(config: &Config, force: bool) -> Result<IndexStats> {
-    index_and_keep(config, force, &[]).map(|(stats, index)| {
+    index_and_keep(config, force, &[], Pace::default()).map(|(stats, index)| {
         leave_to_exit(index);
         stats
     })
@@ -195,6 +237,7 @@ fn index_and_keep(
     config: &Config,
     force: bool,
     rehash: &[String],
+    pace: Pace,
 ) -> Result<(IndexStats, Option<Index>)> {
     // Loaded on the first chunk that needs a vector: a reindex that finds
     // nothing changed, or only files removed, never needs the model.
@@ -317,6 +360,10 @@ fn index_and_keep(
     let mut stat_moved = false;
 
     let pb = progress(scanned.len() as u64);
+    let mut done = 0;
+    let mut saved = 0;
+    let mut last_save = std::time::Instant::now();
+    let mut save_took = std::time::Duration::ZERO;
     for batch in scanned.chunks(PREPARE_BATCH) {
         let prepared: Vec<Prepared> = batch
             .par_iter()
@@ -370,6 +417,7 @@ fn index_and_keep(
 
         for file in prepared {
             pb.inc(1);
+            done += 1;
             match file {
                 Prepared::Unchanged(rel, stat) => {
                     if let Some(records) = prev_chunks.get_mut(&rel) {
@@ -395,6 +443,33 @@ fn index_and_keep(
                             queue.flush(config, &mut embedder, &mut index, &pb)?;
                         }
                     }
+                }
+            }
+            let halting = pace.halts_after(done);
+            let wait = pace.every.max(save_took * CHECKPOINT_SPACING);
+            if halting || (embedded > saved && last_save.elapsed() >= wait) {
+                queue.flush(config, &mut embedder, &mut index, &pb)?;
+                // Files not reached yet keep the records the previous index
+                // holds for them, so a search meanwhile still finds them.
+                let carried: Vec<Record> = scanned[done..]
+                    .iter()
+                    .filter_map(|&(i, _, _)| prev_chunks.get(&relative(&config.root, &files[i].0)))
+                    .flatten()
+                    .cloned()
+                    .collect();
+                let kept = index.records.len();
+                index.records.extend(carried);
+                index.empties = empties.clone();
+                index.noise_floor = prev_floor;
+                index.embedded_since_floor = embedded_since_floor + queue.embedded;
+                let began = std::time::Instant::now();
+                index.save(&config.index_path())?;
+                save_took = began.elapsed();
+                index.records.truncate(kept);
+                saved = embedded;
+                last_save = std::time::Instant::now();
+                if halting {
+                    anyhow::bail!("stopped after {done} files");
                 }
             }
         }
@@ -1774,7 +1849,7 @@ pub fn outline(config: &Config, path: &str) -> Result<Vec<Declaration>> {
 /// the index as it is. Returns the index it ended with, when it has one that
 /// matches the file. The files in `rehash` are read whatever their stat.
 fn refresh(config: &Config, rehash: &[String]) -> Option<Index> {
-    match index_and_keep(config, false, rehash) {
+    match index_and_keep(config, false, rehash, Pace::default()) {
         Ok((stats, index)) => {
             if stats.embedded > 0 {
                 eprintln!(
@@ -2244,17 +2319,101 @@ mod tests {
                 .unwrap()
         };
 
-        let (_, built) = index_and_keep(&config, false, &[]).unwrap();
+        let (_, built) = index_and_keep(&config, false, &[], Pace::default()).unwrap();
         assert_eq!(built.unwrap().encode_body().unwrap(), on_disk());
 
-        let (stats, kept) = index_and_keep(&config, false, &[]).unwrap();
+        let (stats, kept) = index_and_keep(&config, false, &[], Pace::default()).unwrap();
         assert_eq!(stats.embedded, 0);
         assert_eq!(kept.unwrap().encode_body().unwrap(), on_disk());
 
         dir.write("b.rs", "fn beta() { gamma() }\n");
-        let (stats, updated) = index_and_keep(&config, false, &[]).unwrap();
+        let (stats, updated) = index_and_keep(&config, false, &[], Pace::default()).unwrap();
         assert_eq!(stats.embedded, 1);
         assert_eq!(updated.unwrap().encode_body().unwrap(), on_disk());
+    }
+
+    fn chunk_keys(config: &Config) -> Vec<(String, usize, usize, u64, u64)> {
+        let index = Index::load(&config.index_path()).unwrap();
+        let mut keys: Vec<_> = index
+            .records
+            .iter()
+            .map(|r| {
+                (
+                    r.path.to_string(),
+                    r.start_line,
+                    r.end_line,
+                    r.file_hash,
+                    r.text_hash,
+                )
+            })
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    #[test]
+    fn a_build_stopped_part_way_keeps_the_files_it_finished() {
+        let dir = crate::testutil::TempDir::new();
+        for i in 0..10 {
+            dir.write(
+                &format!("f{i}.rs"),
+                &format!("fn item_{i}() {{ gravel_{i}() }}\n"),
+            );
+        }
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        let halted = Pace {
+            every: std::time::Duration::ZERO,
+            halt_after: Some(4),
+        };
+        assert!(index_and_keep(&config, false, &[], halted).is_err());
+        let kept = Index::load(&config.index_path()).unwrap();
+        let paths: std::collections::HashSet<&str> =
+            kept.records.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(paths.len(), 4);
+
+        let (stats, _) = index_and_keep(&config, false, &[], Pace::default()).unwrap();
+        assert_eq!((stats.reused, stats.embedded), (4, 6));
+        let resumed = chunk_keys(&config);
+        index_repo(&config, true).unwrap();
+        assert_eq!(resumed, chunk_keys(&config));
+    }
+
+    #[test]
+    fn a_build_stopped_after_an_edit_keeps_the_old_records_of_the_files_it_did_not_reach() {
+        let dir = crate::testutil::TempDir::new();
+        for name in ["a", "b", "c", "d"] {
+            dir.write(&format!("{name}.rs"), &format!("fn {name}_item() {{}}\n"));
+        }
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        index_repo(&config, false).unwrap();
+        let before = chunk_keys(&config);
+        dir.write("d.rs", "fn quartz_item() { quartz() }\n");
+
+        let halted = Pace {
+            every: std::time::Duration::ZERO,
+            halt_after: Some(1),
+        };
+        assert!(index_and_keep(&config, false, &[], halted).is_err());
+        let kept = chunk_keys(&config);
+        let old_d: Vec<_> = before.iter().filter(|key| key.0 == "d.rs").collect();
+        assert!(!old_d.is_empty());
+        for key in old_d {
+            assert!(kept.contains(key));
+        }
+        let paths: std::collections::HashSet<&str> =
+            kept.iter().map(|key| key.0.as_str()).collect();
+        assert_eq!(paths.len(), 4);
+
+        index_repo(&config, false).unwrap();
+        let resumed = chunk_keys(&config);
+        index_repo(&config, true).unwrap();
+        assert_eq!(resumed, chunk_keys(&config));
     }
 
     #[cfg(feature = "hnsw")]

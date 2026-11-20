@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- An index build saves what it has embedded at most once a minute, and on a
+  large index less often: each save is followed by a wait of thirty times its
+  own length. An interrupt such as Ctrl-C keeps the files already done and the
+  next run embeds only the rest. Before, the index was written only at the end,
+  and an interrupted first build lost all of its embedding work.
 - The next index save removes the temporary files that an interrupted save left
   in `.ripsem`, once they are an hour old. Before, each killed save left a copy
   of the index behind for good.
