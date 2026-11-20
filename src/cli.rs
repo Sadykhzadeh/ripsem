@@ -8,7 +8,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
-use crate::config::{Backend, Config};
+use crate::config::{Backend, Config, replace_file};
 use crate::index::{self, Index};
 use crate::scope::Scope;
 use crate::{embed, mcp, model, pipeline, walk, watch};
@@ -1449,7 +1449,7 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
         true => note,
         false => format!("{}\n\n{note}", existing.trim_end()),
     };
-    std::fs::write(&path, text)?;
+    replace_file(&path, &text)?;
     out!("added a note on when to use it to {}", show_path(&path));
     Ok(())
 }
@@ -1493,7 +1493,7 @@ fn add_codex_server(path: &Path) -> Result<()> {
             show_path(path)
         );
     }
-    std::fs::write(path, written)?;
+    replace_file(path, &written)?;
     out!("added ripsem to {}", show_path(path));
     Ok(())
 }
@@ -1590,7 +1590,7 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
             None => add_member(text, text.trim(), key, &json!({ "ripsem": entry })),
         }
     };
-    std::fs::write(&path, written)?;
+    replace_file(&path, &written)?;
     out!("added ripsem to {}", show_path(&path));
     Ok(())
 }

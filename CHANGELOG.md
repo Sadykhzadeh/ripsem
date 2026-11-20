@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A file that ripsem writes, such as `CLAUDE.md`, `AGENTS.md`, `.mcp.json` or
+  `.ripsem/config.toml`, is replaced through a new temporary file beside it that
+  is then renamed over it, so a write that fails part way, on a full disk or
+  after an interrupt, leaves the file as it was. Before, the file was truncated
+  first, and a full disk left a `CLAUDE.md` holding only the part that was
+  written. A link is still written through, and a read-only file is still
+  refused.
 - A model cache directory that cannot be created is named in the error. Before,
   the failure was reported as a download that needs the network.
 - `install.sh` gives up on a download that stops answering: a connection that

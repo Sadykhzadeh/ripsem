@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -223,7 +224,7 @@ impl Config {
         let text = toml::to_string_pretty(self)?;
         let path = self.config_path();
         check_config_file(&path)?;
-        std::fs::write(path, text)?;
+        replace_file(&path, &text)?;
         Ok(())
     }
 
@@ -250,7 +251,7 @@ impl Config {
             "could not set {key} in {}; edit it by hand",
             show_path(&path)
         );
-        std::fs::write(path, updated)?;
+        replace_file(&path, &updated)?;
         Ok(())
     }
 }
@@ -335,6 +336,55 @@ fn check_config_file(path: &Path) -> Result<()> {
         ),
         _ => Ok(()),
     }
+}
+
+/// Counts the replacements this process has started, so each one gets a
+/// temporary name of its own.
+static REPLACEMENTS: AtomicU64 = AtomicU64::new(0);
+
+/// Replaces the file at `path` with `text`. A target that is not writable is
+/// refused before anything is written, as writing it in place would be. The
+/// text goes to a new file beside the target, named with this process's id and
+/// a counter, which is created exclusively, so a file or link already there is
+/// never opened. That file is then renamed over the target, so a write that
+/// fails part way leaves the target as it was. A link is followed, so the file
+/// it names is the one replaced and the link stays.
+///
+/// An interrupted run (killed, or its machine lost power) leaves the target as
+/// it was, but can leave its new file behind as `.<name>.<pid>.<n>.tmp`; nothing
+/// removes that file later.
+pub(crate) fn replace_file(path: &Path, text: &str) -> std::io::Result<()> {
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    match std::fs::OpenOptions::new().write(true).open(&target) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let temp = replacement_temp(&target, REPLACEMENTS.fetch_add(1, Ordering::Relaxed));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    let staged = file
+        .write_all(text.as_bytes())
+        .and_then(|()| match std::fs::metadata(&target) {
+            Ok(meta) => file.set_permissions(meta.permissions()),
+            Err(_) => Ok(()),
+        });
+    drop(file);
+    let written = staged.and_then(|()| std::fs::rename(&temp, &target));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
+
+/// The name [`replace_file`] stages `target` under for replacement `n`.
+fn replacement_temp(target: &Path, n: u64) -> PathBuf {
+    let mut name = std::ffi::OsString::from(".");
+    name.push(target.file_name().unwrap_or_default());
+    name.push(format!(".{}.{n}.tmp", std::process::id()));
+    target.with_file_name(name)
 }
 
 #[cfg(test)]
@@ -610,5 +660,106 @@ mod tests {
             std::fs::read_to_string(dir.path().join(".ripsem/.gitignore")).unwrap(),
             "# commit the index too\n"
         );
+    }
+
+    #[test]
+    fn a_replaced_file_keeps_its_name_and_leaves_no_temporary_file() {
+        let dir = TempDir::new();
+        dir.write("notes.md", "old\n");
+        replace_file(&dir.path().join("notes.md"), "new\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("notes.md")).unwrap(),
+            "new\n"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    /// The names the next replacements of `target` in this process will try.
+    fn next_temps(target: &Path) -> Vec<PathBuf> {
+        let next = REPLACEMENTS.load(Ordering::Relaxed);
+        (next..next + 64)
+            .map(|n| replacement_temp(target, n))
+            .collect()
+    }
+
+    #[test]
+    fn a_replacement_that_cannot_be_written_leaves_the_file_as_it_was() {
+        let dir = TempDir::new();
+        dir.write("notes.md", "old\n");
+        let target = dir.path().join("notes.md");
+        for temp in next_temps(&target) {
+            std::fs::create_dir(temp).unwrap();
+        }
+        assert!(replace_file(&target, "new\n").is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "old\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_a_temporary_name_is_never_followed() {
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new();
+        dir.write("victim", "keep\n");
+        dir.write("CLAUDE.md", "old\n");
+        let target = dir.path().join("CLAUDE.md");
+        for temp in next_temps(&target) {
+            symlink(dir.path().join("victim"), temp).unwrap();
+        }
+        assert!(replace_file(&target, "new\n").is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("victim")).unwrap(),
+            "keep\n"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "old\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_file_is_refused_and_left_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        dir.write("notes.md", "old\n");
+        let target = dir.path().join("notes.md");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+        // A process that may write any file, such as root, has no read-only file.
+        if std::fs::OpenOptions::new()
+            .write(true)
+            .open(&target)
+            .is_ok()
+        {
+            return;
+        }
+        assert!(replace_file(&target, "new\n").is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "old\n");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_replacement_writes_through_a_link_and_keeps_the_mode() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = TempDir::new();
+        dir.write("AGENTS.md", "old\n");
+        std::fs::set_permissions(
+            dir.path().join("AGENTS.md"),
+            std::fs::Permissions::from_mode(0o640),
+        )
+        .unwrap();
+        symlink("AGENTS.md", dir.path().join("CLAUDE.md")).unwrap();
+        replace_file(&dir.path().join("CLAUDE.md"), "new\n").unwrap();
+        assert!(
+            std::fs::symlink_metadata(dir.path().join("CLAUDE.md"))
+                .unwrap()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap(),
+            "new\n"
+        );
+        let mode = std::fs::metadata(dir.path().join("AGENTS.md"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o640);
     }
 }
