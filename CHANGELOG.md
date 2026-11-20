@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The npm `ripsem` command ends with the signal that ended the binary, so a
+  search killed by a signal is not reported as status 1, which `search -q`
+  means as no match.
 - A `--glob` or MCP `glob` that does not parse is reported once, as
   `invalid glob 'src/[a': unclosed character class; missing ']'`. Before, the
   pattern was quoted twice in the message.

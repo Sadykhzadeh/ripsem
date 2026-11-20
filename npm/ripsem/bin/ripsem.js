@@ -2,8 +2,8 @@
 "use strict";
 
 // Runs the ripsem binary from the platform package npm installed beside this
-// one, passing arguments, stdio and the exit code straight through, so
-// `npx ripsem mcp` serves MCP exactly as the binary does.
+// one, passing arguments, stdio, the exit code and any signal straight through,
+// so `npx ripsem mcp` serves MCP exactly as the binary does.
 
 const { spawnSync } = require("node:child_process");
 const path = require("node:path");
@@ -33,5 +33,8 @@ const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
 if (result.error) {
   console.error(`ripsem: ${result.error.message}`);
   process.exit(1);
+}
+if (result.signal) {
+  process.kill(process.pid, result.signal);
 }
 process.exit(result.status ?? 1);
