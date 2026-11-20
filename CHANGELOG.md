@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `ripsem init` that cannot write its config no longer leaves an empty
+  `.ripsem/.gitignore` behind. Before, the empty file stayed, so the index was
+  not ignored by git from then on.
 - A file that ripsem writes, such as `CLAUDE.md`, `AGENTS.md`, `.mcp.json` or
   `.ripsem/config.toml`, is replaced through a new temporary file beside it that
   is then renamed over it, so a write that fails part way, on a full disk or

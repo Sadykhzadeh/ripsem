@@ -2943,3 +2943,25 @@ fn install_refuses_an_agent_file_that_is_a_pipe_without_blocking() {
         stderr(&install)
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn init_that_cannot_write_its_config_leaves_no_empty_gitignore() {
+    let dir = TempDir::new();
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg("trap '' XFSZ; ulimit -f 0; exec \"$0\" --path \"$1\" init")
+        .arg(env!("CARGO_BIN_EXE_ripsem"))
+        .arg(&dir.path)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(!dir.path.join(".ripsem/.gitignore").exists());
+    let again = ripsem(&dir.path, &["init"]);
+    assert!(
+        again.status.success(),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+    assert!(dir.path.join(".ripsem/.gitignore").exists());
+}

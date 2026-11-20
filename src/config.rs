@@ -132,9 +132,15 @@ impl Config {
             .create_new(true)
             .open(&path)
         {
-            Ok(mut file) => file
-                .write_all(DATA_GITIGNORE.as_bytes())
-                .with_context(|| format!("writing {}", show_path(&path))),
+            Ok(mut file) => {
+                let written = file.write_all(DATA_GITIGNORE.as_bytes());
+                drop(file);
+                written
+                    .inspect_err(|_| {
+                        let _ = std::fs::remove_file(&path);
+                    })
+                    .with_context(|| format!("writing {}", show_path(&path)))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
             Err(e) => Err(e).with_context(|| format!("writing {}", show_path(&path))),
         }
