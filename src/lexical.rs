@@ -197,7 +197,11 @@ fn starts_new_piece(bytes: &[u8], i: usize) -> bool {
         return true;
     }
     if previous.is_ascii_uppercase() && current.is_ascii_uppercase() {
-        return bytes.get(i + 1).is_some_and(u8::is_ascii_lowercase);
+        // A lowercase run after capitals starts a word, as in `HTTPServer`,
+        // except a lone `s` that closes a plural acronym, as in `URLs`.
+        let lower = |at: Option<&u8>| at.is_some_and(u8::is_ascii_lowercase);
+        let plural = bytes.get(i + 1) == Some(&b's') && !lower(bytes.get(i + 2));
+        return lower(bytes.get(i + 1)) && !plural;
     }
     false
 }
@@ -457,6 +461,16 @@ mod tests {
         assert!(contains("HTTPServer", "http"));
         assert!(contains("HTTPServer", "server"));
         assert!(contains("HTTPServer", "httpserver"));
+    }
+
+    #[test]
+    fn a_plural_acronym_is_one_word() {
+        assert!(contains("parseIDs", "ids"));
+        assert!(contains("ListAPIs", "apis"));
+        assert!(contains("getURLs()", "urls"));
+        assert!(contains("URLsAndMore", "urls"));
+        assert!(contains("URLsAndMore", "and"));
+        assert!(contains("HTTPServers", "servers"));
     }
 
     #[test]
