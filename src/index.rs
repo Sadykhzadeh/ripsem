@@ -157,8 +157,17 @@ enum Decoded {
     Rows(legacy::Index),
 }
 
+/// The advice that ends the message of an index that cannot be read.
+const FORCE_HINT: &str = "; run `ripsem index --force`";
+
+/// `message` without the advice that ends the message of an index that cannot
+/// be read, for a run that builds the index again by itself.
+pub(crate) fn without_force_hint(message: &str) -> &str {
+    message.split(FORCE_HINT).next().unwrap_or(message)
+}
+
 fn corrupt(e: &dyn std::fmt::Display) -> anyhow::Error {
-    anyhow::anyhow!("index is unreadable or corrupt: {e}; run `ripsem index --force` to rebuild")
+    anyhow::anyhow!("index is unreadable or corrupt: {e}{FORCE_HINT} to rebuild")
 }
 
 impl Decoded {
@@ -183,10 +192,10 @@ impl Decoded {
                 .map(Self::Rows)
                 .map_err(|e| corrupt(&e)),
             ..LEGACY_VERSION => {
-                anyhow::bail!("index format is from an older ripsem; run `ripsem index --force`")
+                anyhow::bail!("index format is from an older ripsem{FORCE_HINT}")
             }
             _ => anyhow::bail!(
-                "index format is from a newer ripsem; run `ripsem index --force` to rebuild it \
+                "index format is from a newer ripsem{FORCE_HINT} to rebuild it \
                  for this one"
             ),
         }

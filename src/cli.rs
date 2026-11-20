@@ -801,6 +801,9 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
     if !stats.unreadable.is_empty() {
         eprintln!("warning: {}", skipped_line(&stats.unreadable));
     }
+    if let Some(reason) = &stats.rebuilt {
+        eprintln!("warning: {}", pipeline::rebuilt_line(reason));
+    }
     warn_about_backend(&config);
     Ok(())
 }

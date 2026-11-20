@@ -31,6 +31,9 @@ pub struct IndexStats {
     /// Paths, relative to the root and sorted, of files the walk could not
     /// read. They are left out of the index and not recorded in it.
     pub unreadable: Vec<String>,
+    /// Why the index that was on disk could not be read, when it was built
+    /// again from the files instead of being updated.
+    pub rebuilt: Option<String>,
 }
 
 /// How far the index has fallen behind the files it was built from. Hits carry
@@ -245,13 +248,18 @@ fn index_and_keep(
     let dims = config.dims();
     let started = fingerprint::now();
     // The walk waits on the disk and the decode on one core, so they overlap.
-    let (listed, mut prev) = rayon::join(
+    let (listed, loaded) = rayon::join(
         || walk::list(config),
         || match !force && config.index_path().exists() {
-            true => Index::load(&config.index_path()).ok(),
+            true => Some(Index::load(&config.index_path())),
             false => None,
         },
     );
+    let (mut prev, rebuilt) = match loaded {
+        Some(Ok(index)) => (Some(index), None),
+        Some(Err(e)) => (None, Some(format!("{e:#}"))),
+        None => (None, None),
+    };
     let chunking = chunk::Chunking::of(config);
     let Walked {
         files,
@@ -288,6 +296,7 @@ fn index_and_keep(
             chunks: index.records.len(),
             vectors: 0,
             unreadable,
+            rebuilt: None,
         };
         return Ok((stats, prev));
     }
@@ -486,6 +495,7 @@ fn index_and_keep(
         chunks: index.records.len(),
         vectors: queue.embedded,
         unreadable,
+        rebuilt,
     };
     // Before the early return below, so a data directory that lacks its
     // `.gitignore` gets one even when nothing needs reindexing.
@@ -1842,6 +1852,15 @@ pub fn outline(config: &Config, path: &str) -> Result<Vec<Declaration>> {
     Ok(found)
 }
 
+/// What a run says when the index on disk could not be read and was built
+/// again from the files.
+pub fn rebuilt_line(reason: &str) -> String {
+    format!(
+        "rebuilt the index, which could not be read: {}",
+        crate::index::without_force_hint(reason)
+    )
+}
+
 /// Brings the index up to date with the tree while the model loads, so an
 /// edit made since the last `ripsem index` is found where it is now. When
 /// nothing changed this only walks the tree and reads the files whose size or
@@ -1851,7 +1870,9 @@ pub fn outline(config: &Config, path: &str) -> Result<Vec<Declaration>> {
 fn refresh(config: &Config, rehash: &[String]) -> Option<Index> {
     match index_and_keep(config, false, rehash, Pace::default()) {
         Ok((stats, index)) => {
-            if stats.embedded > 0 {
+            if let Some(reason) = &stats.rebuilt {
+                eprintln!("warning: {}", rebuilt_line(reason));
+            } else if stats.embedded > 0 {
                 eprintln!(
                     "updated the index: {} changed",
                     crate::cli::plural(stats.embedded, "file")
@@ -2414,6 +2435,33 @@ mod tests {
         let resumed = chunk_keys(&config);
         index_repo(&config, true).unwrap();
         assert_eq!(resumed, chunk_keys(&config));
+    }
+
+    #[test]
+    fn an_index_that_cannot_be_read_is_reported_as_rebuilt() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("a.rs", "fn alpha() {}\n");
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        index_repo(&config, false).unwrap();
+        std::fs::write(config.index_path(), b"not an index").unwrap();
+
+        let (stats, _) = index_and_keep(&config, false, &[], Pace::default()).unwrap();
+        let reason = stats
+            .rebuilt
+            .clone()
+            .expect("the unreadable index is named");
+        assert!(reason.contains("corrupt"));
+        let line = rebuilt_line(&reason);
+        assert!(line.contains("no ripsem header"));
+        assert!(!line.contains("--force"));
+        assert_eq!(stats.embedded, 1);
+        assert!(Index::load(&config.index_path()).is_ok());
+
+        let (stats, _) = index_and_keep(&config, false, &[], Pace::default()).unwrap();
+        assert_eq!(stats.rebuilt, None);
     }
 
     #[cfg(feature = "hnsw")]

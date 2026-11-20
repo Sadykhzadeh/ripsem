@@ -58,11 +58,16 @@ fn keep_current(mut config: Config, strict: bool, report: impl Fn(String)) -> Re
     let recursive = watch_tree(&mut watcher, &config.root, &report);
 
     match index(&config) {
-        Ok(stats) => report(format!(
-            "indexed {} ({}); watching for changes",
-            plural(stats.files, "file"),
-            plural(stats.chunks, "chunk")
-        )),
+        Ok(stats) => {
+            if let Some(reason) = &stats.rebuilt {
+                report(pipeline::rebuilt_line(reason));
+            }
+            report(format!(
+                "indexed {} ({}); watching for changes",
+                plural(stats.files, "file"),
+                plural(stats.chunks, "chunk")
+            ))
+        }
         Err(e) if strict => return Err(e),
         Err(e) => report(format!("indexing failed, still watching: {e:#}")),
     }
@@ -97,7 +102,12 @@ fn keep_current(mut config: Config, strict: bool, report: impl Fn(String)) -> Re
             continue;
         }
         match index(&config) {
-            Ok(stats) => report(format!("reindexed: {}", plural(stats.chunks, "chunk"))),
+            Ok(stats) => {
+                if let Some(reason) = &stats.rebuilt {
+                    report(pipeline::rebuilt_line(reason));
+                }
+                report(format!("reindexed: {}", plural(stats.chunks, "chunk")))
+            }
             // Failures are often transient (a file removed mid-scan, a scanner
             // holding the index open). Quitting would leave the index frozen
             // while a running session keeps querying it.

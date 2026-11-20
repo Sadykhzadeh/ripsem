@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- An index that cannot be read is built again from the files, and the run
+  says why: `ripsem index`, `watch` and the refresh that a search makes
+  print `rebuilt the index, which could not be read` with the reason. Before,
+  a corrupt index was discarded without a word, and a refresh that rebuilt it
+  said it had updated the index.
 - An index build saves what it has embedded at most once a minute, and on a
   large index less often: each save is followed by a wait of thirty times its
   own length. An interrupt such as Ctrl-C keeps the files already done and the
