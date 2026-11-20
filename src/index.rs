@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rayon::prelude::*;
@@ -282,7 +283,9 @@ impl Index {
             .with_context(|| format!("replacing index {}", show_path(path)))
             .inspect_err(|_| {
                 let _ = std::fs::remove_file(&tmp);
-            })
+            })?;
+        remove_stale_temps(path);
+        Ok(())
     }
 
     /// Whether any indexed file is inside `scope`.
@@ -756,6 +759,45 @@ fn scope_matches(path: &str, prefix: &str, fold_case: bool) -> bool {
         false => head == prefix,
     };
     same && path.get(prefix.len()).is_none_or(|&b| b == b'/')
+}
+
+/// A save writes its temporary file in one pass, so one that has not changed
+/// for this long was left by a save that was killed part way.
+const STALE_TEMP: Duration = Duration::from_secs(60 * 60);
+
+/// Removes the temporary files that saves of `path` left behind when they were
+/// killed. Only names of the form `path.<pid>.<save>.tmp` are removed, and only
+/// once they are older than [`STALE_TEMP`], so a save running now is left alone.
+fn remove_stale_temps(path: &Path) {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file = entry.file_name();
+        let Some(rest) = file
+            .to_str()
+            .and_then(|f| f.strip_prefix(name))
+            .and_then(|r| r.strip_prefix('.'))
+            .and_then(|r| r.strip_suffix(".tmp"))
+        else {
+            continue;
+        };
+        let shaped = rest
+            .split_once('.')
+            .is_some_and(|(pid, save)| pid.parse::<u32>().is_ok() && save.parse::<u64>().is_ok());
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= STALE_TEMP);
+        if shaped && old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Named per process and per save: `ripsem watch` and `ripsem index` can save at
@@ -1671,6 +1713,33 @@ mod tests {
             handle.join().unwrap();
         }
         assert!(Index::load(&path).is_ok());
+    }
+
+    #[test]
+    fn save_removes_only_the_old_temporary_files_of_a_killed_save() {
+        let dir = TempDir::new();
+        let path = dir.path().join("index.bin");
+        let long_ago = std::time::SystemTime::now() - Duration::from_secs(3 * 60 * 60);
+        let killed = dir.path().join("index.bin.4242.7.tmp");
+        let running = dir.path().join("index.bin.4243.0.tmp");
+        let other = dir.path().join("index.bin.notes.tmp");
+        for file in [&killed, &other] {
+            std::fs::write(file, "partial").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(file)
+                .unwrap()
+                .set_modified(long_ago)
+                .unwrap();
+        }
+        std::fs::write(&running, "partial").unwrap();
+        Index::new(2, Backend::Hash, "hash".into())
+            .save(&path)
+            .unwrap();
+        assert!(!killed.exists());
+        assert!(running.exists());
+        assert!(other.exists());
+        assert!(path.exists());
     }
 
     #[test]

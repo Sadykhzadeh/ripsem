@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The next index save removes the temporary files that an interrupted save left
+  in `.ripsem`, once they are an hour old. Before, each killed save left a copy
+  of the index behind for good.
 - `install.ps1` gives up on a download that stops answering, with the same
   limits as `install.sh`. Before, a stalled download hung the install with no
   output.
