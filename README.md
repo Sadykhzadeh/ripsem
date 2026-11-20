@@ -252,7 +252,12 @@ more results below this; pass --offset 2 to see them
 - `-t, --lang <LANG>` (also `--type`) keeps only hits in files of that language,
   by name or by extension: `--lang rust`, `-t py`, `--lang toml`. Repeat the flag
   or separate values with commas for several: `--lang rust,toml`. A leading `!`
-  leaves a language out: `--lang '!json'`.
+  leaves a language out: `--lang '!json'`. The names are `rust` (`rs`),
+  `python` (`py`), `javascript` (`js`), `typescript` (`ts`), `tsx`, `go`,
+  `java`, `c`, `cpp` (`c++`), `ruby` (`rb`), `csharp` (`cs`, `c#`), `php`,
+  `scala`, `kotlin` (`kt`), `bash` (`sh`, `shell`), `json`, `css`, `html`,
+  `markdown` (`md`) and `yaml` (`yml`). Any other value is an extension:
+  `--lang toml` finds `.toml` files.
 - `-g, --glob <GLOB>` keeps only hits whose path matches, as ripgrep's `-g`
   does, and a leading `!` leaves matching paths out: `-g '*.rs' -g
   '!*_test.rs'`. A directory counts for the files inside it, so
