@@ -398,8 +398,10 @@ An array of the declarations of the file, in the order they start:
 
 ### `status`
 
-One object. Fields under `index` describe the index file and are present while
-it exists; `warning` appears only with the hashing backend.
+One object. `warning` is `null` unless the hashing backend is in use. The fields
+under `index` describe the index file. While the file does not exist or cannot
+be read, `index` holds only `present`, which is `false`, and `error`: the reason
+the file cannot be read, or `null` when it is missing.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -407,12 +409,12 @@ it exists; `warning` appears only with the hashing backend.
 | `backend` | string | The embedding backend, `hash` or `fastembed`. |
 | `model` | string | The embedding model the configuration names. |
 | `dims` | number | The width of the vectors, in dimensions. |
-| `warning` | string | Why hashing results match words, not meaning. |
+| `warning` | string or null | Why hashing results match words, not meaning; `null` with the fastembed backend. |
 | `index` | object | The index file and what it holds. |
 | `index.path` | string | Where the index file is. |
 | `index.present` | boolean | Whether the index file exists. |
 | `index.size_bytes` | number | The size of the index file. |
-| `index.written_unix` | number | When the index file was last written, in seconds since the Unix epoch. |
+| `index.written_unix` | number or null | When the index file was last written, in seconds since the Unix epoch; `null` when the file's time cannot be read. |
 | `index.files` | number | The files the index holds. |
 | `index.chunks` | number | The chunks the index holds. |
 | `index.named` | number | The chunks that carry a declaration's name. |
@@ -420,7 +422,7 @@ it exists; `warning` appears only with the hashing backend.
 | `index.backend` | string | The backend the index was built with. |
 | `index.model` | string | The model the index was built with. |
 | `index.stale` | boolean | Whether the index is behind the files it was built from. |
-| `index.drift` | object | How far the files are from the index. |
+| `index.drift` | object or null | How far the files are from the index; `null` when the tree cannot be walked. |
 | `index.drift.added` | number | Files on disk that the index does not hold. |
 | `index.drift.modified` | number | Files both hold, with different content. |
 | `index.drift.removed` | number | Files the index holds that are no longer on disk. |
