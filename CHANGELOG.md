@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `ripsem model list` lines up its columns under the longest model id. The
+  `jina-embeddings-v2-base-code` id is four characters longer than the width
+  the columns were set for, so its dimensions and size sat four columns out of
+  line.
 - `ripsem outline` given a line range, as `src/auth.rs:40-72` appears in
   search output, says that it takes a file and names the command to run.
   Before, it reported the whole argument as a path that was not in the index.

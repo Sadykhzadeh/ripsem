@@ -566,6 +566,23 @@ fn setting_the_model_or_backend_it_has_asks_for_no_rebuild() {
     assert!(config.contains("all-MiniLM-L6-v2"), "{config}");
 }
 
+/// The dimensions column must start at the same place on every row, however
+/// long the longest model id is.
+#[test]
+fn model_list_lines_up_under_the_longest_id() {
+    let dir = TempDir::new();
+    let listed = stdout(&ripsem(&dir.path, &["model", "list"]));
+    let columns: Vec<usize> = listed
+        .lines()
+        .map(|line| line.find("d  ~").expect(line))
+        .collect();
+    assert_eq!(columns.len(), 6, "{listed}");
+    assert!(
+        columns.windows(2).all(|pair| pair[0] == pair[1]),
+        "{listed}"
+    );
+}
+
 #[test]
 fn a_file_of_only_whitespace_is_not_counted_as_indexed() {
     let dir = TempDir::new();

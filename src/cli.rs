@@ -1297,12 +1297,17 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
     match action {
         ModelCmd::List => {
             let current = Config::load(root).map(|c| c.model).unwrap_or_default();
+            let width = model::catalog()
+                .iter()
+                .map(|m| m.id.len())
+                .max()
+                .unwrap_or(0);
             for m in model::catalog() {
                 let mark = if m.id == current { "*" } else { " " };
                 let lang = if m.multilingual { "multi" } else { "en" };
                 let disk = format!("~{}MB", m.disk_mb);
                 out!(
-                    "{mark} {:<24} {}d  {disk:<6}  {lang:<5}  {}",
+                    "{mark} {:<width$} {}d  {disk:<6}  {lang:<5}  {}",
                     m.id,
                     m.dims,
                     m.note
