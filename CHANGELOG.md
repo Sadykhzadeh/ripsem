@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `search --offset` given a value that is not a whole number says that it must
+  be a whole number, 0 or more, as `-k` does. Before, `--offset 1e3` was
+  answered with the parser's own text, `invalid digit found in string`.
 - `ripsem model list` lines up its columns under the longest model id. The
   `jina-embeddings-v2-base-code` id is four characters longer than the width
   the columns were set for, so its dimensions and size sat four columns out of

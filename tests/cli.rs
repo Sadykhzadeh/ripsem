@@ -1275,6 +1275,20 @@ fn a_limit_or_score_that_cannot_match_is_an_error() {
 }
 
 #[test]
+fn an_offset_that_is_not_a_whole_number_says_so() {
+    let dir = TempDir::new();
+    for value in ["1e3", "1.5", "ten"] {
+        let out = ripsem(&dir.path, &["search", "x", "--offset", value]);
+        assert_eq!(out.status.code(), Some(2), "{value}: {}", stderr(&out));
+        let err = stderr(&out);
+        assert!(
+            err.contains("must be a whole number, 0 or more"),
+            "{value}: {err}"
+        );
+    }
+}
+
+#[test]
 fn a_path_that_is_a_file_is_not_a_directory() {
     let dir = TempDir::new();
     dir.write("main.rs", "fn main() {}");

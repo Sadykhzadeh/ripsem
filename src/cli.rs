@@ -49,6 +49,11 @@ fn limit(text: &str) -> Result<usize, String> {
     }
 }
 
+fn offset(text: &str) -> Result<usize, String> {
+    text.parse::<usize>()
+        .map_err(|_| "must be a whole number, 0 or more".to_string())
+}
+
 fn score(text: &str) -> Result<f32, String> {
     match text.parse::<f32>() {
         Ok(score) if (0.0..=1.0).contains(&score) => Ok(score),
@@ -197,7 +202,7 @@ pub struct SearchOpts {
     /// Skip this many results, taken from the ranking after every filter,
     /// to read the next page: the output says when more follow and what
     /// to pass.
-    #[arg(long, default_value_t = 0, value_name = "N")]
+    #[arg(long, default_value_t = 0, value_name = "N", value_parser = offset)]
     offset: usize,
     /// Print the results as JSON. Cannot be combined with `--vimgrep` or `-0`.
     #[arg(long)]
