@@ -700,10 +700,11 @@ Every later run embeds only the code that changed. On Windows a job of 256
 chunks or more runs on the GPU through DirectML, about three times faster than
 on the CPU (indexing axum took 17 s against 61 s, on a mid-range GPU against a
 6-core CPU); `RIPSEM_NO_GPU=1` keeps it on the CPU, for example when a graphics
-driver misbehaves. The model is cached in
-`~/.cache/ripsem` on Linux, `~/Library/Caches/ripsem` on macOS and
-`%LOCALAPPDATA%\ripsem\cache` on Windows; `RIPSEM_MODEL_DIR` names another
-directory for it.
+driver misbehaves. The model is cached in `~/.cache/ripsem/models` on Linux (or
+`$XDG_CACHE_HOME/ripsem/models` when that is set),
+`~/Library/Caches/ripsem/models` on macOS and
+`%LOCALAPPDATA%\ripsem\cache\models` on Windows; `RIPSEM_MODEL_DIR` names
+another directory for it.
 
 **`ripsem.exe` fails to start on Windows.** A missing `VCRUNTIME140.dll` or
 `MSVCP140.dll` means the Microsoft Visual C++ Redistributable is not installed:
