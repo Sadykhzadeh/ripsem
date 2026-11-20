@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A `--glob` or MCP `glob` that does not parse is reported once, as
+  `invalid glob 'src/[a': unclosed character class; missing ']'`. Before, the
+  pattern was quoted twice in the message.
 - `install.sh` says so when the release's `SHA256SUMS` has no line for the
   archive, and installs nothing. Before, it exited with status 1 and no message.
 - A `--lang` value with an entry that names no language, such as `rs,,py`, is

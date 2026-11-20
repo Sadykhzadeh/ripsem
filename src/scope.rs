@@ -53,7 +53,10 @@ impl Globs {
             }
             set.0
                 .add(&glob_text(pattern, cfg!(windows)))
-                .map_err(|e| anyhow!("invalid glob '{glob}': {e}"))?;
+                .map_err(|e| match e {
+                    ignore::Error::Glob { err, .. } => anyhow!("invalid glob '{glob}': {err}"),
+                    other => anyhow!("invalid glob '{glob}': {other}"),
+                })?;
             set.1 = true;
         }
         let build = |(builder, used): (OverrideBuilder, bool)| match used {
@@ -418,6 +421,8 @@ mod tests {
             let err = Scope::new(None, &[], &[bad.to_string()]).unwrap_err();
             assert!(err.to_string().contains(&format!("'{bad}'")), "{err}");
         }
+        let err = Scope::new(None, &[], &["src/[a".to_string()]).unwrap_err();
+        assert_eq!(err.to_string().matches("src/[a").count(), 1, "{err}");
     }
 
     #[test]
