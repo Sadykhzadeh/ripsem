@@ -537,48 +537,51 @@ descriptions of MCP tools only when the model looks a tool up, so the model
 learns that `search` exists, and when to use it, from the instructions and the
 note in `CLAUDE.md`.
 
-`ripsem mcp` speaks MCP over stdio and exposes a `search` tool: a
-`query`, and optionally a `path` to stay inside, a `lang` and a `glob` (each one
-string or a list, as `--lang` and `--glob`), a `regex` (only hits whose code
-matches it, as `--regex`; an invalid pattern is a tool error), a `limit` (default 5, at most
+`ripsem mcp` speaks MCP over stdio and exposes a `search` tool: a `query`, and
+optionally a `path` to stay inside, a `lang` and a `glob` (each one string or a
+list, as `--lang` and `--glob`), a `regex` (only hits whose code matches it, as
+`--regex`; an invalid pattern is a tool error), a `limit` (default 5, at most
 50), an `offset` (default 0) to skip results and read the next page, and a
 `min_score`, and a `since` git revision (as `--since`: only files that differ
-from it, untracked files included). When more results follow, the text ends with the line `More
-results below this; pass offset=5 to see them.` A client on MCP revision
-2025-06-18 or later also gets the hits as `structuredContent` (`hits` with
-`path`, `start_line`, `end_line`, `score`, `symbol`, `snippet`, and
-`next_offset`, `null` on the last page), described by the tool's
-`outputSchema`. An `offset` past the last
-result is an answer, not an error: `No further results`. An argument outside the schema comes back as a tool
-error that names what is expected, so the agent can correct the call. The
-`find_similar` tool is `ripsem similar` for the agent: a `path`, and optionally
-`line` and `end_line` (the whole file when `line` is absent), returns the code
-nearest to that place, with `limit`, `offset`, `min_score`, `lang`, `glob`,
-`regex` and `since` as `search` takes them. Its errors are the CLI's messages, such as a
-file that is not in the index or a line past its end. The `outline` tool is
-`ripsem outline` for MCP clients: a `path` to one file returns its declarations
-in the order they start, each with its kind, name and line range, so the client
-can read a long file's layout and then only the lines that matter. The
-declarations are also in the structured content as `declarations`, each with
-`kind`, `symbol`, `start_line` and `end_line`, for revision 2025-06-18 and later.
-The `symbol` tool is `ripsem symbol` for MCP clients: a `name`, whole or its last
-part, returns the file and line range of each declaration with that name, as
-text and as `declarations` in the structured content, where each row also has
+from it, untracked files included). When more results follow, the text ends with
+the line `More results below this; pass offset=5 to see them.` A client on MCP
+revision 2025-06-18 or later also gets the hits as `structuredContent` (`hits`
+with `path`, `start_line`, `end_line`, `score`, `symbol`, `snippet`, and
+`next_offset`, `null` on the last page), described by the tool's `outputSchema`.
+An `offset` past the last result is an answer, not an error: `No further results`. An argument outside the schema comes back as a tool error that names
+what is expected, so the agent can correct the call.
+
+The `find_similar` tool is `ripsem similar` for the agent: a `path`, and
+optionally `line` and `end_line` (the whole file when `line` is absent), returns
+the code nearest to that place, with `limit`, `offset`, `min_score`, `lang`,
+`glob`, `regex` and `since` as `search` takes them. Its errors are the CLI's
+messages, such as a file that is not in the index or a line past its end.
+
+The `outline` tool is `ripsem outline` for MCP clients: a `path` to one file
+returns its declarations in the order they start, each with its kind, name and
+line range, so the client can read a long file's layout and then only the lines
+that matter. The declarations are also in the structured content as
+`declarations`, each with `kind`, `symbol`, `start_line` and `end_line`, for
+revision 2025-06-18 and later.
+
+The `symbol` tool is `ripsem symbol` for MCP clients: a `name`, whole or its
+last part, returns the file and line range of each declaration with that name,
+as text and as `declarations` in the structured content, where each row also has
 its `path`. It takes `path`, `lang`, `glob` and `since` as `search` does, to
-narrow the answer. The `index_status` tool,
-which takes no arguments, returns what `ripsem status
---json` prints (as structured content too, for revision 2025-06-18 and later)
-plus `updating`, whether the server is indexing right now, so an
-agent that finds nothing it expects can see whether the index exists and how
-many files have changed since it was built. All the tools carry the standard
-MCP annotations (`readOnlyHint` and `idempotentHint` true, `destructiveHint`
-and `openWorldHint` false) and a title, so a client can run them without asking each
+narrow the answer.
+
+The `index_status` tool, which takes no arguments, returns what `ripsem status --json` prints (as structured content too, for revision 2025-06-18 and later)
+plus `updating`, whether the server is indexing right now, so an agent that
+finds nothing it expects can see whether the index exists and how many files
+have changed since it was built. All the tools carry the standard MCP
+annotations (`readOnlyHint` and `idempotentHint` true, `destructiveHint` and
+`openWorldHint` false) and a title, so a client can run them without asking each
 time. `search`, `find_similar`, `outline` and `symbol` refresh ripsem's own
 index under `.ripsem/` before they answer, and touch nothing else. In a
 directory with a `.ripsem` directory the server keeps the index current by
-itself: it builds the index on its first start and re-embeds the code the
-agent changes. Running `ripsem index` once beforehand has the index ready
-before the first search.
+itself: it builds the index on its first start and re-embeds the code the agent
+changes. Running `ripsem index` once beforehand has the index ready before the
+first search.
 
 Any other MCP client takes the same entry in its own config:
 
