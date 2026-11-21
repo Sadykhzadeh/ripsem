@@ -7,6 +7,9 @@
   as an array. A bare name matches the last part of a qualified name, so
   `refresh` finds `Session::refresh`. Before, finding a definition meant a
   search, which ranks the places that use a name along with its declaration.
+- The MCP server has a `symbol` tool, which answers `ripsem symbol` for MCP
+  clients: the files and line ranges of the declarations with a name. Before, a
+  client that knew a name had to search for it and read the hits.
 - The MCP server has an `outline` tool, which lists the declarations of one
   file with their kinds, names and line ranges, as `ripsem outline` does. A
   client can see a file's layout before it reads any of its lines. Before, the

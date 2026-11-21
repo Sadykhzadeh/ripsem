@@ -404,7 +404,7 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
         )),
         "tools/list" => Some(ok(
             id?,
-            json!({ "tools": [tool_schema(), similar_schema(), outline_schema(), status_schema()] }),
+            json!({ "tools": [tool_schema(), similar_schema(), outline_schema(), symbol_schema(), status_schema()] }),
         )),
         "tools/call" => Some(handle_call(config, session, id?, request)),
         "ping" => Some(ok(id?, json!({}))),
@@ -557,6 +557,41 @@ fn outline_schema() -> Value {
     })
 }
 
+fn symbol_schema() -> Value {
+    let definition = json!({
+        "type": "object",
+        "properties": {
+            "path": { "type": "string" },
+            "kind": { "type": "string" },
+            "symbol": { "type": "string" },
+            "start_line": { "type": "integer", "minimum": 1 },
+            "end_line": { "type": "integer", "minimum": 1 }
+        },
+        "required": ["path", "kind", "symbol", "start_line", "end_line"]
+    });
+    json!({
+        "name": "symbol",
+        "title": "Find a declaration",
+        "annotations": read_only("Find a declaration"),
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "declarations": { "type": "array", "items": definition }
+            },
+            "required": ["declarations"]
+        },
+        "description": "Find where a function, type or other declaration with this name is defined in this repository, with the file and line range of each one. Use it when you know a name and want its definition rather than the places that use it: `refresh` finds `fn Session::refresh`, and `Session::refresh` finds only that one. For a question with no name in hand, use `search`.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "The declaration's name, whole (`Session::refresh`) or its last part (`refresh`)." }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+        }
+    })
+}
+
 fn status_schema() -> Value {
     json!({
         "name": "index_status",
@@ -599,10 +634,11 @@ fn handle_call(
             return find_similar(config, session, id, &call_arguments(request));
         }
         "outline" => return outline(config, id, &call_arguments(request)),
+        "symbol" => return symbol(config, id, &call_arguments(request)),
         "index_status" => return index_status(config, id, &call_arguments(request)),
         other => {
             let message = format!(
-                "unknown tool '{other}'; the tools are 'search', 'find_similar', 'outline' and 'index_status'"
+                "unknown tool '{other}'; the tools are 'search', 'find_similar', 'outline', 'symbol' and 'index_status'"
             );
             return error(id, -32602, &message);
         }
@@ -873,16 +909,79 @@ fn outline(config: &Config, id: Value, args: &Value) -> Value {
                 .iter()
                 .map(crate::cli::declaration_row)
                 .collect();
-            ok(
-                id,
-                json!({
-                    "content": [{ "type": "text", "text": text }],
-                    "isError": false,
-                    "structuredContent": { "declarations": rows }
-                }),
-            )
+            declarations_result(id, text, rows)
         }
         Err(e) => tool_error(id, &e),
+    }
+}
+
+/// `symbol`: where the declarations with a name are defined, as `ripsem symbol`
+/// lists them.
+fn symbol(config: &Config, id: Value, args: &Value) -> Value {
+    let name = match parse_symbol(args) {
+        Ok(name) => name,
+        Err(e) => return tool_error(id, &e),
+    };
+    if crate::watch::indexing() {
+        let e = anyhow!("the index is being built in the background; search again shortly");
+        return tool_error(id, &e);
+    }
+    match pipeline::definitions(config, &name) {
+        Ok(found) => {
+            let text = if found.is_empty() {
+                format!("no declaration named {name} in the index")
+            } else {
+                found
+                    .iter()
+                    .map(|(path, d)| {
+                        format!(
+                            "{path}:{}-{}  {}",
+                            d.start_line,
+                            d.end_line,
+                            d.symbol.label()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let rows: Vec<Value> = found
+                .iter()
+                .map(|(path, d)| crate::cli::definition_row(path, d))
+                .collect();
+            declarations_result(id, text, rows)
+        }
+        Err(e) => tool_error(id, &e),
+    }
+}
+
+/// The answer of a tool that lists declarations: the text the model reads and
+/// the same rows as structured content.
+fn declarations_result(id: Value, text: String, rows: Vec<Value>) -> Value {
+    ok(
+        id,
+        json!({
+            "content": [{ "type": "text", "text": text }],
+            "isError": false,
+            "structuredContent": { "declarations": rows }
+        }),
+    )
+}
+
+/// The name the arguments of `symbol` give, trimmed.
+fn parse_symbol(args: &Value) -> Result<String> {
+    let args = args
+        .as_object()
+        .ok_or_else(|| anyhow!("the arguments must be an object with a 'name'"))?;
+    if let Some(name) = args.keys().find(|k| k.as_str() != "name") {
+        bail!("unknown argument '{name}'; the only argument is name");
+    }
+    match args.get("name").filter(|v| !v.is_null()) {
+        None => bail!("missing 'name'"),
+        Some(Value::String(name)) if name.trim().is_empty() => {
+            bail!("'name' is empty; say which declaration to find")
+        }
+        Some(Value::String(name)) => Ok(name.trim().to_string()),
+        Some(other) => bail!("'name' must be a string, not {other}"),
     }
 }
 
@@ -1366,8 +1465,17 @@ mod tests {
         let resp = handle(&cfg, None, &req("tools/list", json!({}))).unwrap();
         let tools = resp["result"]["tools"].as_array().unwrap();
         let names: Vec<&Value> = tools.iter().map(|t| &t["name"]).collect();
-        assert_eq!(names, ["search", "find_similar", "outline", "index_status"]);
-        let status = &tools[3]["inputSchema"];
+        assert_eq!(
+            names,
+            [
+                "search",
+                "find_similar",
+                "outline",
+                "symbol",
+                "index_status"
+            ]
+        );
+        let status = &tools[4]["inputSchema"];
         assert_eq!(status["type"], "object");
         assert_eq!(status["additionalProperties"], false);
         assert!(status.get("required").is_none());
@@ -1546,6 +1654,73 @@ mod tests {
             "unknown"
         );
         assert!(failure(json!({})).contains("missing 'path'"), "absent");
+    }
+
+    /// A client that knows a name asks where it is declared, and gets each
+    /// file and line range back, and only a line of text when no file declares
+    /// it.
+    #[cfg(feature = "treesitter")]
+    #[test]
+    fn symbol_lists_the_files_that_declare_a_name() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write(
+            "auth.rs",
+            "pub struct Session {\n    token: String,\n}\n\nimpl Session {\n    pub fn refresh(&mut self) {}\n}\n",
+        );
+        dir.write("cache.rs", "fn refresh() {}\n");
+        let config = Config {
+            backend: crate::config::Backend::Hash,
+            root: dir.path().canonicalize().unwrap(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+
+        let resp = call_tool(&config, "symbol", json!({ "name": "refresh" }));
+        assert_eq!(resp["result"]["isError"], false, "{resp}");
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(
+            text,
+            "auth.rs:6-6  fn Session::refresh\ncache.rs:1-1  fn refresh"
+        );
+        let rows = &resp["result"]["structuredContent"]["declarations"];
+        assert_eq!(rows.as_array().unwrap().len(), 2, "{rows}");
+        assert_eq!(rows[0]["path"], "auth.rs");
+        assert_eq!(rows[0]["symbol"], "Session::refresh");
+
+        let none = call_tool(&config, "symbol", json!({ "name": "absent" }));
+        assert_eq!(none["result"]["isError"], false, "{none}");
+        assert_eq!(
+            none["result"]["content"][0]["text"],
+            "no declaration named absent in the index"
+        );
+        assert!(
+            none["result"]["structuredContent"]["declarations"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A call without a usable name, or with an argument the schema does not
+    /// have, is a tool error the client can correct.
+    #[test]
+    fn symbol_refuses_a_missing_or_blank_name_and_unknown_arguments() {
+        let config = Config::default();
+        let failure = |arguments: Value| -> String {
+            let resp = call_tool(&config, "symbol", arguments);
+            assert_eq!(resp["result"]["isError"], true, "{resp}");
+            resp["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(failure(json!({})).contains("missing 'name'"));
+        assert!(failure(json!({ "name": "  " })).contains("is empty"));
+        assert!(failure(json!({ "name": 7 })).contains("must be a string"));
+        assert!(
+            failure(json!({ "name": "x", "path": "a.rs" })).contains("unknown argument 'path'")
+        );
     }
 
     /// The drift an agent is told is what a search would update: a file whose

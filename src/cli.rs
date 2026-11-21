@@ -1072,11 +1072,7 @@ fn cmd_symbol(root: &Path, name: &str, as_json: bool) -> Result<()> {
     if as_json {
         let rows: Vec<Value> = found
             .iter()
-            .map(|(path, d)| {
-                let mut row = declaration_row(d);
-                row["path"] = json!(path);
-                row
-            })
+            .map(|(path, d)| definition_row(path, d))
             .collect();
         out!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
@@ -1103,6 +1099,14 @@ pub(crate) fn declaration_row(d: &crate::symbol::Declaration) -> Value {
         "start_line": d.start_line,
         "end_line": d.end_line,
     })
+}
+
+/// One declaration found in a file, as `symbol --json` and the MCP `symbol`
+/// tool print it: the file, then what `declaration_row` gives.
+pub(crate) fn definition_row(path: &str, d: &crate::symbol::Declaration) -> Value {
+    let mut row = declaration_row(d);
+    row["path"] = json!(path);
+    row
 }
 
 /// When the part after the last colon is not a line number and the path is not

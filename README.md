@@ -557,7 +557,10 @@ in the order they start, each with its kind, name and line range, so the client
 can read a long file's layout and then only the lines that matter. The
 declarations are also in the structured content as `declarations`, each with
 `kind`, `symbol`, `start_line` and `end_line`, for revision 2025-06-18 and later.
-The `index_status` tool,
+The `symbol` tool is `ripsem symbol` for MCP clients: a `name`, whole or its last
+part, returns the file and line range of each declaration with that name, as
+text and as `declarations` in the structured content, where each row also has
+its `path`. The `index_status` tool,
 which takes no arguments, returns what `ripsem status
 --json` prints (as structured content too, for revision 2025-06-18 and later)
 plus `updating`, whether the server is indexing right now, so an
@@ -565,7 +568,7 @@ agent that finds nothing it expects can see whether the index exists and how
 many files have changed since it was built. All the tools carry the standard
 MCP annotations (`readOnlyHint` and `idempotentHint` true, `destructiveHint`
 and `openWorldHint` false) and a title, so a client can run them without asking each
-time. `search`, `find_similar` and `outline` refresh ripsem's own
+time. `search`, `find_similar`, `outline` and `symbol` refresh ripsem's own
 index under `.ripsem/` before they answer, and touch nothing else. In a
 directory with a `.ripsem` directory the server keeps the index current by
 itself: it builds the index on its first start and re-embeds the code the
