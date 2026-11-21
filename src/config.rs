@@ -359,7 +359,11 @@ static REPLACEMENTS: AtomicU64 = AtomicU64::new(0);
 /// An interrupted run (killed, or its machine lost power) leaves the target as
 /// it was, but can leave its new file behind as `.<name>.<pid>.<n>.tmp`. The
 /// next replacement of the same target removes those once they are old.
-pub(crate) fn replace_file(path: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn replace_file(path: &Path, text: &str) -> Result<()> {
+    write_replacement(path, text).with_context(|| format!("writing {}", show_path(path)))
+}
+
+fn write_replacement(path: &Path, text: &str) -> std::io::Result<()> {
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     match std::fs::OpenOptions::new().write(true).open(&target) {
         Ok(_) => {}
@@ -805,7 +809,11 @@ mod tests {
         {
             return;
         }
-        assert!(replace_file(&target, "new\n").is_err());
+        let err = format!("{:#}", replace_file(&target, "new\n").unwrap_err());
+        assert!(
+            err.starts_with(&format!("writing {}", show_path(&target))),
+            "{err}"
+        );
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "old\n");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
