@@ -1813,6 +1813,8 @@ fn commit_all(dir: &TempDir) {
             "user.name=test",
             "-c",
             "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "-qm",
             "base",
