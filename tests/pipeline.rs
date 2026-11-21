@@ -198,10 +198,21 @@ fn modified(path: &Path) -> std::time::SystemTime {
     std::fs::metadata(path).unwrap().modified().unwrap()
 }
 
+/// Gives the index a modification time long past, so the write after it leaves
+/// a different one, whatever the clock the file system keeps the times from.
+fn stamp_index(path: &Path) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000))
+        .unwrap();
+}
+
 /// A running server re-reads the index whenever its mtime moves, and the
 /// graph is rebuilt whenever the file is written, so an unchanged tree has to
-/// leave the file alone. A removal has to reach it all the same. The pauses
-/// are for the clock the file is stamped from, as in the hot-reload test.
+/// leave the file alone. A removal has to reach it all the same. The index is
+/// stamped as old first, so a rewrite shows as a new time.
 #[test]
 fn an_unchanged_tree_leaves_the_index_file_alone() {
     use ripsem::index::Index;
@@ -211,16 +222,15 @@ fn an_unchanged_tree_leaves_the_index_file_alone() {
     dir.write("b.rs", "golf hotel india juliet kilo lima");
     let config = config_for(&dir.path);
     pipeline::index_repo(&config, false).unwrap();
+    stamp_index(&config.index_path());
     let written = modified(&config.index_path());
 
-    std::thread::sleep(std::time::Duration::from_millis(20));
     let again = pipeline::index_repo(&config, false).unwrap();
     assert_eq!(again.reused, 2);
     assert_eq!(again.chunks, 2);
     assert_eq!(modified(&config.index_path()), written);
 
     std::fs::remove_file(dir.path.join("b.rs")).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(20));
     pipeline::index_repo(&config, false).unwrap();
     assert_ne!(modified(&config.index_path()), written);
     let on_disk = Index::load(&config.index_path()).unwrap();
@@ -237,6 +247,7 @@ fn a_file_with_nothing_in_it_does_not_hide_a_change() {
     dir.write("c.rs", "golf hotel india juliet kilo lima");
     let config = config_for(&dir.path);
     pipeline::index_repo(&config, false).unwrap();
+    stamp_index(&config.index_path());
     let written = modified(&config.index_path());
     let paths = |index: Index| -> Vec<String> {
         let mut paths: Vec<String> = index
@@ -249,7 +260,6 @@ fn a_file_with_nothing_in_it_does_not_hide_a_change() {
         paths
     };
 
-    std::thread::sleep(std::time::Duration::from_millis(20));
     let again = pipeline::index_repo(&config, false).unwrap();
     assert_eq!((again.reused, again.embedded, again.chunks), (2, 0, 2));
     assert_eq!(modified(&config.index_path()), written);
@@ -535,12 +545,12 @@ fn searcher_hot_reloads_a_rebuilt_index() {
     dir.write("a.rs", "alpha bravo charlie delta echo");
     let config = config_for(&dir.path);
     pipeline::index_repo(&config, false).unwrap();
+    stamp_index(&config.index_path());
 
     let mut searcher = pipeline::open(&config).unwrap();
     let before = searcher.query("zulu yankee xray", 5).unwrap();
     assert!(before.iter().all(|h| h.path == "a.rs"));
 
-    std::thread::sleep(std::time::Duration::from_millis(20));
     dir.write("b.rs", "zulu yankee xray whiskey victor");
     pipeline::index_repo(&config, false).unwrap();
 
@@ -557,6 +567,7 @@ fn searcher_rejects_a_same_dim_different_model_index() {
     dir.write("a.rs", "alpha bravo charlie delta echo");
     let config = config_for(&dir.path);
     pipeline::index_repo(&config, false).unwrap();
+    stamp_index(&config.index_path());
 
     let mut searcher = pipeline::open(&config).unwrap();
     let original_model = searcher.model().to_string();
@@ -565,7 +576,6 @@ fn searcher_rejects_a_same_dim_different_model_index() {
     // Rewrite the on-disk index with the SAME dimensionality but a different
     // model (both 384-d). Cross-model vectors are not comparable, so the
     // long-running searcher must keep its current index.
-    std::thread::sleep(std::time::Duration::from_millis(20));
     let mut rebuilt = Index::load(&config.index_path()).unwrap();
     assert_ne!(rebuilt.model, "all-MiniLM-L6-v2");
     rebuilt.model = "all-MiniLM-L6-v2".into();
@@ -1090,11 +1100,11 @@ fn a_repository_with_nothing_to_index_is_written_once() {
     dir.write("empty.txt", "   \n");
     let config = config_for(&dir.path);
     pipeline::index_repo(&config, false).unwrap();
+    stamp_index(&config.index_path());
     let written = std::fs::metadata(config.index_path())
         .unwrap()
         .modified()
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(20));
     pipeline::index_repo(&config, false).unwrap();
     let again = std::fs::metadata(config.index_path())
         .unwrap()

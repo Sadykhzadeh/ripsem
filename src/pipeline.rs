@@ -2597,6 +2597,7 @@ mod tests {
             ..hash_config()
         };
         index_repo(&config, false).unwrap();
+        crate::testutil::stamp_mtime(&config.index_path());
 
         let mut searcher = open(&config).unwrap();
         searcher.query("zephyr", 5).unwrap();
@@ -2605,7 +2606,6 @@ mod tests {
         for i in 36..40 {
             std::fs::remove_file(dir.path().join(format!("f{i:02}.rs"))).unwrap();
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
         index_repo(&config, false).unwrap();
 
         assert!(searcher.refresh().unwrap());

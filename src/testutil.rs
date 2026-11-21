@@ -39,3 +39,15 @@ impl Drop for TempDir {
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
+
+/// Gives `path` a modification time long past, so the next write to it leaves
+/// a different one. Two writes close together can share a time when the file
+/// system keeps coarse ones.
+pub fn stamp_mtime(path: &Path) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000))
+        .unwrap();
+}

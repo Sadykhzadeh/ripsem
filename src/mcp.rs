@@ -2355,6 +2355,7 @@ mod tests {
             ..Default::default()
         };
         pipeline::index_repo(&config, false).unwrap();
+        crate::testutil::stamp_mtime(&config.index_path());
         // Configured for a model the index was not built with, which is a
         // failure that lasts until `ripsem index --force`.
         config.model = "all-MiniLM-L6-v2".into();
@@ -2370,9 +2371,7 @@ mod tests {
         hold_the_index(&mut session, &mut tried, &mut config);
         assert_eq!(tried, first, "the same file must not be decoded again");
 
-        // A rebuild is a new file and is tried again. The pause keeps the
-        // mtime from repeating (see `searcher_hot_reloads_a_rebuilt_index`).
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        // A rebuild is a new file and is tried again.
         pipeline::index_repo(&config, true).unwrap();
         hold_the_index(&mut session, &mut tried, &mut config);
         assert!(session.is_some(), "a rebuilt index has to be picked up");
@@ -2393,6 +2392,7 @@ mod tests {
         };
         config.save().unwrap();
         pipeline::index_repo(&config, false).unwrap();
+        crate::testutil::stamp_mtime(&config.index_path());
 
         let mut session = None;
         let mut tried = None;
@@ -2402,7 +2402,6 @@ mod tests {
         let mut switched = Config::load(dir.path()).unwrap();
         switched.model = "all-MiniLM-L6-v2".into();
         switched.save().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
         pipeline::index_repo(&switched, true).unwrap();
 
         hold_the_index(&mut session, &mut tried, &mut config);
@@ -2771,11 +2770,11 @@ mod tests {
         };
         config.save().unwrap();
         pipeline::index_repo(&config, false).unwrap();
+        crate::testutil::stamp_mtime(&config.index_path());
 
         let mut session = None;
         let mut tried = None;
         hold_the_index(&mut session, &mut tried, &mut config);
-        std::thread::sleep(std::time::Duration::from_millis(20));
         let mut newer = b"ripsem".to_vec();
         newer.extend_from_slice(&(crate::index::FORMAT_VERSION + 1).to_le_bytes());
         std::fs::write(config.index_path(), newer).unwrap();
