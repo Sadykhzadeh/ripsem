@@ -59,3 +59,28 @@ pub fn catalog() -> &'static [ModelInfo] {
 pub fn find(id: &str) -> Option<&'static ModelInfo> {
     catalog().iter().find(|m| m.id == id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_readme_table_has_each_model_with_its_size_and_dimensions() {
+        let readme = include_str!("../README.md");
+        for info in catalog() {
+            let row = format!("| {} | {} | ~{} MB |", info.id, info.dims, info.disk_mb);
+            assert!(
+                readme.contains(&row),
+                "README model table has no row `{row}`"
+            );
+        }
+        let default = readme
+            .lines()
+            .find(|line| line.ends_with("| default |"))
+            .expect("README marks the default model");
+        assert!(
+            default.starts_with(&format!("| {DEFAULT_MODEL} |")),
+            "{default}"
+        );
+    }
+}
