@@ -224,6 +224,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_readme_lists_each_name_and_alias_once() {
+        let readme = include_str!("../README.md");
+        let start = readme
+            .find("The names are ")
+            .expect("README lists the --lang names");
+        let body = &readme[start..];
+        let body = &body[..body.find("Any other value").unwrap()];
+        let mut listed: Vec<&str> = body.split('`').skip(1).step_by(2).collect();
+        let mut named: Vec<&str> = LANGS
+            .iter()
+            .chain(TEXT_LANGS)
+            .flat_map(|l| std::iter::once(l.name).chain(l.aliases.iter().copied()))
+            .collect();
+        listed.sort_unstable();
+        named.sort_unstable();
+        assert_eq!(listed, named);
+    }
+
     #[cfg(feature = "treesitter")]
     #[test]
     fn detect_reads_the_same_table() {
