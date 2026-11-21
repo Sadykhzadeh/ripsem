@@ -356,8 +356,8 @@ src --lang rust` names the Rust definitions under `src`.
 
 ## JSON output
 
-`search`, `similar`, `outline` and `status` print one JSON document with
-`--json`. The tables below list every field with its type and meaning. A test
+`search`, `similar`, `outline`, `symbol` and `status` print one JSON document
+with `--json`. The tables below list every field with its type and meaning. A test
 runs each command on a small repository and fails when the fields in a table
 and the keys the command prints differ, so the tables stay true.
 
