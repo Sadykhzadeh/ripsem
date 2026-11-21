@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `ripsem install` adds its note to a CRLF file, such as `CLAUDE.md`, and its
+  table to a Codex `config.toml` with CRLF line breaks, as the JSON files
+  already get. Before, the added lines ended in LF, so the file had mixed line
+  endings.
 - `ripsem symbol` takes the filters of `search`: `--in` for a directory,
   `-t`/`--lang`, `-g`/`--glob` and `--since`. A name declared in many places
   can be narrowed to one of them. Before, every definition in the index was

@@ -1559,13 +1559,21 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    let newline = line_ending(&existing);
+    let note = note.replace('\n', newline);
     let text = match existing.trim().is_empty() {
         true => note,
-        false => format!("{}\n\n{note}", existing.trim_end()),
+        false => format!("{}{}{note}", existing.trim_end(), newline.repeat(2)),
     };
     replace_file(&path, &text)?;
     out!("added a note on when to use it to {}", show_path(&path));
     Ok(())
+}
+
+/// The line break a text already uses, so a line added to it matches the rest.
+/// A text with no CRLF gets LF, which is also what a new file gets.
+fn line_ending(text: &str) -> &'static str {
+    if text.contains("\r\n") { "\r\n" } else { "\n" }
 }
 
 /// Codex keeps its servers in TOML, so the table is appended as text and the
@@ -1595,11 +1603,14 @@ fn add_codex_server(path: &Path) -> Result<()> {
             show_path(path)
         ),
     }
+    let newline = line_ending(&text);
     let mut written = text.trim_end().to_string();
     if !written.is_empty() {
-        written.push_str("\n\n");
+        written.push_str(&newline.repeat(2));
     }
-    written.push_str("[mcp_servers.ripsem]\ncommand = \"ripsem\"\nargs = [\"mcp\"]\n");
+    written.push_str(
+        &"[mcp_servers.ripsem]\ncommand = \"ripsem\"\nargs = [\"mcp\"]\n".replace('\n', newline),
+    );
     // A table header cannot add to `mcp_servers = { .. }` written on one line.
     if toml::from_str::<toml::Table>(&written).is_err() {
         anyhow::bail!(
@@ -1719,7 +1730,7 @@ fn add_member(text: &str, object: &str, key: &str, value: &Value) -> String {
     let kept = inner.trim_end().len();
     let key = Value::from(key);
     let member = if object.contains('\n') {
-        let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+        let newline = line_ending(text);
         let close = inner[kept..].rsplit('\n').next().unwrap_or("");
         let indent = match kept {
             0 => format!("{close}  "),
@@ -2332,6 +2343,25 @@ mod tests {
         assert!(text.starts_with("{\"b\":1,\"a\":[2],"), "{text}");
         let doc: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
+    }
+
+    #[test]
+    fn an_added_note_or_table_keeps_the_line_endings_of_its_file() {
+        let dir = crate::testutil::TempDir::new();
+        let note = dir.path().join("CLAUDE.md");
+        std::fs::write(&note, "# Notes\r\nexisting line\r\n").unwrap();
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        let text = std::fs::read_to_string(&note).unwrap();
+        assert!(text.contains("## Code search"), "{text:?}");
+        assert!(!text.replace("\r\n", "").contains('\n'), "{text:?}");
+
+        let config = dir.path().join(".codex/config.toml");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(&config, "model = \"x\"\r\n").unwrap();
+        cmd_install(dir.path(), InstallCmd::Codex).unwrap();
+        let text = std::fs::read_to_string(&config).unwrap();
+        assert!(text.contains("[mcp_servers.ripsem]"), "{text:?}");
+        assert!(!text.replace("\r\n", "").contains('\n'), "{text:?}");
     }
 
     #[test]
