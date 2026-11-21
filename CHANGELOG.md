@@ -6,6 +6,9 @@
   free the index they read for each answer. Before, the index was left to the
   process exit, so a running MCP server grew by a whole index in memory with
   every name an agent looked up.
+- `install.ps1` says so when the release's `SHA256SUMS` has no line for the
+  archive, as `install.sh` does. Before, it reported that the checksum did not
+  match.
 - `ripsem install` adds its note to a CRLF file, such as `CLAUDE.md`, and its
   table to a Codex `config.toml` with CRLF line breaks, as the JSON files
   already get. Before, the added lines ended in LF, so the file had mixed line

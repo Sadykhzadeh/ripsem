@@ -42,6 +42,9 @@ try {
     Get-Url "$base/SHA256SUMS" $sums
 
     $line = Get-Content $sums | Where-Object { $_ -match " \*?$([regex]::Escape("$name.zip"))$" }
+    if (-not $line) {
+        throw "SHA256SUMS has no entry for $name.zip; not installing"
+    }
     $expected = ($line -split '\s+')[0]
     if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $expected) {
         throw "$name.zip does not match its checksum in SHA256SUMS"
