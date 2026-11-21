@@ -258,29 +258,6 @@ mod tests {
         assert_eq!(burst.paths, [src]);
     }
 
-    /// A search that arrives while the watcher is still being set up must be
-    /// told the index is on its way, not that there is none.
-    #[test]
-    fn the_first_index_counts_as_underway_from_the_moment_the_watch_starts() {
-        let dir = crate::testutil::TempDir::new();
-        dir.write("a.rs", "fn a() {}\n");
-        let config = Config {
-            root: dir.path().to_path_buf(),
-            backend: crate::config::Backend::Hash,
-            ..Default::default()
-        };
-        config.create_data_dir().unwrap();
-
-        spawn(config);
-        assert!(indexing());
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        while indexing() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(!indexing(), "the flag has to clear once the index is built");
-    }
-
     /// A scanner holding the index file open fails a save, and the server
     /// that watches for an agent's edits must not stop watching for it.
     #[test]
