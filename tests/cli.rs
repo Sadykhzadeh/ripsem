@@ -981,6 +981,27 @@ fn the_regex_help_names_the_depth_a_pattern_is_tried_on() {
 }
 
 #[test]
+fn the_npm_launcher_staging_and_manifest_name_the_same_packages() {
+    let npm = Path::new(env!("CARGO_MANIFEST_DIR")).join("npm");
+    let package = regex::Regex::new(r"ripsem-(darwin|linux|win32)-(arm64|x64)").unwrap();
+    let names = |file: &str| -> std::collections::BTreeSet<String> {
+        let text = std::fs::read_to_string(npm.join(file)).unwrap();
+        package
+            .find_iter(&text)
+            .map(|m| m.as_str().to_string())
+            .collect()
+    };
+    let launcher = names("ripsem/bin/ripsem.js");
+    assert!(!launcher.is_empty());
+    assert_eq!(names("stage.mjs"), launcher, "npm/stage.mjs");
+    assert_eq!(
+        names("ripsem/package.json"),
+        launcher,
+        "npm/ripsem/package.json"
+    );
+}
+
+#[test]
 fn files_with_matches_with_json_prints_a_json_array_of_the_paths() {
     let dir = TempDir::new();
     dir.write(
