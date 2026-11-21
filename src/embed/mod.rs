@@ -93,7 +93,7 @@ pub fn backend_warning(backend: Backend) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::document_input;
+    use super::*;
 
     #[test]
     fn the_line_above_the_code_is_the_path_and_the_label_when_there_is_one() {
@@ -102,5 +102,13 @@ mod tests {
             "src/auth/session.rs: fn Session::refresh\ncode"
         );
         assert_eq!(document_input("README.md", None, "text"), "README.md\ntext");
+    }
+
+    #[test]
+    fn the_readme_states_the_chunk_count_that_asks_for_the_gpu() {
+        let readme = include_str!("../../README.md");
+        let readme: String = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+        let said = format!("embeds {GPU_FROM_CHUNKS} chunks or more");
+        assert!(readme.contains(&said), "README should say `{said}`");
     }
 }

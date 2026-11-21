@@ -991,4 +991,14 @@ mod tests {
         let text = decode_text(&std::fs::read(&collected[0]).unwrap()).into_owned();
         assert_eq!(text, "caf\u{e9} au lait\n");
     }
+
+    #[test]
+    fn the_readme_states_the_minified_thresholds() {
+        let readme = include_str!("../README.md");
+        let readme: String = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+        let bytes = format!("at least {} KiB", MINIFIED_BYTES / 1024);
+        let line = format!("lines averaging {} KiB", MINIFIED_LINE / 1024);
+        assert!(readme.contains(&bytes), "README should say `{bytes}`");
+        assert!(readme.contains(&line), "README should say `{line}`");
+    }
 }

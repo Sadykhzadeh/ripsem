@@ -3149,4 +3149,12 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{tool} {arguments}: {e}"));
         }
     }
+
+    #[test]
+    fn the_readme_states_the_search_limit() {
+        let readme = include_str!("../README.md");
+        let readme: String = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+        let said = format!("(default {DEFAULT_LIMIT}, at most {MAX_LIMIT})");
+        assert!(readme.contains(&said), "README should say `{said}`");
+    }
 }
