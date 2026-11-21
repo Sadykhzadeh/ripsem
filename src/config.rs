@@ -838,4 +838,22 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o640);
     }
+
+    #[test]
+    fn the_example_config_in_the_readme_holds_the_defaults() {
+        let readme = include_str!("../README.md");
+        let start = readme
+            .find("```toml\nbackend = ")
+            .expect("README shows the config file")
+            + "```toml\n".len();
+        let block = &readme[start..];
+        let block = &block[..block.find("```").unwrap()];
+        let mut example = serde_json::to_value(toml::from_str::<Config>(block).unwrap()).unwrap();
+        let mut default = serde_json::to_value(Config::default()).unwrap();
+        // The default backend follows the fastembed feature, which the README example does not.
+        for value in [&mut example, &mut default] {
+            value.as_object_mut().unwrap().remove("backend");
+        }
+        assert_eq!(example, default);
+    }
 }
