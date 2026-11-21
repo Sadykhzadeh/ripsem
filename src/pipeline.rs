@@ -1849,6 +1849,10 @@ pub fn outline(config: &Config, path: &str) -> Result<Vec<Declaration>> {
     });
     found.dedup();
     leave_to_exit(index);
+    anyhow::ensure!(
+        cfg!(feature = "treesitter") || !found.is_empty(),
+        "this build has no syntax support, so it knows no declarations to list; build with the treesitter feature"
+    );
     Ok(found)
 }
 

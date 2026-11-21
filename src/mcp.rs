@@ -404,7 +404,7 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
         )),
         "tools/list" => Some(ok(
             id?,
-            json!({ "tools": [tool_schema(), similar_schema(), status_schema()] }),
+            json!({ "tools": [tool_schema(), similar_schema(), outline_schema(), status_schema()] }),
         )),
         "tools/call" => Some(handle_call(config, session, id?, request)),
         "ping" => Some(ok(id?, json!({}))),
@@ -523,6 +523,40 @@ fn similar_schema() -> Value {
     })
 }
 
+fn outline_schema() -> Value {
+    let declaration = json!({
+        "type": "object",
+        "properties": {
+            "kind": { "type": "string" },
+            "symbol": { "type": "string" },
+            "start_line": { "type": "integer", "minimum": 1 },
+            "end_line": { "type": "integer", "minimum": 1 }
+        },
+        "required": ["kind", "symbol", "start_line", "end_line"]
+    });
+    json!({
+        "name": "outline",
+        "title": "Outline a file",
+        "annotations": read_only("Outline a file"),
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "declarations": { "type": "array", "items": declaration }
+            },
+            "required": ["declarations"]
+        },
+        "description": "List the declarations of one file in this repository, in the order they start: each one's kind, name and line range, such as `fn Session::refresh` at 40-72. Call it before reading a long file, to see its layout and then read only the lines that matter. It lists what the index holds, so a file the index leaves out, such as a binary or minified one, is a tool error.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "The file, relative to the repository, e.g. 'src/auth.rs'." }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        }
+    })
+}
+
 fn status_schema() -> Value {
     json!({
         "name": "index_status",
@@ -564,10 +598,11 @@ fn handle_call(
         "find_similar" => {
             return find_similar(config, session, id, &call_arguments(request));
         }
+        "outline" => return outline(config, id, &call_arguments(request)),
         "index_status" => return index_status(config, id, &call_arguments(request)),
         other => {
             let message = format!(
-                "unknown tool '{other}'; the tools are 'search', 'find_similar' and 'index_status'"
+                "unknown tool '{other}'; the tools are 'search', 'find_similar', 'outline' and 'index_status'"
             );
             return error(id, -32602, &message);
         }
@@ -810,6 +845,65 @@ fn call_arguments(request: &Value) -> Value {
         .filter(|a| !a.is_null())
         .cloned()
         .unwrap_or_else(|| json!({}))
+}
+
+/// `outline`: the declarations of one file the index holds, as `ripsem outline`
+/// lists them.
+fn outline(config: &Config, id: Value, args: &Value) -> Value {
+    let path = match parse_outline(args, &config.root) {
+        Ok(path) => path,
+        Err(e) => return tool_error(id, &e),
+    };
+    if crate::watch::indexing() {
+        let e = anyhow!("the index is being built in the background; search again shortly");
+        return tool_error(id, &e);
+    }
+    match pipeline::outline(config, &path) {
+        Ok(declarations) => {
+            let text = if declarations.is_empty() {
+                format!("no declarations in {path}")
+            } else {
+                declarations
+                    .iter()
+                    .map(|d| format!("{}-{}  {}", d.start_line, d.end_line, d.symbol.label()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let rows: Vec<Value> = declarations
+                .iter()
+                .map(crate::cli::declaration_row)
+                .collect();
+            ok(
+                id,
+                json!({
+                    "content": [{ "type": "text", "text": text }],
+                    "isError": false,
+                    "structuredContent": { "declarations": rows }
+                }),
+            )
+        }
+        Err(e) => tool_error(id, &e),
+    }
+}
+
+/// The file named by the arguments of `outline`, as an index path.
+fn parse_outline(args: &Value, root: &Path) -> Result<String> {
+    let args = args
+        .as_object()
+        .ok_or_else(|| anyhow!("the arguments must be an object with a 'path'"))?;
+    if let Some(name) = args.keys().find(|k| k.as_str() != "path") {
+        bail!("unknown argument '{name}'; the only argument is path");
+    }
+    let raw = match args.get("path").filter(|v| !v.is_null()) {
+        None => bail!("missing 'path'"),
+        Some(Value::String(p)) => p.as_str(),
+        Some(other) => bail!("'path' must be a string, not {other}"),
+    };
+    let path = scope_prefix(raw, root)?.ok_or_else(|| anyhow!("'{raw}' names no file"))?;
+    if root.join(&path).is_dir() {
+        bail!("{raw} is a directory; `outline` takes a file");
+    }
+    Ok(path)
 }
 
 /// What `ripsem status --json` prints, plus whether the server is indexing
@@ -1272,8 +1366,8 @@ mod tests {
         let resp = handle(&cfg, None, &req("tools/list", json!({}))).unwrap();
         let tools = resp["result"]["tools"].as_array().unwrap();
         let names: Vec<&Value> = tools.iter().map(|t| &t["name"]).collect();
-        assert_eq!(names, ["search", "find_similar", "index_status"]);
-        let status = &tools[2]["inputSchema"];
+        assert_eq!(names, ["search", "find_similar", "outline", "index_status"]);
+        let status = &tools[3]["inputSchema"];
         assert_eq!(status["type"], "object");
         assert_eq!(status["additionalProperties"], false);
         assert!(status.get("required").is_none());
@@ -1382,6 +1476,76 @@ mod tests {
         let behind = report(&config);
         assert_eq!(behind["index"]["drift"]["added"], 1);
         assert!(behind["updating"].is_boolean(), "{behind}");
+    }
+
+    /// A client that has picked a file lists its declarations before reading
+    /// any of its lines, and the same declarations come back as text and as
+    /// structured content.
+    #[cfg(feature = "treesitter")]
+    #[test]
+    fn outline_lists_the_declarations_of_a_file_in_order() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write(
+            "auth.rs",
+            "pub struct Session {\n    token: String,\n}\n\nimpl Session {\n    pub fn refresh(&mut self) {}\n}\n",
+        );
+        let config = Config {
+            backend: crate::config::Backend::Hash,
+            root: dir.path().canonicalize().unwrap(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+
+        let resp = call_tool(&config, "outline", json!({ "path": "auth.rs" }));
+        assert_eq!(resp["result"]["isError"], false, "{resp}");
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("1-3  struct Session"), "{text}");
+        assert!(text.contains("fn Session::refresh"), "{text}");
+        let rows = &resp["result"]["structuredContent"]["declarations"];
+        assert_eq!(rows[0]["kind"], "struct");
+        assert_eq!(rows[0]["symbol"], "Session");
+        assert_eq!(rows[0]["start_line"], 1);
+        assert_eq!(rows[0]["end_line"], 3);
+        assert_eq!(rows.as_array().unwrap().len(), 3, "{rows}");
+    }
+
+    /// A directory, a path the index leaves out and an unknown argument are
+    /// tool errors the client can correct, not protocol errors.
+    #[test]
+    fn outline_refuses_a_directory_a_missing_file_and_unknown_arguments() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("src/auth.rs", "fn authenticate(user) {}");
+        let config = Config {
+            backend: crate::config::Backend::Hash,
+            root: dir.path().canonicalize().unwrap(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+
+        let failure = |arguments: Value| -> String {
+            let resp = call_tool(&config, "outline", arguments);
+            assert_eq!(resp["result"]["isError"], true, "{resp}");
+            resp["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(
+            failure(json!({ "path": "src" })).contains("is a directory"),
+            "directory"
+        );
+        assert!(
+            failure(json!({ "path": "src/nope.rs" })).contains("not in the index"),
+            "missing"
+        );
+        assert!(
+            failure(json!({ "path": "src/auth.rs", "line": 1 }))
+                .contains("unknown argument 'line'"),
+            "unknown"
+        );
+        assert!(failure(json!({})).contains("missing 'path'"), "absent");
     }
 
     /// The drift an agent is told is what a search would update: a file whose

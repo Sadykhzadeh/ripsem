@@ -528,7 +528,13 @@ error that names what is expected, so the agent can correct the call. The
 `line` and `end_line` (the whole file when `line` is absent), returns the code
 nearest to that place, with `limit`, `offset`, `min_score`, `lang`, `glob`,
 `regex` and `since` as `search` takes them. Its errors are the CLI's messages, such as a
-file that is not in the index or a line past its end. The `index_status` tool,
+file that is not in the index or a line past its end. The `outline` tool is
+`ripsem outline` for MCP clients: a `path` to one file returns its declarations
+in the order they start, each with its kind, name and line range, so the client
+can read a long file's layout and then only the lines that matter. The
+declarations are also in the structured content as `declarations`, each with
+`kind`, `symbol`, `start_line` and `end_line`, for revision 2025-06-18 and later.
+The `index_status` tool,
 which takes no arguments, returns what `ripsem status
 --json` prints (as structured content too, for revision 2025-06-18 and later)
 plus `updating`, whether the server is indexing right now, so an
@@ -536,8 +542,8 @@ agent that finds nothing it expects can see whether the index exists and how
 many files have changed since it was built. All the tools carry the standard
 MCP annotations (`readOnlyHint` and `idempotentHint` true, `destructiveHint`
 and `openWorldHint` false) and a title, so a client can run them without asking each
-time. `search` refreshes ripsem's own index under `.ripsem/` before it
-answers, and touches nothing else. In a
+time. `search`, `find_similar` and `outline` refresh ripsem's own
+index under `.ripsem/` before they answer, and touch nothing else. In a
 directory with a `.ripsem` directory the server keeps the index current by
 itself: it builds the index on its first start and re-embeds the code the
 agent changes. Running `ripsem index` once beforehand has the index ready

@@ -1032,22 +1032,8 @@ fn cmd_outline(root: &Path, raw: &str, as_json: bool) -> Result<()> {
     let path = mcp::scope_prefix(&from_here(raw, &config.root), &config.root)?
         .ok_or_else(|| anyhow::anyhow!("'{raw}' names no file"))?;
     let declarations = pipeline::outline(&config, &path)?;
-    anyhow::ensure!(
-        cfg!(feature = "treesitter") || !declarations.is_empty(),
-        "this build has no syntax support, so it knows no declarations to list; build with the treesitter feature"
-    );
     if as_json {
-        let rows: Vec<Value> = declarations
-            .iter()
-            .map(|d| {
-                json!({
-                    "kind": d.symbol.kind,
-                    "symbol": d.symbol.name,
-                    "start_line": d.start_line,
-                    "end_line": d.end_line,
-                })
-            })
-            .collect();
+        let rows: Vec<Value> = declarations.iter().map(declaration_row).collect();
         out!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
@@ -1058,6 +1044,16 @@ fn cmd_outline(root: &Path, raw: &str, as_json: bool) -> Result<()> {
         out!("{}-{}  {}", d.start_line, d.end_line, d.symbol.label());
     }
     Ok(())
+}
+
+/// One declaration as `outline --json` and the MCP `outline` tool print it.
+pub(crate) fn declaration_row(d: &crate::symbol::Declaration) -> Value {
+    json!({
+        "kind": d.symbol.kind,
+        "symbol": d.symbol.name,
+        "start_line": d.start_line,
+        "end_line": d.end_line,
+    })
 }
 
 /// When the part after the last colon is not a line number and the path is not

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The MCP server has an `outline` tool, which lists the declarations of one
+  file with their kinds, names and line ranges, as `ripsem outline` does. A
+  client can see a file's layout before it reads any of its lines. Before, the
+  outline was only on the command line.
 - A file that ripsem replaces, such as `CLAUDE.md` or `.ripsem/config.toml`,
   takes the temporary files that a killed write left beside it with it on
   the next write, once they are an hour old. Only names of that form are
