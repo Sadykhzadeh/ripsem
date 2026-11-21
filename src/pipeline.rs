@@ -1857,7 +1857,11 @@ pub fn outline(config: &Config, path: &str) -> Result<Vec<Declaration>> {
 /// the whole qualified name (`Session::refresh`) or its last part (`refresh`),
 /// each with the file it is in. The tree is read again first, as a search
 /// does, so the line ranges are the ones on disk.
-pub fn definitions(config: &Config, name: &str) -> Result<Vec<(String, Declaration)>> {
+pub fn definitions(
+    config: &Config,
+    name: &str,
+    scope: Option<&Scope>,
+) -> Result<Vec<(String, Declaration)>> {
     if !config.index_path().exists() {
         anyhow::bail!("no index yet; run `ripsem index` in this directory first");
     }
@@ -1865,9 +1869,15 @@ pub fn definitions(config: &Config, name: &str) -> Result<Vec<(String, Declarati
         Some(index) => index,
         None => Index::load(&config.index_path())?,
     };
+    if let Some(scope) = scope
+        && !index.covers(scope)
+    {
+        anyhow::bail!(scope.nothing_matches());
+    }
     let mut found: Vec<(String, Declaration)> = index
         .records
         .iter()
+        .filter(|record| scope.is_none_or(|scope| scope.admits(&record.path)))
         .flat_map(|record| {
             record
                 .declarations

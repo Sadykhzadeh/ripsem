@@ -1322,6 +1322,50 @@ fn symbol_finds_a_name_in_every_file_of_the_index() {
     );
 }
 
+/// `symbol` takes the filters `search` takes, so a name declared in many places
+/// can be narrowed to one directory, language or glob.
+#[cfg(feature = "treesitter")]
+#[test]
+fn symbol_takes_the_search_filters() {
+    let dir = TempDir::new();
+    dir.write(
+        "src/auth.rs",
+        "struct Session {}\n\nimpl Session {\n    fn refresh(&mut self) {}\n}\n",
+    );
+    dir.write(
+        "src/cache.rs",
+        "struct Cache {}\n\nimpl Cache {\n    fn refresh(&mut self) {}\n}\n",
+    );
+    dir.write("tools/sync.py", "def refresh():\n    pass\n");
+    assert!(ripsem(&dir.path, &["init"]).status.success());
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let in_src = ripsem(&dir.path, &["symbol", "refresh", "--in", "src"]);
+    assert_eq!(
+        stdout(&in_src),
+        "src/auth.rs:4-4  fn Session::refresh\nsrc/cache.rs:4-4  fn Cache::refresh\n"
+    );
+
+    let python = ripsem(&dir.path, &["symbol", "refresh", "-t", "py"]);
+    assert_eq!(stdout(&python), "tools/sync.py:1-2  fn refresh\n");
+
+    let not_python = ripsem(&dir.path, &["symbol", "refresh", "--lang", "!py", "--json"]);
+    let rows: serde_json::Value = serde_json::from_str(&stdout(&not_python)).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 2, "{rows}");
+
+    let one_file = ripsem(&dir.path, &["symbol", "refresh", "-g", "src/cache.rs"]);
+    assert_eq!(stdout(&one_file), "src/cache.rs:4-4  fn Cache::refresh\n");
+
+    let nowhere = ripsem(&dir.path, &["symbol", "refresh", "--in", "nowhere"]);
+    assert_eq!(nowhere.status.code(), Some(1), "{}", stderr(&nowhere));
+    assert!(
+        stderr(&nowhere).contains("nothing is indexed under 'nowhere'"),
+        "{}",
+        stderr(&nowhere)
+    );
+}
+
 /// Without the treesitter feature a file has no declarations, so `symbol` says
 /// so instead of reporting that the name is not declared anywhere.
 #[cfg(not(feature = "treesitter"))]

@@ -937,7 +937,7 @@ fn symbol(config: &Config, id: Value, args: &Value) -> Value {
         let e = anyhow!("the index is being built in the background; search again shortly");
         return tool_error(id, &e);
     }
-    match pipeline::definitions(config, &name) {
+    match pipeline::definitions(config, &name, None) {
         Ok(found) => {
             let text = if found.is_empty() {
                 format!("no declaration named {name} in the index")

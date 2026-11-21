@@ -147,13 +147,13 @@ pub enum Command {
     /// has to be embedded again.
     #[command(after_long_help = "Examples:
   ripsem symbol refresh
+  ripsem symbol refresh --in src --lang rust
   ripsem symbol Session::refresh --json | jq -r '.[].path'")]
     Symbol {
         /// The name, qualified or not.
         name: String,
-        /// Print the declarations as JSON.
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        opts: SymbolOpts,
     },
     /// Index and keep the index in sync as files change.
     #[command(after_long_help = "Examples:
@@ -319,6 +319,30 @@ pub struct SearchOpts {
     since: Option<String>,
 }
 
+/// The options `symbol` takes: the filters `search` takes, and whether to print
+/// JSON.
+#[derive(clap::Args)]
+pub struct SymbolOpts {
+    /// Limit the declarations to a subdirectory, as `search --in` does.
+    #[arg(long = "in", value_name = "PREFIX")]
+    within: Option<String>,
+    /// Keep only declarations in files of this language, as `search --lang`
+    /// does. A leading `!` leaves a language out.
+    #[arg(short = 't', long, alias = "type", value_name = "LANG")]
+    lang: Vec<String>,
+    /// Keep only declarations whose path matches this glob, as `search -g`
+    /// does.
+    #[arg(short = 'g', long, value_name = "GLOB")]
+    glob: Vec<String>,
+    /// Keep only declarations in files that differ from this git revision,
+    /// as `search --since` does.
+    #[arg(long, value_name = "REV")]
+    since: Option<String>,
+    /// Print the declarations as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum SortBy {
     Score,
@@ -434,7 +458,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Search { query, opts } => cmd_search(&root, &query, &opts),
         Command::Similar { target, opts } => cmd_similar(&root, &target, &opts),
         Command::Outline { file, json } => cmd_outline(&root, &file, json),
-        Command::Symbol { name, json } => cmd_symbol(&root, &name, json),
+        Command::Symbol { name, opts } => cmd_symbol(&root, &name, &opts),
         Command::Watch => watch::run(load_config(&root)?),
         Command::Status { json, verify } => cmd_status(&root, json, verify),
         Command::Mcp => mcp::serve(load_config(&root)?, cli.path.is_some()),
@@ -1071,14 +1095,21 @@ fn cmd_outline(root: &Path, raw: &str, as_json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_symbol(root: &Path, name: &str, as_json: bool) -> Result<()> {
+fn cmd_symbol(root: &Path, name: &str, opts: &SymbolOpts) -> Result<()> {
     anyhow::ensure!(
         !name.trim().is_empty(),
         "the name is empty; say which declaration to find"
     );
     let config = load_config(root)?;
-    let found = pipeline::definitions(&config, name.trim())?;
-    if as_json {
+    let scope = scope_from(
+        &config,
+        opts.within.as_deref(),
+        &opts.lang,
+        &opts.glob,
+        opts.since.as_deref(),
+    )?;
+    let found = pipeline::definitions(&config, name.trim(), scope.as_ref())?;
+    if opts.json {
         let rows: Vec<Value> = found
             .iter()
             .map(|(path, d)| definition_row(path, d))
@@ -1173,13 +1204,29 @@ pub(crate) fn line_range(raw: &str, first: usize, last: usize) -> Result<(usize,
 /// The filters the options ask for, as one scope. `None` when nothing limits
 /// the search.
 fn scope_for(config: &Config, opts: &SearchOpts) -> Result<Option<Scope>> {
+    scope_from(
+        config,
+        opts.within.as_deref(),
+        &opts.lang,
+        &opts.glob,
+        opts.since.as_deref(),
+    )
+}
+
+fn scope_from(
+    config: &Config,
+    within: Option<&str>,
+    lang: &[String],
+    glob: &[String],
+    since: Option<&str>,
+) -> Result<Option<Scope>> {
     // Same normalisation as the MCP `search` tool.
-    let prefix = match &opts.within {
+    let prefix = match within {
         Some(raw) => mcp::scope_prefix(&from_here(raw, &config.root), &config.root)?,
         None => None,
     };
-    let scope = Scope::new(prefix.as_deref(), &opts.lang, &opts.glob)?;
-    match &opts.since {
+    let scope = Scope::new(prefix.as_deref(), lang, glob)?;
+    match since {
         Some(rev) => Scope::since_rev(scope, &config.root, rev),
         None => Ok(scope),
     }

@@ -339,7 +339,10 @@ and the declaration, as a search prints a hit's header. The tree is read again
 first, as `search` does, and no model runs unless a changed file has to be
 embedded again. `--json` prints
 the array described under [JSON output](#json-output). A name that no file
-declares prints nothing and exits 0, with a line on stderr saying so.
+declares prints nothing and exits 0, with a line on stderr saying so. `--in`,
+`-t`/`--lang`, `-g`/`--glob` and `--since` keep only the declarations in files
+that `search` would keep with the same filters, so `ripsem symbol refresh --in
+src --lang rust` names the Rust definitions under `src`.
 
 ## Exit codes
 

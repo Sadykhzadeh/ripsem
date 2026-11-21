@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `ripsem symbol` takes the filters of `search`: `--in` for a directory,
+  `-t`/`--lang`, `-g`/`--glob` and `--since`. A name declared in many places
+  can be narrowed to one of them. Before, every definition in the index was
+  listed, and a filter had to be applied by reading the output.
 - The MCP tools write a control character in a file, its name or a declaration
   as an escape, as the command line does, so a repository holding terminal
   control sequences cannot reach an agent's terminal through a tool result.
