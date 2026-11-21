@@ -471,7 +471,7 @@ this table and the variables the source reads differ.
 | `RIPSEM_HASH_ALL` | unset | Set to `1` to read and hash every file on a run, instead of trusting the file times the index stored. Other values leave it off. |
 | `RIPSEM_MODEL_DIR` | the platform cache directory, under `ripsem/models` | Where the embedding model files are kept, so they can live on another disk or in a CI cache. |
 | `RIPSEM_NO_GPU` | unset | Set to any value to keep embedding on the CPU. Without it, a run that embeds 256 chunks or more asks for the GPU where the platform has one, DirectML on Windows. |
->
+
 ## Models
 
 ```
