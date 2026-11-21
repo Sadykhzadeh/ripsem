@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `ripsem symbol`, `ripsem outline` and the MCP `symbol` and `outline` tools
+  free the index they read for each answer. Before, the index was left to the
+  process exit, so a running MCP server grew by a whole index in memory with
+  every name an agent looked up.
 - `ripsem install` adds its note to a CRLF file, such as `CLAUDE.md`, and its
   table to a Codex `config.toml` with CRLF line breaks, as the JSON files
   already get. Before, the added lines ended in LF, so the file had mixed line

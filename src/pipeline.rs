@@ -1848,7 +1848,6 @@ pub fn outline(config: &Config, path: &str) -> Result<Vec<Declaration>> {
         ))
     });
     found.dedup();
-    leave_to_exit(index);
     anyhow::ensure!(cfg!(feature = "treesitter") || !found.is_empty(), NO_SYNTAX);
     Ok(found)
 }
@@ -1903,7 +1902,6 @@ pub fn definitions(
             ))
     });
     found.dedup();
-    leave_to_exit(index);
     anyhow::ensure!(cfg!(feature = "treesitter") || !found.is_empty(), NO_SYNTAX);
     Ok(found)
 }
