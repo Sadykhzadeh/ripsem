@@ -178,6 +178,7 @@ ripsem index                      # build the index (incremental on re-runs)
 ripsem search "where is auth set up?"   # updates the index first
 ripsem similar src/auth.rs:40-72  # the code nearest to a location, no model run
 ripsem outline src/auth.rs        # the declarations the index holds for a file
+ripsem symbol refresh             # where a declaration named refresh is defined
 ripsem status                     # index size, counts, model, drift from the tree
 ripsem status --json              # the same as JSON (schema ripsem/status/v1)
 ripsem status --verify            # also read every indexed file and list the ones that changed
@@ -330,6 +331,16 @@ index holds it. A file changed since the index was built is read again first,
 as `search` does, and no model runs unless that file has to be embedded again.
 A Markdown file has no declarations, so its outline is empty.
 
+`ripsem symbol <name>` finds where a declaration is defined. A bare name matches
+every declaration whose last part is that name, so `ripsem symbol refresh` lists
+`fn Session::refresh` and `fn Cache::refresh` alike, and a qualified name matches
+only that one: `ripsem symbol Session::refresh`. Each line is `path:start-end`
+and the declaration, as a search prints a hit's header. The tree is read again
+first, as `search` does, and no model runs unless a changed file has to be
+embedded again. `--json` prints
+the array described under [JSON output](#json-output). A name that no file
+declares prints nothing and exits 0, with a line on stderr saying so.
+
 ## Exit codes
 
 - `0`: the command ran. A search with no hits also exits 0, unless `-q` is
@@ -393,6 +404,18 @@ An array of the declarations of the file, in the order they start:
 | --- | --- | --- |
 | `kind` | string | The declaration kind, such as `fn`, `struct` or `impl`. |
 | `symbol` | string | The declaration's name, such as `Session::refresh`. |
+| `start_line` | number | The first line of the declaration, 1-based. |
+| `end_line` | number | The last line of the declaration, 1-based and inclusive. |
+
+### `symbol`
+
+An array of the declarations with the name, in path and line order:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `path` | string | The file, relative to the root. |
+| `kind` | string | The declaration kind, such as `fn`, `struct` or `impl`. |
+| `symbol` | string | The declaration's qualified name, such as `Session::refresh`. |
 | `start_line` | number | The first line of the declaration, 1-based. |
 | `end_line` | number | The last line of the declaration, 1-based and inclusive. |
 

@@ -1849,12 +1849,56 @@ pub fn outline(config: &Config, path: &str) -> Result<Vec<Declaration>> {
     });
     found.dedup();
     leave_to_exit(index);
-    anyhow::ensure!(
-        cfg!(feature = "treesitter") || !found.is_empty(),
-        "this build has no syntax support, so it knows no declarations to list; build with the treesitter feature"
-    );
+    anyhow::ensure!(cfg!(feature = "treesitter") || !found.is_empty(), NO_SYNTAX);
     Ok(found)
 }
+
+/// The declarations the index holds under the name `name`, which is either
+/// the whole qualified name (`Session::refresh`) or its last part (`refresh`),
+/// each with the file it is in. The tree is read again first, as a search
+/// does, so the line ranges are the ones on disk.
+pub fn definitions(config: &Config, name: &str) -> Result<Vec<(String, Declaration)>> {
+    if !config.index_path().exists() {
+        anyhow::bail!("no index yet; run `ripsem index` in this directory first");
+    }
+    let index = match refresh(config, &[]) {
+        Some(index) => index,
+        None => Index::load(&config.index_path())?,
+    };
+    let mut found: Vec<(String, Declaration)> = index
+        .records
+        .iter()
+        .flat_map(|record| {
+            record
+                .declarations
+                .iter()
+                .filter(|d| d.symbol.name == name || d.symbol.leaf() == name)
+                .map(|d| (record.path.to_string(), d.clone()))
+        })
+        .collect();
+    found.sort_by(|a, b| {
+        (
+            &a.0,
+            a.1.start_line,
+            a.1.end_line,
+            &a.1.symbol.kind,
+            &a.1.symbol.name,
+        )
+            .cmp(&(
+                &b.0,
+                b.1.start_line,
+                b.1.end_line,
+                &b.1.symbol.kind,
+                &b.1.symbol.name,
+            ))
+    });
+    found.dedup();
+    leave_to_exit(index);
+    anyhow::ensure!(cfg!(feature = "treesitter") || !found.is_empty(), NO_SYNTAX);
+    Ok(found)
+}
+
+const NO_SYNTAX: &str = "this build has no syntax support, so it knows no declarations to list; build with the treesitter feature";
 
 /// What a run says when the index on disk could not be read and was built
 /// again from the files.

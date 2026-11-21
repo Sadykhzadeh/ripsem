@@ -140,6 +140,21 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Find where a declaration with this name is defined.
+    ///
+    /// Matches the whole qualified name, such as `Session::refresh`, or the
+    /// last part of it, such as `refresh`. No model runs unless a changed file
+    /// has to be embedded again.
+    #[command(after_long_help = "Examples:
+  ripsem symbol refresh
+  ripsem symbol Session::refresh --json | jq -r '.[].path'")]
+    Symbol {
+        /// The name, qualified or not.
+        name: String,
+        /// Print the declarations as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Index and keep the index in sync as files change.
     #[command(after_long_help = "Examples:
   ripsem watch
@@ -416,6 +431,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Search { query, opts } => cmd_search(&root, &query, &opts),
         Command::Similar { target, opts } => cmd_similar(&root, &target, &opts),
         Command::Outline { file, json } => cmd_outline(&root, &file, json),
+        Command::Symbol { name, json } => cmd_symbol(&root, &name, json),
         Command::Watch => watch::run(load_config(&root)?),
         Command::Status { json, verify } => cmd_status(&root, json, verify),
         Command::Mcp => mcp::serve(load_config(&root)?, cli.path.is_some()),
@@ -1042,6 +1058,39 @@ fn cmd_outline(root: &Path, raw: &str, as_json: bool) -> Result<()> {
     }
     for d in &declarations {
         out!("{}-{}  {}", d.start_line, d.end_line, d.symbol.label());
+    }
+    Ok(())
+}
+
+fn cmd_symbol(root: &Path, name: &str, as_json: bool) -> Result<()> {
+    anyhow::ensure!(
+        !name.trim().is_empty(),
+        "the name is empty; say which declaration to find"
+    );
+    let config = load_config(root)?;
+    let found = pipeline::definitions(&config, name.trim())?;
+    if as_json {
+        let rows: Vec<Value> = found
+            .iter()
+            .map(|(path, d)| {
+                let mut row = declaration_row(d);
+                row["path"] = json!(path);
+                row
+            })
+            .collect();
+        out!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if found.is_empty() {
+        eprintln!("no declaration named {} in the index", name.trim());
+    }
+    for (path, d) in &found {
+        out!(
+            "{path}:{}-{}  {}",
+            d.start_line,
+            d.end_line,
+            d.symbol.label()
+        );
     }
     Ok(())
 }

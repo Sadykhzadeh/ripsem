@@ -880,6 +880,7 @@ fn the_json_tables_in_the_readme_name_every_key_the_commands_print() {
     ];
     if cfg!(feature = "treesitter") {
         cases.push(("### `outline`", &["outline", "src/retry.rs", "--json"]));
+        cases.push(("### `symbol`", &["symbol", "retry_on_failure", "--json"]));
     }
     for (heading, args) in cases {
         let out = ripsem(&dir.path, args);
@@ -1188,6 +1189,68 @@ fn every_shell_gets_a_completion_script() {
         assert!(output.status.success(), "{shell}");
         assert!(stdout(&output).contains("completions"), "{shell}");
     }
+}
+
+/// `symbol` finds a name in every file of the index, by its whole qualified
+/// name or by its last part, and says where each declaration starts and ends.
+#[cfg(feature = "treesitter")]
+#[test]
+fn symbol_finds_a_name_in_every_file_of_the_index() {
+    let dir = TempDir::new();
+    dir.write(
+        "src/auth.rs",
+        "struct Session {\n    id: u32,\n}\n\nimpl Session {\n    fn refresh(&mut self) {\n        self.id += 1;\n    }\n}\n",
+    );
+    dir.write(
+        "src/cache.rs",
+        "struct Cache {}\n\nimpl Cache {\n    fn refresh(&mut self) {}\n}\n",
+    );
+    assert!(ripsem(&dir.path, &["init"]).status.success());
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let by_last_part = ripsem(&dir.path, &["symbol", "refresh"]);
+    assert!(by_last_part.status.success(), "{}", stderr(&by_last_part));
+    assert_eq!(
+        stdout(&by_last_part),
+        "src/auth.rs:6-8  fn Session::refresh\nsrc/cache.rs:4-4  fn Cache::refresh\n"
+    );
+
+    let whole = ripsem(&dir.path, &["symbol", "Session::refresh"]);
+    assert_eq!(stdout(&whole), "src/auth.rs:6-8  fn Session::refresh\n");
+
+    let json = ripsem(&dir.path, &["symbol", "Session::refresh", "--json"]);
+    let rows: serde_json::Value = serde_json::from_str(&stdout(&json)).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1, "{rows}");
+    assert_eq!(rows[0]["path"], "src/auth.rs");
+    assert_eq!(rows[0]["symbol"], "Session::refresh");
+    assert_eq!(rows[0]["start_line"], 6);
+    assert_eq!(rows[0]["end_line"], 8);
+
+    let none = ripsem(&dir.path, &["symbol", "missing"]);
+    assert!(none.status.success(), "{}", stderr(&none));
+    assert_eq!(stdout(&none), "");
+    assert!(
+        stderr(&none).contains("no declaration named missing"),
+        "{}",
+        stderr(&none)
+    );
+}
+
+/// Without the treesitter feature a file has no declarations, so `symbol` says
+/// so instead of reporting that the name is not declared anywhere.
+#[cfg(not(feature = "treesitter"))]
+#[test]
+fn symbol_says_when_the_build_cannot_name_declarations() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn verify() {}\n");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let out = ripsem(&dir.path, &["symbol", "verify"]);
+    assert!(!out.status.success(), "{}", stdout(&out));
+    assert!(stderr(&out).contains("treesitter"), "{}", stderr(&out));
 }
 
 /// Without the treesitter feature a file has no declarations, so `outline`
