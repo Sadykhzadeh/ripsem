@@ -727,7 +727,7 @@ fn cmd_status(root: &Path, as_json: bool, verify: bool) -> Result<()> {
                     true => out!("verify: every indexed file matches its content"),
                     false => {
                         out!(
-                            "verify: {} changed on disk since indexed; run `ripsem index --force`",
+                            "verify: {} changed or gone on disk since indexed; run `ripsem index --force`",
                             plural(changed.len(), "file")
                         );
                         for path in changed {

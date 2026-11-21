@@ -2283,7 +2283,7 @@ fn status_verify_names_a_file_the_stat_cannot_show() {
     let verified = ripsem(&dir.path, &["status", "--verify"]);
     assert!(verified.status.success());
     assert!(
-        stdout(&verified).contains("verify: 1 file changed on disk"),
+        stdout(&verified).contains("verify: 1 file changed or gone on disk"),
         "{}",
         stdout(&verified)
     );
@@ -2295,6 +2295,15 @@ fn status_verify_names_a_file_the_stat_cannot_show() {
     let plain_json = ripsem(&dir.path, &["status", "--json"]);
     let v: serde_json::Value = serde_json::from_str(&stdout(&plain_json)).unwrap();
     assert!(v["index"].get("changed_on_disk").is_none());
+
+    std::fs::remove_file(dir.path.join("a.rs")).unwrap();
+    let gone = ripsem(&dir.path, &["status", "--verify"]);
+    assert!(
+        stdout(&gone).contains("verify: 1 file changed or gone on disk"),
+        "{}",
+        stdout(&gone)
+    );
+    assert_eq!(listed(&gone), ["a.rs"], "{}", stdout(&gone));
 }
 
 /// Each way a file can differ from its indexed self while the index still
