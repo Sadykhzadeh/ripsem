@@ -1601,11 +1601,17 @@ fn add_codex_server(path: &Path) -> Result<()> {
         })?;
     match doc.get("mcp_servers") {
         None => {}
-        Some(toml::Value::Table(servers)) if servers.contains_key("ripsem") => {
-            out!("ripsem is already in {}; left as it is", show_path(path));
-            return Ok(());
-        }
-        Some(toml::Value::Table(_)) => {}
+        Some(toml::Value::Table(servers)) => match servers.get("ripsem") {
+            Some(toml::Value::Table(_)) => {
+                out!("ripsem is already in {}; left as it is", show_path(path));
+                return Ok(());
+            }
+            Some(_) => anyhow::bail!(
+                "mcp_servers.ripsem in {} is not a table; fix it and run this again",
+                show_path(path)
+            ),
+            None => {}
+        },
         Some(_) => anyhow::bail!(
             "mcp_servers in {} is not a table; fix it and run this again",
             show_path(path)
@@ -1682,12 +1688,18 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
             "{key} in {} is not a JSON object; fix it and run this again",
             show_path(&path)
         ),
-        // An entry already there may carry a --path or env the user added.
-        Some(servers) if servers.get("ripsem").is_some() => {
-            out!("ripsem is already in {}; left as it is", show_path(&path));
-            return Ok(());
-        }
-        Some(_) => {}
+        Some(servers) => match servers.get("ripsem") {
+            // An entry already there may carry a --path or env the user added.
+            Some(entry) if entry.is_object() => {
+                out!("ripsem is already in {}; left as it is", show_path(&path));
+                return Ok(());
+            }
+            Some(_) => anyhow::bail!(
+                "{key}.ripsem in {} is not a JSON object; fix it and run this again",
+                show_path(&path)
+            ),
+            None => {}
+        },
     }
     // Claude Code, Gemini CLI and OpenCode start a project's server in the
     // directory they run in, and Roo Code starts it in the first workspace
@@ -2108,6 +2120,37 @@ mod tests {
         std::fs::write(&path, mine).unwrap();
         cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), mine);
+    }
+
+    #[test]
+    fn install_refuses_a_ripsem_entry_that_is_not_an_object() {
+        let dir = crate::testutil::TempDir::new();
+        let path = dir.path().join(".mcp.json");
+        for entry in ["5", "null", r#""ripsem""#] {
+            let text = format!(r#"{{"mcpServers":{{"ripsem":{entry}}}}}"#);
+            std::fs::write(&path, &text).unwrap();
+            let err = cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap_err();
+            assert!(
+                err.to_string().contains("mcpServers.ripsem in"),
+                "got: {err}"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        }
+    }
+
+    #[test]
+    fn install_codex_refuses_a_ripsem_entry_that_is_not_a_table() {
+        let dir = crate::testutil::TempDir::new();
+        let path = dir.path().join(".codex/config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let text = "[mcp_servers]\nripsem = 5\n";
+        std::fs::write(&path, text).unwrap();
+        let err = cmd_install(dir.path(), InstallCmd::Codex).unwrap_err();
+        assert!(
+            err.to_string().contains("mcp_servers.ripsem in"),
+            "got: {err}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
     }
 
     #[test]
