@@ -969,6 +969,18 @@ fn the_readme_shows_a_line_for_each_install_target() {
 }
 
 #[test]
+fn the_regex_help_names_the_depth_a_pattern_is_tried_on() {
+    let dir = TempDir::new();
+    let help = stdout(&ripsem(&dir.path, &["search", "--help"]));
+    let help: String = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    let depth = format!("best {} places", ripsem::pipeline::TEXT_DEPTH);
+    assert!(
+        help.contains(&depth),
+        "--regex help should say `{depth}`:\n{help}"
+    );
+}
+
+#[test]
 fn files_with_matches_with_json_prints_a_json_array_of_the_paths() {
     let dir = TempDir::new();
     dir.write(

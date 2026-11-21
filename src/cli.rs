@@ -248,8 +248,9 @@ pub struct SearchOpts {
     /// Keep only hits whose code matches this regular expression, to find
     /// the place that does something and also mentions a name: `-e
     /// 'retry|backoff'`, `-e '(?i)argon2'`. It is matched against each
-    /// hit's whole chunk and tried on the best 200 places of the ranking,
-    /// so it narrows an answer; to find every occurrence use grep.
+    /// hit's whole chunk and tried on the best 200 places of the ranking, more
+    /// when `-k` and `--offset` reach further, so it narrows an answer; to find
+    /// every occurrence use grep.
     #[arg(short = 'e', long, value_name = "PATTERN")]
     regex: Option<String>,
     /// Number of snippet lines to print per hit in the human output: 3 in
