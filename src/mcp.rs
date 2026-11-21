@@ -2001,7 +2001,11 @@ mod tests {
         assert_eq!(resp["error"]["code"], -32602);
         let message = resp["error"]["message"].as_str().unwrap();
         assert!(message.contains("unknown tool 'other'"), "got: {message}");
-        assert!(message.contains("'search'"), "got: {message}");
+        let listed = handle(&cfg, None, &req("tools/list", json!({}))).unwrap();
+        for tool in listed["result"]["tools"].as_array().unwrap() {
+            let name = tool["name"].as_str().unwrap();
+            assert!(message.contains(&format!("'{name}'")), "got: {message}");
+        }
     }
 
     /// A `name` of the wrong type is named as the bad field. Calling it missing
