@@ -1183,8 +1183,12 @@ pub(crate) fn parse_target(raw: &str) -> Result<(&str, Option<(usize, usize)>)> 
     };
     let (first, last) = spec.split_once('-').unwrap_or((spec, spec));
     let number = |s: &str| {
-        s.parse::<usize>()
-            .map_err(|_| anyhow::anyhow!("'{s}' is not a line number"))
+        s.parse::<usize>().map_err(|e| match e.kind() {
+            std::num::IntErrorKind::PosOverflow => {
+                anyhow::anyhow!("'{s}' is too large to be a line number")
+            }
+            _ => anyhow::anyhow!("'{s}' is not a line number"),
+        })
     };
     let (first, last) = line_range(raw, number(first)?, number(last)?)?;
     Ok((path, Some((first, last))))

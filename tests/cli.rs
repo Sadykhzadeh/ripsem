@@ -1776,6 +1776,10 @@ fn similar_names_its_errors() {
         ("src/auth0.rs:3-2", "comes before line 3"),
         ("src/auth0.rs:0", "line numbers start at 1"),
         (
+            "src/auth0.rs:99999999999999999999",
+            "is too large to be a line number",
+        ),
+        (
             "src/auth0.rs:abc",
             "a line range is PATH:LINE or PATH:LINE-LINE",
         ),
