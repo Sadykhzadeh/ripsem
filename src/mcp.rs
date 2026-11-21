@@ -998,6 +998,10 @@ fn parse_outline(args: &Value, root: &Path) -> Result<String> {
         Some(Value::String(p)) => p.as_str(),
         Some(other) => bail!("'path' must be a string, not {other}"),
     };
+    let (file, lines) = crate::cli::parse_target(raw)?;
+    if lines.is_some() {
+        bail!("{raw} names lines, but `outline` takes a file; send {file} instead");
+    }
     let path = scope_prefix(raw, root)?.ok_or_else(|| anyhow!("'{raw}' names no file"))?;
     if root.join(&path).is_dir() {
         bail!("{raw} is a directory; `outline` takes a file");
@@ -1616,6 +1620,29 @@ mod tests {
         assert_eq!(rows[0]["start_line"], 1);
         assert_eq!(rows[0]["end_line"], 3);
         assert_eq!(rows.as_array().unwrap().len(), 3, "{rows}");
+    }
+
+    /// A `path:line` copied from a search hit is answered with the file to send
+    /// instead, as the CLI answers it.
+    #[test]
+    fn outline_refuses_a_line_range_and_names_the_file() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("auth.rs", "fn authenticate(user) {}");
+        let config = Config {
+            backend: crate::config::Backend::Hash,
+            root: dir.path().canonicalize().unwrap(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+
+        let resp = call_tool(&config, "outline", json!({ "path": "auth.rs:1-1" }));
+        assert_eq!(resp["result"]["isError"], true, "{resp}");
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("names lines") && text.contains("send auth.rs"),
+            "{text}"
+        );
     }
 
     /// A directory, a path the index leaves out and an unknown argument are

@@ -1129,7 +1129,7 @@ fn similar_line_hint(raw: &str, err: anyhow::Error) -> anyhow::Error {
 
 /// Splits `path`, `path:LINE` or `path:START-END`. A colon that is not
 /// followed by line numbers belongs to the path.
-fn parse_target(raw: &str) -> Result<(&str, Option<(usize, usize)>)> {
+pub(crate) fn parse_target(raw: &str) -> Result<(&str, Option<(usize, usize)>)> {
     let (path, spec) = match raw.rsplit_once(':') {
         Some((path, spec)) if !path.is_empty() && is_line_spec(spec) => (path, spec),
         _ => return Ok((raw, None)),
