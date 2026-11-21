@@ -1358,8 +1358,9 @@ impl Searcher {
             && end > total
         {
             anyhow::bail!(
-                "{} has {total} lines, so line {end} is out of range",
-                target.path
+                "{} has {}, so line {end} is out of range",
+                target.path,
+                crate::cli::plural(total, "line")
             );
         }
         let (from, to) = target.lines.unwrap_or((1, total.max(1)));

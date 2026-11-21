@@ -1759,7 +1759,7 @@ fn similar_names_its_errors() {
     let dir = paged_tree();
     for (target, expected) in [
         ("src/nothere.rs", "is not in the index"),
-        ("src/auth0.rs:9", "has 1 lines, so line 9 is out of range"),
+        ("src/auth0.rs:9", "has 1 line, so line 9 is out of range"),
         ("src/auth0.rs:3-2", "comes before line 3"),
         ("src/auth0.rs:0", "line numbers start at 1"),
         (
