@@ -707,7 +707,7 @@ fn cmd_status(root: &Path, as_json: bool, verify: bool) -> Result<()> {
                             plural(changed.len(), "file")
                         );
                         for path in changed {
-                            out!("  {path}");
+                            out!("  {}", printable(path));
                         }
                     }
                 }
@@ -800,7 +800,8 @@ fn cmd_index(root: &Path, force: bool, dry_run: bool) -> Result<()> {
     if dry_run {
         let (files, counts) = walk::tally(&config)?;
         for path in &files {
-            out!("{}", pipeline::relative(&config.root, path));
+            let rel = pipeline::relative(&config.root, path);
+            out!("{}", printable(&rel));
         }
         out!("{} would be indexed", plural(files.len(), "file"));
         if let Some(left) = left_out_line(&counts) {
@@ -1057,10 +1058,15 @@ fn cmd_outline(root: &Path, raw: &str, as_json: bool) -> Result<()> {
         return Ok(());
     }
     if declarations.is_empty() {
-        out!("no declarations in {path}");
+        out!("no declarations in {}", printable(&path));
     }
     for d in &declarations {
-        out!("{}-{}  {}", d.start_line, d.end_line, d.symbol.label());
+        out!(
+            "{}-{}  {}",
+            d.start_line,
+            d.end_line,
+            printable(&d.symbol.label())
+        );
     }
     Ok(())
 }
@@ -1085,10 +1091,11 @@ fn cmd_symbol(root: &Path, name: &str, as_json: bool) -> Result<()> {
     }
     for (path, d) in &found {
         out!(
-            "{path}:{}-{}  {}",
+            "{}:{}-{}  {}",
+            printable(path),
             d.start_line,
             d.end_line,
-            d.symbol.label()
+            printable(&d.symbol.label())
         );
     }
     Ok(())

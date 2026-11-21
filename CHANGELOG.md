@@ -6,6 +6,10 @@
   as an escape, as the command line does, so a repository holding terminal
   control sequences cannot reach an agent's terminal through a tool result.
   Before, the text was returned as the file held it.
+- `ripsem outline`, `ripsem symbol`, `ripsem index --dry-run` and
+  `ripsem status --verify` write a control character in a file name or a
+  declaration as an escape, as `search` already does. Before, a file named
+  with a control character was printed as the terminal would act on it.
 - The MCP `outline` tool, given a `path:line` or `path:start-end` such as a
   search hit's header, says that it takes a file and names the file to send.
   Before, the same string was reported as a path that is not in the index.

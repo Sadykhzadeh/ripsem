@@ -609,6 +609,44 @@ fn a_file_of_only_whitespace_is_not_counted_as_indexed() {
     assert!(status.contains("across 1 file\n"), "{status}");
 }
 
+/// A file named with a control character is listed as an escape, in the file
+/// lists and in the changed files `status --verify` names, as search prints it.
+#[cfg(unix)]
+#[test]
+fn a_file_name_with_a_control_character_is_listed_as_an_escape() {
+    let dir = TempDir::new();
+    dir.write("keep.rs", "fn main() {}\n");
+    dir.write("evil\u{1b}[31m.rs", "fn evil() {}\n");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+
+    let listed = stdout(&ripsem(&dir.path, &["index", "--dry-run"]));
+    assert!(
+        !listed.contains('\u{1b}'),
+        "the escape must not reach the terminal raw: {listed:?}"
+    );
+    assert!(
+        listed.contains("\\u{1b}"),
+        "the name is shown as an escape: {listed:?}"
+    );
+
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+    std::fs::write(
+        dir.path.join("evil\u{1b}[31m.rs"),
+        "fn evil() { changed }\n",
+    )
+    .unwrap();
+    let verified = stdout(&ripsem(&dir.path, &["status", "--verify"]));
+    assert!(
+        !verified.contains('\u{1b}'),
+        "the escape must not reach the terminal raw: {verified:?}"
+    );
+    assert!(
+        verified.contains("\\u{1b}"),
+        "the changed file is shown as an escape: {verified:?}"
+    );
+}
+
 #[test]
 fn a_scope_is_read_from_the_current_directory() {
     let dir = TempDir::new();
