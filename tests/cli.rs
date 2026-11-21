@@ -32,8 +32,21 @@ impl Drop for TempDir {
     }
 }
 
+/// The command for `ripsem` without the `RIPSEM_` variables of the shell that
+/// runs the tests, so a setting exported there cannot change what they check.
+/// A test that needs one sets it after this.
+fn ripsem_command() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ripsem"));
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("RIPSEM_") {
+            command.env_remove(key);
+        }
+    }
+    command
+}
+
 fn ripsem(cwd: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_ripsem"))
+    ripsem_command()
         .args(args)
         .current_dir(cwd)
         .output()
@@ -41,7 +54,7 @@ fn ripsem(cwd: &Path, args: &[&str]) -> Output {
 }
 
 fn ripsem_with_stdin(cwd: &Path, args: &[&str], input: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ripsem"))
+    let mut child = ripsem_command()
         .args(args)
         .current_dir(cwd)
         .stdin(std::process::Stdio::piped())
@@ -248,7 +261,7 @@ fn mcp_over_stdio(dir: &Path, messages: &[&str]) -> Vec<serde_json::Value> {
     use std::io::Write;
     use std::process::Stdio;
 
-    let mut server = Command::new(env!("CARGO_BIN_EXE_ripsem"))
+    let mut server = ripsem_command()
         .arg("mcp")
         .current_dir(dir)
         .stdin(Stdio::piped())
@@ -280,7 +293,7 @@ impl McpServer {
     fn start(dir: &Path) -> Self {
         use std::process::Stdio;
 
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ripsem"))
+        let mut child = ripsem_command()
             .arg("mcp")
             .current_dir(dir)
             .stdin(Stdio::piped())
@@ -1438,7 +1451,7 @@ fn a_reader_that_goes_away_is_not_a_panic() {
         );
     }
     for args in [&["index", "--dry-run"][..], &["completions", "powershell"]] {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ripsem"))
+        let mut child = ripsem_command()
             .args(args)
             .current_dir(&dir.path)
             .stdout(std::process::Stdio::piped())
@@ -1496,7 +1509,7 @@ fn a_model_that_cannot_be_fetched_says_what_to_do() {
     let dir = TempDir::new();
     dir.write("a.rs", "fn a() {}");
     let models = dir.path.join("models");
-    let out = Command::new(env!("CARGO_BIN_EXE_ripsem"))
+    let out = ripsem_command()
         .args(["index"])
         .current_dir(&dir.path)
         .env("RIPSEM_MODEL_DIR", &models)
@@ -2086,7 +2099,7 @@ fn a_regex_that_does_not_parse_is_an_error_before_any_search() {
 }
 
 fn ripsem_hashing(cwd: &Path, args: &[&str], value: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_ripsem"))
+    ripsem_command()
         .args(args)
         .current_dir(cwd)
         .env("RIPSEM_HASH_ALL", value)
@@ -3098,7 +3111,7 @@ fn an_index_that_is_a_symbolic_link_is_not_read_through() {
 /// minute. A read that blocks on a pipe would otherwise block the test too.
 #[cfg(unix)]
 fn ripsem_with_deadline(dir: &Path, args: &[&str]) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ripsem"))
+    let mut child = ripsem_command()
         .args(args)
         .current_dir(dir)
         .stdout(std::process::Stdio::piped())
