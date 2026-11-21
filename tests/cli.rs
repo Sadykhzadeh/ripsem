@@ -1891,6 +1891,24 @@ fn since_limits_a_search_to_the_files_changed_since_a_revision() {
         "git's own message should not be repeated: {}",
         stderr(&outside)
     );
+
+    let without_git = ripsem_command()
+        .args(["search", query, "--since", "HEAD"])
+        .env("PATH", "")
+        .current_dir(&dir.path)
+        .output()
+        .unwrap();
+    assert_eq!(without_git.status.code(), Some(1));
+    assert!(
+        stderr(&without_git).contains("could not run git"),
+        "{}",
+        stderr(&without_git)
+    );
+    assert!(
+        !stderr(&without_git).contains("not in a git repository"),
+        "{}",
+        stderr(&without_git)
+    );
 }
 
 #[test]

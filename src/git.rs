@@ -13,8 +13,13 @@ pub fn changed_since(root: &Path, rev: &str) -> Result<HashSet<String>> {
         bail!("'{rev}' is not a revision");
     }
     let dir = crate::cli::show_path(root);
-    git(&dir, &["rev-parse", "--is-inside-work-tree"])
-        .map_err(|_| anyhow::anyhow!("{dir} is not in a git repository"))?;
+    let probe = Command::new("git")
+        .arg("-C")
+        .arg(&dir)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .context("could not run git, which --since needs; is it installed and on PATH?")?;
+    anyhow::ensure!(probe.status.success(), "{dir} is not in a git repository");
     git(
         &dir,
         &[
