@@ -1442,7 +1442,7 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
                 anyhow::bail!("unknown model '{id}'; see `ripsem model list`");
             }
             let mut config = Config::load(root)?;
-            if config.model == id && config.config_path().exists() {
+            if config.model == id && config.config_path().exists() && index_is_current(&config) {
                 out!("model is already {id}; the index needs no rebuild");
                 return Ok(());
             }
@@ -1458,7 +1458,10 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
                 other => anyhow::bail!("unknown backend '{other}' (hash | fastembed)"),
             };
             let mut config = Config::load(root)?;
-            if config.backend == backend && config.config_path().exists() {
+            if config.backend == backend
+                && config.config_path().exists()
+                && index_is_current(&config)
+            {
                 out!("backend is already {name}; the index needs no rebuild");
                 return Ok(());
             }
@@ -1468,6 +1471,15 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Whether the index on disk is missing or was built with the model and backend
+/// the config names. A setting that is already in place needs no rebuild only
+/// then.
+fn index_is_current(config: &Config) -> bool {
+    !config.index_path().exists()
+        || Index::load(&config.index_path())
+            .is_ok_and(|index| index.built_for(config.backend, &config.model))
 }
 
 /// Writes the config as `init` does, because a `.ripsem` directory is what lets

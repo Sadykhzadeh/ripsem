@@ -581,10 +581,15 @@ fn setting_the_model_or_backend_it_has_asks_for_no_rebuild() {
     let same = stdout(&ripsem(&dir.path, &["model", "set", "bge-small-en-v1.5"]));
     assert!(same.contains("needs no rebuild"), "{same}");
 
+    assert!(ripsem(&dir.path, &["index"]).status.success());
     let changed = stdout(&ripsem(&dir.path, &["model", "set", "all-MiniLM-L6-v2"]));
     assert!(changed.contains("index --force"), "{changed}");
     let config = std::fs::read_to_string(dir.path.join(".ripsem/config.toml")).unwrap();
     assert!(config.contains("all-MiniLM-L6-v2"), "{config}");
+
+    let again = stdout(&ripsem(&dir.path, &["model", "set", "all-MiniLM-L6-v2"]));
+    assert!(!again.contains("needs no rebuild"), "{again}");
+    assert!(again.contains("index --force"), "{again}");
 }
 
 /// The dimensions column must start at the same place on every row, however
