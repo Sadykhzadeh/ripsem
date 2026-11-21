@@ -81,7 +81,11 @@ fn serve_on(
     let mut line = Vec::new();
     while let Some(cut) = read_request(&mut reader, &mut line, MAX_REQUEST_BYTES)? {
         if cut {
-            let refused = error(Value::Null, -32600, "request is larger than 4 MiB");
+            let message = format!(
+                "request is larger than {} MiB",
+                MAX_REQUEST_BYTES / (1024 * 1024)
+            );
+            let refused = error(Value::Null, -32600, &message);
             writeln!(writer, "{}", serde_json::to_string(&refused)?)?;
             writer.flush()?;
             continue;
@@ -2383,6 +2387,10 @@ mod tests {
             .collect();
         assert_eq!(replies.len(), 2, "got {} replies", replies.len());
         assert_eq!(replies[0]["error"]["code"], -32600);
+        assert_eq!(
+            replies[0]["error"]["message"],
+            "request is larger than 4 MiB"
+        );
         assert_eq!(replies[0]["id"], Value::Null);
         assert_eq!(replies[1]["id"], 2);
     }
