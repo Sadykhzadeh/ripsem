@@ -406,6 +406,8 @@ pub enum InstallCmd {
     OpenCode,
     /// Add ripsem to .codex/config.toml for Codex CLI.
     Codex,
+    /// Add ripsem to .roo/mcp.json for Roo Code.
+    Roo,
 }
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -1419,6 +1421,7 @@ fn cmd_install(root: &Path, target: InstallCmd) -> Result<()> {
         InstallCmd::Gemini => "Gemini CLI",
         InstallCmd::OpenCode => "OpenCode",
         InstallCmd::Codex => "Codex CLI",
+        InstallCmd::Roo => "Roo Code",
     };
     add_server(root, &target)?;
     add_note(root, &target)?;
@@ -1478,6 +1481,10 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
         ),
         InstallCmd::OpenCode | InstallCmd::Codex => (
             root.join("AGENTS.md"),
+            format!("## Code search\n\n{}\n", mcp::INSTRUCTIONS),
+        ),
+        InstallCmd::Roo => (
+            root.join(".roo/rules/ripsem.md"),
             format!("## Code search\n\n{}\n", mcp::INSTRUCTIONS),
         ),
     };
@@ -1558,6 +1565,7 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
         InstallCmd::Gemini => (".gemini/settings.json", "mcpServers"),
         InstallCmd::OpenCode => ("opencode.json", "mcp"),
         InstallCmd::Codex => (".codex/config.toml", "mcp_servers"),
+        InstallCmd::Roo => (".roo/mcp.json", "mcpServers"),
     };
     let path = root.join(rel);
     check_inside_root(root, &path)?;
@@ -1608,11 +1616,11 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
         Some(_) => {}
     }
     // Claude Code, Gemini CLI and OpenCode start a project's server in the
-    // directory they run in. Cursor and VS Code do not say where they start
-    // one, but expand `${workspaceFolder}`, which keeps the file free of this
-    // machine's paths.
+    // directory they run in, and Roo Code starts it in the first workspace
+    // folder. Cursor and VS Code do not say where they start one, but expand
+    // `${workspaceFolder}`, which keeps the file free of this machine's paths.
     let entry = match target {
-        InstallCmd::ClaudeCode | InstallCmd::Gemini => {
+        InstallCmd::ClaudeCode | InstallCmd::Gemini | InstallCmd::Roo => {
             json!({ "command": "ripsem", "args": ["mcp"] })
         }
         InstallCmd::OpenCode => json!({
@@ -2164,6 +2172,20 @@ mod tests {
             cmd_install(dir.path(), target()).unwrap();
             assert_eq!(tree(dir.path()), first, "{:?}", first.keys());
         }
+    }
+
+    #[test]
+    fn install_roo_writes_its_server_and_a_rule() {
+        let dir = crate::testutil::TempDir::new();
+        cmd_install(dir.path(), InstallCmd::Roo).unwrap();
+        let doc: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".roo/mcp.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
+        assert_eq!(doc["mcpServers"]["ripsem"]["args"], json!(["mcp"]));
+        let rule = std::fs::read_to_string(dir.path().join(".roo/rules/ripsem.md")).unwrap();
+        assert!(rule.contains("`search` tool"), "{rule}");
     }
 
     #[test]

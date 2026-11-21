@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `ripsem install roo` sets up Roo Code: it adds the server to `.roo/mcp.json`
+  and writes a note on when to search into `.roo/rules/ripsem.md`, as the other
+  install targets get theirs. Before, Roo Code had to be configured by hand.
 - `ripsem symbol <name>` lists where a declaration with that name is defined,
   in every file of the index, with its line range, and `--json` prints the same
   as an array. A bare name matches the last part of a qualified name, so
