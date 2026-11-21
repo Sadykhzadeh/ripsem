@@ -32,7 +32,7 @@ ranges.
   vector similarity from a local embedding model, merged into one ranking. A
   chunk holding every term of an identifier or an error message comes first.
 - **Answers are declarations.** A hit is a whole function or type, named after
-  it, in 17 languages, so a definition reads apart from a call site. A search
+  it, in 18 languages, so a definition reads apart from a call site. A search
   for a name lands on its declaration, with its own lines and label.
 - **Made for coding agents.** `ripsem install claude-code`, `cursor`, `vscode`,
   `gemini`, `roo`, `opencode` or `codex` adds an MCP server that keeps its index

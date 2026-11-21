@@ -214,6 +214,16 @@ mod tests {
         assert!(extensions(" . ").is_empty());
     }
 
+    #[test]
+    fn the_readme_counts_the_languages_with_a_grammar() {
+        let readme = include_str!("../README.md");
+        let grammars = LANGS.len();
+        assert!(
+            readme.contains(&format!("in {grammars} languages, so a definition")),
+            "README should say the chunker covers {grammars} languages"
+        );
+    }
+
     #[cfg(feature = "treesitter")]
     #[test]
     fn detect_reads_the_same_table() {
