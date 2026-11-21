@@ -564,7 +564,8 @@ declarations are also in the structured content as `declarations`, each with
 The `symbol` tool is `ripsem symbol` for MCP clients: a `name`, whole or its last
 part, returns the file and line range of each declaration with that name, as
 text and as `declarations` in the structured content, where each row also has
-its `path`. The `index_status` tool,
+its `path`. It takes `path`, `lang`, `glob` and `since` as `search` does, to
+narrow the answer. The `index_status` tool,
 which takes no arguments, returns what `ripsem status
 --json` prints (as structured content too, for revision 2025-06-18 and later)
 plus `updating`, whether the server is indexing right now, so an

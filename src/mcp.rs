@@ -584,11 +584,15 @@ fn symbol_schema() -> Value {
             },
             "required": ["declarations"]
         },
-        "description": "Find where a function, type or other declaration with this name is defined in this repository, with the file and line range of each one. Use it when you know a name and want its definition rather than the places that use it: `refresh` finds `fn Session::refresh`, and `Session::refresh` finds only that one. For a question with no name in hand, use `search`.",
+        "description": "Find where a function, type or other declaration with this name is defined in this repository, with the file and line range of each one. Use it when you know a name and want its definition rather than the places that use it: `refresh` finds `fn Session::refresh`, and `Session::refresh` finds only that one. `path`, `lang`, `glob` and `since` narrow the answer as they do for `search`. For a question with no name in hand, use `search`.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "name": { "type": "string", "description": "The declaration's name, whole (`Session::refresh`) or its last part (`refresh`)." }
+                "name": { "type": "string", "description": "The declaration's name, whole (`Session::refresh`) or its last part (`refresh`)." },
+                "path": { "type": "string", "description": "Optional subdirectory (relative to the repo) to limit the declarations to, e.g. 'src/embed'." },
+                "lang": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only files of these languages or extensions, e.g. 'rust' or ['py', 'ts']; a '!' before a name leaves it out, e.g. '!json'." },
+                "glob": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Only paths matching these globs; a leading ! excludes, e.g. ['*.rs', '!*_test.rs']." },
+                "since": { "type": "string", "description": "Only files that differ from this git revision, as the working tree has them: committed, staged and unstaged changes and untracked files. Use 'main' to review a branch. Needs a git repository." }
             },
             "required": ["name"],
             "additionalProperties": false
@@ -929,15 +933,16 @@ fn outline(config: &Config, id: Value, args: &Value) -> Value {
 /// `symbol`: where the declarations with a name are defined, as `ripsem symbol`
 /// lists them.
 fn symbol(config: &Config, id: Value, args: &Value) -> Value {
-    let name = match parse_symbol(args) {
-        Ok(name) => name,
+    let call = match parse_symbol(args, &config.root) {
+        Ok(call) => call,
         Err(e) => return tool_error(id, &e),
     };
+    let name = call.name;
     if crate::watch::indexing() {
         let e = anyhow!("the index is being built in the background; search again shortly");
         return tool_error(id, &e);
     }
-    match pipeline::definitions(config, &name, None) {
+    match pipeline::definitions(config, &name, call.scope.as_ref()) {
         Ok(found) => {
             let text = if found.is_empty() {
                 format!("no declaration named {name} in the index")
@@ -979,22 +984,52 @@ fn declarations_result(id: Value, text: String, rows: Vec<Value>) -> Value {
     )
 }
 
-/// The name the arguments of `symbol` give, trimmed.
-fn parse_symbol(args: &Value) -> Result<String> {
+/// The arguments of `symbol`: the name, trimmed, and the scope the filters
+/// make, which limits the declarations to the files `search` would keep.
+struct SymbolCall {
+    name: String,
+    scope: Option<Scope>,
+}
+
+const SYMBOL_ARGUMENTS: [&str; 5] = ["name", "path", "lang", "glob", "since"];
+
+fn parse_symbol(args: &Value, root: &Path) -> Result<SymbolCall> {
     let args = args
         .as_object()
         .ok_or_else(|| anyhow!("the arguments must be an object with a 'name'"))?;
-    if let Some(name) = args.keys().find(|k| k.as_str() != "name") {
-        bail!("unknown argument '{name}'; the only argument is name");
+    if let Some(name) = args
+        .keys()
+        .find(|k| !SYMBOL_ARGUMENTS.contains(&k.as_str()))
+    {
+        bail!("unknown argument '{name}'; the arguments are name, path, lang, glob and since");
     }
-    match args.get("name").filter(|v| !v.is_null()) {
+    let given = |name: &str| args.get(name).filter(|v| !v.is_null());
+    let name = match given("name") {
         None => bail!("missing 'name'"),
         Some(Value::String(name)) if name.trim().is_empty() => {
             bail!("'name' is empty; say which declaration to find")
         }
-        Some(Value::String(name)) => Ok(name.trim().to_string()),
+        Some(Value::String(name)) => name.trim().to_string(),
         Some(other) => bail!("'name' must be a string, not {other}"),
-    }
+    };
+    let prefix = match given("path") {
+        None => None,
+        Some(Value::String(raw)) => scope_prefix(raw, root)?,
+        Some(other) => bail!("'path' must be a string, not {other}"),
+    };
+    let since = match given("since") {
+        None => None,
+        Some(Value::String(rev)) => Some(rev.as_str()),
+        Some(other) => bail!("'since' must be a string, not {other}"),
+    };
+    let scope = scope_of(
+        root,
+        prefix.as_deref(),
+        &strings("lang", given("lang"))?,
+        &strings("glob", given("glob"))?,
+        since,
+    )?;
+    Ok(SymbolCall { name, scope })
 }
 
 /// The file named by the arguments of `outline`, as an index path.
@@ -1747,6 +1782,59 @@ mod tests {
         );
     }
 
+    /// The filters narrow the declarations to the files a search with them
+    /// would keep, and a filter that keeps no indexed file is a tool error.
+    #[cfg(feature = "treesitter")]
+    #[test]
+    fn symbol_narrows_its_answer_by_the_search_filters() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("src/auth.rs", "pub fn refresh() {}\n");
+        dir.write("tools/sync.py", "def refresh():\n    pass\n");
+        let config = Config {
+            backend: crate::config::Backend::Hash,
+            root: dir.path().canonicalize().unwrap(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+
+        let paths = |arguments: Value| -> Vec<String> {
+            let resp = call_tool(&config, "symbol", arguments);
+            assert_eq!(resp["result"]["isError"], false, "{resp}");
+            resp["result"]["structuredContent"]["declarations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["path"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(
+            paths(json!({ "name": "refresh", "path": "src" })),
+            ["src/auth.rs"]
+        );
+        assert_eq!(
+            paths(json!({ "name": "refresh", "lang": "py" })),
+            ["tools/sync.py"]
+        );
+        assert_eq!(
+            paths(json!({ "name": "refresh", "glob": ["!*.py"] })),
+            ["src/auth.rs"]
+        );
+
+        let nowhere = call_tool(
+            &config,
+            "symbol",
+            json!({ "name": "refresh", "path": "nowhere" }),
+        );
+        assert_eq!(nowhere["result"]["isError"], true, "{nowhere}");
+        assert!(
+            nowhere["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("nothing is indexed under 'nowhere'")
+        );
+    }
+
     /// A call without a usable name, or with an argument the schema does not
     /// have, is a tool error the client can correct.
     #[test]
@@ -1763,9 +1851,8 @@ mod tests {
         assert!(failure(json!({})).contains("missing 'name'"));
         assert!(failure(json!({ "name": "  " })).contains("is empty"));
         assert!(failure(json!({ "name": 7 })).contains("must be a string"));
-        assert!(
-            failure(json!({ "name": "x", "path": "a.rs" })).contains("unknown argument 'path'")
-        );
+        assert!(failure(json!({ "name": "x", "line": 3 })).contains("unknown argument 'line'"));
+        assert!(failure(json!({ "name": "x", "since": 3 })).contains("'since' must be a string"));
     }
 
     /// The drift an agent is told is what a search would update: a file whose
