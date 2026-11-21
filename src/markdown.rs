@@ -8,7 +8,7 @@ const TINY: usize = 3;
 
 pub fn is_markdown(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-        ["md", "markdown", "mdx"]
+        crate::lang::extensions("markdown")
             .iter()
             .any(|m| e.eq_ignore_ascii_case(m))
     })
