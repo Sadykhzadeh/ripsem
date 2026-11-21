@@ -955,6 +955,20 @@ fn every_ripsem_variable_the_code_reads_is_in_the_readme_table() {
 }
 
 #[test]
+fn the_readme_shows_a_line_for_each_install_target() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    let cli = <ripsem::cli::Cli as clap::CommandFactory>::command();
+    let install = cli.find_subcommand("install").unwrap();
+    let targets: Vec<&str> = install.get_subcommands().map(|t| t.get_name()).collect();
+    assert!(!targets.is_empty());
+    for target in targets {
+        let line = format!("ripsem install {target}");
+        assert!(readme.contains(&line), "README does not show `{line}`");
+    }
+}
+
+#[test]
 fn files_with_matches_with_json_prints_a_json_array_of_the_paths() {
     let dir = TempDir::new();
     dir.write(
