@@ -901,11 +901,18 @@ fn outline(config: &Config, id: Value, args: &Value) -> Value {
     match pipeline::outline(config, &path) {
         Ok(declarations) => {
             let text = if declarations.is_empty() {
-                format!("no declarations in {path}")
+                format!("no declarations in {}", crate::cli::printable(&path))
             } else {
                 declarations
                     .iter()
-                    .map(|d| format!("{}-{}  {}", d.start_line, d.end_line, d.symbol.label()))
+                    .map(|d| {
+                        format!(
+                            "{}-{}  {}",
+                            d.start_line,
+                            d.end_line,
+                            crate::cli::printable(&d.symbol.label())
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             };
@@ -939,10 +946,11 @@ fn symbol(config: &Config, id: Value, args: &Value) -> Value {
                     .iter()
                     .map(|(path, d)| {
                         format!(
-                            "{path}:{}-{}  {}",
+                            "{}:{}-{}  {}",
+                            crate::cli::printable(path),
                             d.start_line,
                             d.end_line,
-                            d.symbol.label()
+                            crate::cli::printable(&d.symbol.label())
                         )
                     })
                     .collect::<Vec<_>>()
@@ -1328,11 +1336,17 @@ fn tool_result(hits: &[pipeline::SearchHit]) -> Value {
     }
     let mut text = String::new();
     for h in hits {
-        text.push_str(&format!("{}:{}-{}", h.path, h.start_line, h.end_line));
+        text.push_str(&format!(
+            "{}:{}-{}",
+            crate::cli::printable(&h.path),
+            h.start_line,
+            h.end_line
+        ));
         if let Some(symbol) = &h.symbol {
-            text.push_str(&format!(" {}", symbol.label()));
+            text.push_str(&format!(" {}", crate::cli::printable(&symbol.label())));
         }
-        text.push_str(&format!("\n{}\n", h.snippet));
+        let snippet: Vec<_> = h.snippet.lines().map(crate::cli::printable).collect();
+        text.push_str(&format!("\n{}\n", snippet.join("\n")));
     }
     json!({
         "content": [{ "type": "text", "text": text.trim_end() }],
@@ -2150,6 +2164,40 @@ mod tests {
         assert!(
             text.contains("src/pipeline.rs:258-293 fn Searcher::query_scoped"),
             "got: {text}"
+        );
+    }
+
+    /// A control character in a file, its name or its declaration is written
+    /// as an escape in the tool's text, so a repository cannot reach an agent's
+    /// terminal through a search result.
+    #[test]
+    fn result_text_escapes_control_characters() {
+        let hits = vec![pipeline::SearchHit {
+            path: "evil\u{1b}[31m.rs".into(),
+            start_line: 1,
+            end_line: 1,
+            score: 1.0,
+            snippet: "\u{1b}[31mRED\u{1b}[0m\nnext line".into(),
+            symbol: Some(crate::symbol::Symbol {
+                kind: "fn".into(),
+                name: "evil\u{1b}".into(),
+            }),
+        }];
+        let text = tool_result(&hits)["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            !text.contains('\u{1b}'),
+            "the escape must not reach the text raw: {text:?}"
+        );
+        assert!(
+            text.contains("\\u{1b}"),
+            "the control character is written as an escape: {text:?}"
+        );
+        assert!(
+            text.contains("RED\\u{1b}[0m\nnext line"),
+            "the snippet keeps its lines: {text:?}"
         );
     }
 
