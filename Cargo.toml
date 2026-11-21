@@ -10,7 +10,21 @@ homepage = "https://github.com/Sadykhzadeh/ripsem"
 readme = "README.md"
 keywords = ["search", "grep", "semantic", "embeddings", "mcp"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = ["docs/", "eval/", "npm/", "server.json"]
+exclude = [
+    ".github/",
+    ".gitattributes",
+    ".gitignore",
+    "deny.toml",
+    "docs/",
+    "eval/",
+    "install.ps1",
+    "install.sh",
+    "npm/",
+    "renovate.json",
+    "server.json",
+    "tests/",
+    "third-party/",
+]
 
 [dependencies]
 anyhow = "1.0.102"
