@@ -154,7 +154,7 @@ joins its neighbour. Results look like
 `src/auth/session.rs:40-72 fn Session::refresh`, so a caller can tell a
 definition from a call site without opening the file. A function too large for
 one chunk passes its name to every piece. It covers Rust, Python, JavaScript,
-TypeScript, Go, Java, C, C++, C#, Ruby, PHP, Scala, Kotlin, Bash, HTML, CSS and
+TypeScript, TSX, Go, Java, C, C++, C#, Ruby, PHP, Scala, Kotlin, Bash, HTML, CSS and
 JSON; other files are cut into line windows.
 
 The `hnsw` feature adds an approximate-nearest-neighbour graph for indexes above
