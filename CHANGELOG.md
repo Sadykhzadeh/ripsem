@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The MCP `outline` and `symbol` tools answer from the index the session holds,
+  as `search` does, instead of reading and decoding the index on every call. A
+  file or tree that changed on disk is still read again before the answer.
+  Before, an `outline` call took about 170 ms and a `symbol` call about 190 ms
+  on an index of 96,000 chunks; now they take under 1 ms and about 30 ms.
 - `ripsem symbol`, `ripsem outline` and the MCP `symbol` and `outline` tools
   free the index they read for each answer. Before, the index was left to the
   process exit, so a running MCP server grew by a whole index in memory with

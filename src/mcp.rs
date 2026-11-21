@@ -641,8 +641,8 @@ fn handle_call(
         "find_similar" => {
             return find_similar(config, session, id, &call_arguments(request));
         }
-        "outline" => return outline(config, id, &call_arguments(request)),
-        "symbol" => return symbol(config, id, &call_arguments(request)),
+        "outline" => return outline(config, session, id, &call_arguments(request)),
+        "symbol" => return symbol(config, session, id, &call_arguments(request)),
         "index_status" => return index_status(config, id, &call_arguments(request)),
         other => {
             let message = format!(
@@ -893,16 +893,25 @@ fn call_arguments(request: &Value) -> Value {
 
 /// `outline`: the declarations of one file the index holds, as `ripsem outline`
 /// lists them.
-fn outline(config: &Config, id: Value, args: &Value) -> Value {
+fn outline(
+    config: &Config,
+    session: Option<&pipeline::Searcher>,
+    id: Value,
+    args: &Value,
+) -> Value {
     let path = match parse_outline(args, &config.root) {
         Ok(path) => path,
         Err(e) => return tool_error(id, &e),
     };
-    if crate::watch::indexing() {
-        let e = anyhow!("the index is being built in the background; search again shortly");
-        return tool_error(id, &e);
-    }
-    match pipeline::outline(config, &path) {
+    let held = session.and_then(|searcher| pipeline::held_outline(searcher, &path));
+    let found = match held {
+        Some(found) => found,
+        None if crate::watch::indexing() => Err(anyhow!(
+            "the index is being built in the background; search again shortly"
+        )),
+        None => pipeline::outline(config, &path),
+    };
+    match found {
         Ok(declarations) => {
             let text = if declarations.is_empty() {
                 format!("no declarations in {}", crate::cli::printable(&path))
@@ -932,17 +941,23 @@ fn outline(config: &Config, id: Value, args: &Value) -> Value {
 
 /// `symbol`: where the declarations with a name are defined, as `ripsem symbol`
 /// lists them.
-fn symbol(config: &Config, id: Value, args: &Value) -> Value {
+fn symbol(config: &Config, session: Option<&pipeline::Searcher>, id: Value, args: &Value) -> Value {
     let call = match parse_symbol(args, &config.root) {
         Ok(call) => call,
         Err(e) => return tool_error(id, &e),
     };
     let name = call.name;
-    if crate::watch::indexing() {
-        let e = anyhow!("the index is being built in the background; search again shortly");
-        return tool_error(id, &e);
-    }
-    match pipeline::definitions(config, &name, call.scope.as_ref()) {
+    let held = session.and_then(|searcher| {
+        pipeline::held_definitions(config, searcher, &name, call.scope.as_ref())
+    });
+    let found = match held {
+        Some(found) => found,
+        None if crate::watch::indexing() => Err(anyhow!(
+            "the index is being built in the background; search again shortly"
+        )),
+        None => pipeline::definitions(config, &name, call.scope.as_ref()),
+    };
+    match found {
         Ok(found) => {
             let text = if found.is_empty() {
                 format!("no declaration named {name} in the index")
@@ -2784,6 +2799,63 @@ mod tests {
         assert_eq!(
             searcher.query("verify password", 5).unwrap()[0].path,
             "auth.rs"
+        );
+    }
+
+    /// outline and symbol are answered by the held index as search is, so an
+    /// index file that cannot be read any more does not stop them.
+    #[cfg(feature = "treesitter")]
+    #[test]
+    fn outline_and_symbol_answer_from_the_held_index() {
+        use crate::config::Backend;
+        use crate::testutil::TempDir;
+
+        let dir = TempDir::new();
+        dir.write("auth.rs", "fn authenticate(user) { verify password }");
+        crate::testutil::stamp_mtime(&dir.path().join("auth.rs"));
+        let config = Config {
+            backend: Backend::Hash,
+            root: dir.path().canonicalize().unwrap(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+        let searcher = pipeline::open(&config).unwrap();
+        std::fs::write(config.index_path(), b"not an index").unwrap();
+
+        let outline = handle(
+            &config,
+            Some(&searcher),
+            &req(
+                "tools/call",
+                json!({ "name": "outline", "arguments": { "path": "auth.rs" } }),
+            ),
+        )
+        .unwrap();
+        assert_eq!(outline["result"]["isError"], false, "{outline}");
+        assert!(
+            outline["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("1-1  fn authenticate"),
+            "{outline}"
+        );
+        let symbol = handle(
+            &config,
+            Some(&searcher),
+            &req(
+                "tools/call",
+                json!({ "name": "symbol", "arguments": { "name": "authenticate" } }),
+            ),
+        )
+        .unwrap();
+        assert_eq!(symbol["result"]["isError"], false, "{symbol}");
+        assert!(
+            symbol["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("auth.rs:1-1  fn authenticate"),
+            "{symbol}"
         );
     }
 

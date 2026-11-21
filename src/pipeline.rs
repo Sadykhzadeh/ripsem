@@ -1177,6 +1177,45 @@ impl Searcher {
         self.index.records.len()
     }
 
+    /// Whether the index holds `path` and the file on disk is still the text the
+    /// index was built from.
+    fn holds_current(&self, path: &str) -> bool {
+        self.index
+            .records
+            .iter()
+            .find(|record| record.path.as_str() == path)
+            .is_some_and(|record| {
+                bytes_matching(&self.root, path, record.file_hash, record.stat).is_some()
+            })
+    }
+
+    /// Whether the tree on disk is the one the index was built from: every file
+    /// the walk lists is indexed, or left out, under the stat the index stored
+    /// for it, and every indexed file is listed. A stat the index does not trust
+    /// counts as a change, since a refresh would read that file again.
+    fn tree_matches(&self, config: &Config) -> bool {
+        let Ok(listed) = walk::list(config) else {
+            return false;
+        };
+        let mut held: HashMap<&str, FileStat> = HashMap::new();
+        for record in &self.index.records {
+            held.entry(record.path.as_str()).or_insert(record.stat);
+        }
+        let left_out: HashMap<&str, FileStat> = self
+            .index
+            .empties
+            .iter()
+            .map(|(path, _, stat)| (path.as_str(), *stat))
+            .collect();
+        listed.iter().all(|(path, stat)| {
+            let rel = relative(&config.root, path);
+            match held.remove(rel.as_str()) {
+                Some(stored) => stored.trusts(stat),
+                None => left_out.get(rel.as_str()).is_some_and(|s| s.trusts(stat)),
+            }
+        }) && held.is_empty()
+    }
+
     /// Starts loading the embedding model in the background, so the first
     /// query does not have to wait for it.
     pub fn warm(&self) {
@@ -1827,6 +1866,11 @@ pub fn outline(config: &Config, path: &str) -> Result<Vec<Declaration>> {
         Some(index) => index,
         None => Index::load(&config.index_path())?,
     };
+    declarations_of(&index, path)
+}
+
+/// The declarations `index` holds for the file `path`, in the order they start.
+fn declarations_of(index: &Index, path: &str) -> Result<Vec<Declaration>> {
     let records: Vec<&Record> = index
         .records
         .iter()
@@ -1868,6 +1912,16 @@ pub fn definitions(
         Some(index) => index,
         None => Index::load(&config.index_path())?,
     };
+    definitions_of(&index, name, scope)
+}
+
+/// The declarations `index` holds under the name `name`, as [`definitions`]
+/// lists them.
+fn definitions_of(
+    index: &Index,
+    name: &str,
+    scope: Option<&Scope>,
+) -> Result<Vec<(String, Declaration)>> {
     if let Some(scope) = scope
         && !index.covers(scope)
     {
@@ -1904,6 +1958,27 @@ pub fn definitions(
     found.dedup();
     anyhow::ensure!(cfg!(feature = "treesitter") || !found.is_empty(), NO_SYNTAX);
     Ok(found)
+}
+
+/// [`outline`] answered from `held`, while the file on disk is the text the
+/// index holds for it. `None` when the file changed or the index does not hold
+/// it, and [`outline`] has to read it again.
+pub fn held_outline(held: &Searcher, path: &str) -> Option<Result<Vec<Declaration>>> {
+    held.holds_current(path)
+        .then(|| declarations_of(&held.index, path))
+}
+
+/// [`definitions`] answered from `held`, while the tree on disk is the one the
+/// index holds. `None` when the tree changed, and [`definitions`] has to read it
+/// again.
+pub fn held_definitions(
+    config: &Config,
+    held: &Searcher,
+    name: &str,
+    scope: Option<&Scope>,
+) -> Option<Result<Vec<(String, Declaration)>>> {
+    held.tree_matches(config)
+        .then(|| definitions_of(&held.index, name, scope))
 }
 
 const NO_SYNTAX: &str = "this build has no syntax support, so it knows no declarations to list; build with the treesitter feature";
@@ -2518,6 +2593,60 @@ mod tests {
 
         let (stats, _) = index_and_keep(&config, false, &[], Pace::default()).unwrap();
         assert_eq!(stats.rebuilt, None);
+    }
+
+    #[cfg(feature = "treesitter")]
+    #[test]
+    fn a_held_index_answers_outline_and_symbol_without_reading_the_index_file() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("auth.rs", "fn refresh() {}\n");
+        crate::testutil::stamp_mtime(&dir.path().join("auth.rs"));
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        index_repo(&config, false).unwrap();
+        let held = open(&config).unwrap();
+        std::fs::write(config.index_path(), b"not an index").unwrap();
+
+        let declarations = held_outline(&held, "auth.rs").unwrap().unwrap();
+        assert_eq!(declarations[0].symbol.name, "refresh");
+        let found = held_definitions(&config, &held, "refresh", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(found[0].0, "auth.rs");
+    }
+
+    #[cfg(feature = "treesitter")]
+    #[test]
+    fn a_held_index_reads_an_edited_file_and_a_new_one_again() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("auth.rs", "fn refresh() {}\n");
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            ..hash_config()
+        };
+        index_repo(&config, false).unwrap();
+        let held = open(&config).unwrap();
+
+        dir.write("auth.rs", "fn renew() {}\n");
+        dir.write("new.rs", "fn added() {}\n");
+        crate::testutil::stamp_mtime(&dir.path().join("auth.rs"));
+        crate::testutil::stamp_mtime(&dir.path().join("new.rs"));
+        assert!(held_outline(&held, "auth.rs").is_none());
+        let declarations = outline(&config, "auth.rs").unwrap();
+        assert_eq!(declarations[0].symbol.name, "renew");
+        assert!(held_definitions(&config, &held, "added", None).is_none());
+        let found = definitions(&config, "added", None).unwrap();
+        assert_eq!(found[0].0, "new.rs");
+        assert!(definitions(&config, "refresh", None).unwrap().is_empty());
+
+        let held = open(&config).unwrap();
+        std::fs::remove_file(dir.path().join("new.rs")).unwrap();
+        assert!(held_definitions(&config, &held, "added", None).is_none());
+        assert!(held_outline(&held, "new.rs").is_none());
+        assert!(outline(&config, "new.rs").is_err());
+        assert!(definitions(&config, "added", None).unwrap().is_empty());
     }
 
     #[cfg(feature = "hnsw")]
