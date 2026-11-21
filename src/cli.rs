@@ -1033,6 +1033,10 @@ fn cmd_search(root: &Path, words: &[String], opts: &SearchOpts) -> Result<()> {
 }
 
 fn cmd_similar(root: &Path, target: &str, opts: &SearchOpts) -> Result<()> {
+    anyhow::ensure!(
+        !target.trim().is_empty(),
+        "the target is empty; say which file to compare, such as src/auth.rs:40-72"
+    );
     let config = load_config(root)?;
     let (raw, lines) = parse_target(target)?;
     anyhow::ensure!(
@@ -1063,6 +1067,10 @@ fn cmd_similar(root: &Path, target: &str, opts: &SearchOpts) -> Result<()> {
 }
 
 fn cmd_outline(root: &Path, raw: &str, as_json: bool) -> Result<()> {
+    anyhow::ensure!(
+        !raw.trim().is_empty(),
+        "the file name is empty; say which file to outline"
+    );
     let config = load_config(root)?;
     let (file, lines) = parse_target(raw)?;
     anyhow::ensure!(

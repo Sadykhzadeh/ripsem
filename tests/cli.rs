@@ -150,6 +150,14 @@ fn outline_lists_the_declarations_of_a_file_in_order() {
         "{}",
         stderr(&ranged)
     );
+
+    let blank = ripsem(&dir.path, &["outline", " "]);
+    assert_eq!(blank.status.code(), Some(1));
+    assert!(
+        stderr(&blank).contains("the file name is empty"),
+        "{}",
+        stderr(&blank)
+    );
 }
 
 #[test]
@@ -1775,6 +1783,7 @@ fn similar_names_its_errors() {
             "a line range is PATH:LINE or PATH:LINE-LINE",
         ),
         ("src", "is a directory; `similar` takes a file"),
+        ("", "the target is empty"),
     ] {
         let out = ripsem(&dir.path, &["similar", target]);
         assert_eq!(out.status.code(), Some(1), "{target}: {}", stdout(&out));
