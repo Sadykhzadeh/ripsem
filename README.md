@@ -495,7 +495,7 @@ queries made from doc comments and 100 written by hand, averaged over the four
 projects. The code model gains +0.043 (95% interval +0.032 to +0.054) on the
 automatic queries and +0.096 (+0.040 to +0.158) on the hand-written ones over
 the default, and its dense retriever alone goes from 0.478 to 0.649 and from
-0.297 to 0.493. It costs more: a 644 MB download against 128 MB, an index
+0.297 to 0.493. It costs more: a 644 MB download against 133 MB, an index
 that takes about twice as long on a GPU (1.3 to 3 times in two runs here, axum
 37 s against 18 s in the latest), 940 MB of memory while indexing on a GPU
 against 460 MB, and 890 MB against 240 MB for each search, which takes about
