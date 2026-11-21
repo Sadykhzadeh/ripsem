@@ -276,6 +276,11 @@ fn builder(config: &Config, patterns: bool) -> Result<WalkBuilder> {
                 !text.trim().is_empty(),
                 "exclude pattern '{pattern}' names no path, or only the project root; remove it from exclude"
             );
+            // Checked on its own first: the override adds a leading `!`, which
+            // the error would otherwise show as part of the pattern.
+            OverrideBuilder::new(&config.root)
+                .add(&text)
+                .with_context(|| format!("invalid exclude pattern '{pattern}'"))?;
             overrides
                 .add(&format!("!{text}"))
                 .with_context(|| format!("invalid exclude pattern '{pattern}'"))?;
@@ -735,6 +740,17 @@ mod tests {
             let err = format!("{:#}", collect(&config).unwrap_err());
             assert!(err.contains("remove it from exclude"), "{err}");
         }
+    }
+
+    #[test]
+    fn an_invalid_exclude_names_the_pattern_as_written() {
+        let dir = TempDir::new();
+        let mut config = config_at(dir.path());
+        config.exclude = vec!["src/[ab".into()];
+        let err = format!("{:#}", collect(&config).unwrap_err());
+        assert!(err.contains("invalid exclude pattern 'src/[ab'"), "{err}");
+        assert!(err.contains("error parsing glob 'src/[ab'"), "{err}");
+        assert!(!err.contains("!src"), "{err}");
     }
 
     #[test]
