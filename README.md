@@ -732,8 +732,10 @@ restart the agent in the repository after `install`. In Claude Code, `/mcp`
 lists the servers it has connected to.
 
 **The first index takes a while.** It downloads the model once and embeds every
-file, showing the chunks embedded so far and an estimate of the time left.
-Every later run embeds only the code that changed. On Windows a job of 256
+file, showing the chunks embedded so far and an estimate of the time left. It
+saves its progress about once a minute, so an interrupt such as Ctrl-C keeps
+the files saved before it and the next run embeds only the rest. Every later run
+embeds only the code that changed. On Windows a job of 256
 chunks or more runs on the GPU through DirectML, about three times faster than
 on the CPU (indexing axum took 17 s against 61 s, on a mid-range GPU against a
 6-core CPU); `RIPSEM_NO_GPU=1` keeps it on the CPU, for example when a graphics
