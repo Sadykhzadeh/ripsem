@@ -208,7 +208,9 @@ fn kind_contains(node_kind: &str, needle: &str) -> bool {
 /// body of a TypeScript enum holds its members under the field `name`, so it
 /// would be declared under the name of its first one. A Scala `val` or `var`
 /// holds a value, and its kind only carries the needle `def`; its `type` field
-/// is the annotation, so it would be declared under the name of its type.
+/// is the annotation, so it would be declared under the name of its type. A C
+/// or C++ `type_descriptor`, the type in a cast or a `sizeof`, is a use of its
+/// type.
 #[cfg(feature = "treesitter")]
 fn is_use(node_kind: &str) -> bool {
     const USES: &[&str] = &[
@@ -228,6 +230,7 @@ fn is_use(node_kind: &str) -> bool {
         "enum_body",
         "val_definition",
         "var_definition",
+        "type_descriptor",
     ];
     USES.iter().any(|suffix| node_kind.ends_with(suffix))
 }

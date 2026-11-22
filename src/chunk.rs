@@ -18,7 +18,7 @@ pub struct Chunk {
 /// Changes whenever the same file and settings would give other chunks or other
 /// terms for them, so an index cut by an older ripsem is cut again. A test pins
 /// it to the output.
-const REVISION: u32 = 25;
+const REVISION: u32 = 26;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -258,7 +258,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (25, expected),
+            (26, expected),
             "{seen}"
         );
     }
@@ -618,6 +618,19 @@ mod cutting {
         assert_eq!(declared_labels("a.c", c), ["struct point", "fn dist"]);
         let cpp = "class Shape {\n};\n\nint total(class Shape *s)\n{\n    return 1;\n}\n";
         assert_eq!(declared_labels("a.cpp", cpp), ["class Shape", "fn total"]);
+    }
+
+    #[test]
+    fn a_type_in_a_cast_is_not_declared() {
+        let c = "typedef struct node { int v; } node_t;\n\nint f(void *p)\n{\n    node_t *n = (node_t *)p;\n    \
+                 return n->v + (int)sizeof(node_t);\n}\n";
+        assert_eq!(
+            declared_labels("a.c", c),
+            ["type node_t", "struct node_t::node", "fn f"]
+        );
+        let cpp = "class Box {};\n\nint g(void *p)\n{\n    Box *b = static_cast<Box *>(p);\n    \
+                   return sizeof(Box) + (b != nullptr);\n}\n";
+        assert_eq!(declared_labels("a.cpp", cpp), ["class Box", "fn g"]);
     }
 
     #[test]
