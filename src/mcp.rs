@@ -471,7 +471,10 @@ fn hits_schema() -> Value {
                         "start_line": { "type": "integer", "minimum": 1 },
                         "end_line": { "type": "integer", "minimum": 1 },
                         "score": { "type": "number" },
-                        "symbol": { "type": ["string", "null"] },
+                        "symbol": {
+                            "type": ["string", "null"],
+                            "description": "The declaration's kind and name as the text shows them, such as `fn Session::refresh`; null outside any declaration."
+                        },
                         "snippet": { "type": "string" }
                     },
                     "required": ["path", "start_line", "end_line", "score", "symbol", "snippet"]
@@ -3385,6 +3388,23 @@ mod tests {
             conforms(structured, &schema_of(tool), tool)
                 .unwrap_or_else(|e| panic!("{tool} {arguments}: {e}"));
         }
+    }
+
+    #[cfg(feature = "treesitter")]
+    #[test]
+    fn a_structured_hit_names_its_declaration_as_the_text_does() {
+        let (_dir, config, searcher) = paged_project();
+        let request = req(
+            "tools/call",
+            json!({ "name": "search", "arguments": { "query": "verify password", "limit": 1 } }),
+        );
+        let resp = handle(&config, Some(&searcher), &request).unwrap();
+        let symbol = resp["result"]["structuredContent"]["hits"][0]["symbol"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a declared hit has a symbol: {resp}"));
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(symbol.starts_with("fn auth"), "{symbol}");
+        assert!(text.lines().next().unwrap().ends_with(symbol), "{text}");
     }
 
     #[test]

@@ -550,8 +550,9 @@ list, as `--lang` and `--glob`), a `regex` (only hits whose code matches it, as
 from it, untracked files included). When more results follow, the text ends with
 the line `More results below this; pass offset=5 to see them.` A client on MCP
 revision 2025-06-18 or later also gets the hits as `structuredContent` (`hits`
-with `path`, `start_line`, `end_line`, `score`, `symbol`, `snippet`, and
-`next_offset`, `null` on the last page), described by the tool's `outputSchema`.
+with `path`, `start_line`, `end_line`, `score`, `symbol` (the kind and the name
+the text shows, such as `fn Session::refresh`), `snippet`, and `next_offset`,
+`null` on the last page), described by the tool's `outputSchema`.
 An `offset` past the last result is an answer, not an error: `No further results`. An argument outside the schema comes back as a tool error that names
 what is expected, so the agent can correct the call.
 
