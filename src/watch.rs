@@ -208,7 +208,7 @@ mod tests {
     use super::*;
     use notify::Event;
     use notify::event::{
-        AccessKind, AccessMode, CreateKind, DataChange, MetadataKind, ModifyKind, RenameMode,
+        AccessKind, AccessMode, CreateKind, DataChange, Flag, MetadataKind, ModifyKind, RenameMode,
     };
 
     #[test]
@@ -256,6 +256,14 @@ mod tests {
             Event::new(EventKind::Create(CreateKind::Folder)).add_path(src.clone())
         ));
         assert_eq!(burst.paths, [src]);
+    }
+
+    #[test]
+    fn a_rescan_event_is_a_change_of_its_own() {
+        let mut burst = Burst::default();
+        burst.add(Ok(Event::new(EventKind::Other).set_flag(Flag::Rescan)));
+        assert!(burst.rescan);
+        assert!(burst.paths.is_empty());
     }
 
     /// A scanner holding the index file open fails a save, and the server
