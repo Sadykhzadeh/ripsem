@@ -18,7 +18,7 @@ pub struct Chunk {
 /// Changes whenever the same file and settings would give other chunks or other
 /// terms for them, so an index cut by an older ripsem is cut again. A test pins
 /// it to the output.
-const REVISION: u32 = 27;
+const REVISION: u32 = 28;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -258,7 +258,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (27, expected),
+            (28, expected),
             "{seen}"
         );
     }
@@ -618,6 +618,13 @@ mod cutting {
         assert_eq!(declared_labels("a.c", c), ["struct point", "fn dist"]);
         let cpp = "class Shape {\n};\n\nint total(class Shape *s)\n{\n    return 1;\n}\n";
         assert_eq!(declared_labels("a.cpp", cpp), ["class Shape", "fn total"]);
+    }
+
+    #[test]
+    fn a_bound_or_a_turbofish_in_rust_is_not_a_declaration() {
+        let rust = "struct Wrap<T> {\n    b: T,\n}\n\nfn run<F>(f: F) -> usize\nwhere\n    F: for<'a> FnOnce(&'a str) -> usize,\n{\n    \
+                    let w = Wrap::<u8> { b: 1 };\n    f(\"a\") + usize::from(w.b)\n}\n";
+        assert_eq!(declared_labels("a.rs", rust), ["struct Wrap", "fn run"]);
     }
 
     #[test]
