@@ -74,9 +74,15 @@ impl Record {
             "testdata",
         ];
         const SUFFIXES: [&str; 4] = ["test", "tests", "spec", "specs"];
+        const CLASS_SUFFIXES: [&str; 4] = ["Test", "Tests", "Spec", "Specs"];
         let path = self.path.to_ascii_lowercase();
         let (dirs, file) = path.rsplit_once('/').unwrap_or(("", &path));
         let stem = file.split('.').next().unwrap_or(file);
+        let class_stem = self
+            .path
+            .rsplit('/')
+            .next()
+            .and_then(|f| f.split('.').next());
         let named_like_a_class = [".java", ".kt", ".scala", ".cs", ".php", ".swift"]
             .iter()
             .any(|ext| file.ends_with(ext));
@@ -92,7 +98,10 @@ impl Record {
             || suffixed(stem, '_')
             || file.contains(".test.")
             || file.contains(".spec.")
-            || (named_like_a_class && SUFFIXES.iter().any(|s| stem.ends_with(s)))
+            || (named_like_a_class
+                && (suffixed(stem, '-')
+                    || class_stem
+                        .is_some_and(|name| CLASS_SUFFIXES.iter().any(|s| name.ends_with(s)))))
     }
 
     /// The declaration this record is one piece of, when it is too large for
@@ -1115,6 +1124,8 @@ mod tests {
             "src/Polly.Specs/Retry.cs",
             "src/RetryTests.cs",
             "src/Polly.Core.Tests/Retry.cs",
+            "src/user-test.php",
+            "src/UserSpec.scala",
         ] {
             assert!(test(path), "{path}");
         }
@@ -1123,6 +1134,9 @@ mod tests {
             "src/contest.py",
             "lib/attest.go",
             "src/auth.rs",
+            "src/Contest.java",
+            "src/Latest.cs",
+            "src/Shortest.kt",
         ] {
             assert!(!test(path), "{path}");
         }
