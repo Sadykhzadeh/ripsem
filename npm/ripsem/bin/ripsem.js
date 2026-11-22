@@ -16,7 +16,9 @@ const packages = {
 
 const name = packages[`${process.platform} ${process.arch}`];
 if (!name) {
-  console.error(`ripsem has no build for ${process.platform} ${process.arch}`);
+  console.error(
+    `ripsem has no build for ${process.platform} ${process.arch}; see https://github.com/Sadykhzadeh/ripsem#install`
+  );
   process.exit(1);
 }
 
