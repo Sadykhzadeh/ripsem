@@ -783,7 +783,7 @@ pub(crate) fn printable(text: &str) -> Cow<'_, str> {
 
 /// [`printable`] for a message that runs over lines, such as a parser's, which
 /// quotes the line it failed on: its line breaks are kept.
-pub(crate) fn printable_message(text: &str) -> Cow<'_, str> {
+pub fn printable_message(text: &str) -> Cow<'_, str> {
     escape_controls(text, true)
 }
 

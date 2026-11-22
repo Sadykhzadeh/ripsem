@@ -76,6 +76,21 @@ fn stdout(output: &Output) -> String {
 }
 
 #[test]
+fn an_error_quoting_the_config_shows_no_control_character() {
+    let dir = TempDir::new();
+    dir.write(
+        ".ripsem/config.toml",
+        "model = \"\\u001b]52;c;ZXZpbA==\\u0007\"\n",
+    );
+    let out = ripsem(&dir.path, &["status"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains(['\u{1b}', '\u{7}']), "{err:?}");
+    assert!(err.contains("\\u{1b}"), "{err}");
+    assert!(err.contains("is not in the catalogue"), "{err}");
+}
+
+#[test]
 fn commands_find_the_index_from_a_subdirectory() {
     let dir = TempDir::new();
     dir.write(

@@ -24,7 +24,11 @@ pub fn indexing() -> bool {
 /// gone, such as a pipe closed by `| head`, does not stop the index being kept.
 pub fn run(config: Config) -> Result<()> {
     keep_current(config, true, |line| {
-        let _ = writeln!(std::io::stderr(), "{line}");
+        let _ = writeln!(
+            std::io::stderr(),
+            "{}",
+            crate::cli::printable_message(&line)
+        );
     })
 }
 
