@@ -194,7 +194,9 @@ fn kind_contains(node_kind: &str, needle: &str) -> bool {
 /// `tuple_struct_pattern`, Go's `testing.B` a `qualified_type` and Python's
 /// `timeout=0.5` a `default_parameter`. A C declarator (`function_declarator`)
 /// repeats the name of the function or the variable its declaration starts,
-/// and a C++ `static_cast<U>(x)` is a call, so both are left out as well.
+/// and a C++ `static_cast<U>(x)` is a call, so both are left out as well. The
+/// body of a TypeScript enum holds its members under the field `name`, so it
+/// would be declared under the name of its first one.
 #[cfg(feature = "treesitter")]
 fn is_use(node_kind: &str) -> bool {
     const USES: &[&str] = &[
@@ -211,6 +213,7 @@ fn is_use(node_kind: &str) -> bool {
         "_parameter_declaration",
         "_parameters",
         "template_function",
+        "enum_body",
     ];
     USES.iter().any(|suffix| node_kind.ends_with(suffix))
 }

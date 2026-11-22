@@ -18,7 +18,7 @@ pub struct Chunk {
 /// Changes whenever the same file and settings would give other chunks or other
 /// terms for them, so an index cut by an older ripsem is cut again. A test pins
 /// it to the output.
-const REVISION: u32 = 22;
+const REVISION: u32 = 23;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -258,7 +258,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (22, expected),
+            (23, expected),
             "{seen}"
         );
     }
@@ -608,6 +608,17 @@ mod cutting {
         assert_eq!(
             declared_labels("a.cs", cs),
             ["record Item", "fn Item::Total"]
+        );
+    }
+
+    #[test]
+    fn a_typescript_enum_is_not_declared_again_under_its_first_member() {
+        let ts = "export enum Color {\n  Red,\n  Green,\n  Blue,\n}\n";
+        assert_eq!(declared_labels("a.ts", ts), ["enum Color"]);
+        let assigned = "enum Level {\n  Low = 1,\n  High = 2,\n}\n";
+        assert_eq!(
+            declared_labels("a.ts", assigned),
+            ["enum Level", "enum Level::Low", "enum Level::High"]
         );
     }
 
