@@ -778,7 +778,19 @@ pub(crate) fn plural(n: usize, noun: &str) -> String {
 /// otherwise show a line in an order the code does not have. A tab is left as
 /// it is.
 pub(crate) fn printable(text: &str) -> Cow<'_, str> {
-    let escaped = |c: char| (c.is_control() && c != '\t') || is_bidi_control(c);
+    escape_controls(text, false)
+}
+
+/// [`printable`] for a message that runs over lines, such as a parser's, which
+/// quotes the line it failed on: its line breaks are kept.
+pub(crate) fn printable_message(text: &str) -> Cow<'_, str> {
+    escape_controls(text, true)
+}
+
+fn escape_controls(text: &str, keep_breaks: bool) -> Cow<'_, str> {
+    let escaped = |c: char| {
+        (c.is_control() && c != '\t' && !(keep_breaks && c == '\n')) || is_bidi_control(c)
+    };
     if !text.chars().any(escaped) {
         return Cow::Borrowed(text);
     }
@@ -1624,8 +1636,8 @@ fn add_codex_server(path: &Path) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", show_path(path))),
     };
-    let doc: toml::Table =
-        toml::from_str(text.trim_start_matches('\u{feff}')).with_context(|| {
+    let doc: toml::Table = crate::config::toml_from_file(text.trim_start_matches('\u{feff}'))
+        .with_context(|| {
             format!(
                 "{} is not valid TOML; fix it and run this again",
                 show_path(path)

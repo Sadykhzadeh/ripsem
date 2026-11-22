@@ -168,7 +168,7 @@ impl Config {
             let text =
                 read_config(&path).with_context(|| format!("reading {}", show_path(&path)))?;
             let mut parsed: Config =
-                toml::from_str(&text).with_context(|| format!("parsing {}", show_path(&path)))?;
+                toml_from_file(&text).with_context(|| format!("parsing {}", show_path(&path)))?;
             let overlap_given = toml::from_str::<toml::Table>(&text)
                 .is_ok_and(|table| table.contains_key("chunk_overlap"));
             parsed.root = root.to_path_buf();
@@ -250,7 +250,7 @@ impl Config {
             .get(key)
             .with_context(|| format!("no setting named {key}"))?;
         let updated = set_setting(&text, key, &value.to_string());
-        let loaded: toml::Table = toml::from_str(&updated)
+        let loaded: toml::Table = toml_from_file(&updated)
             .with_context(|| format!("could not set {key} in {}", show_path(&path)))?;
         anyhow::ensure!(
             loaded.get(key) == Some(value),
@@ -325,6 +325,14 @@ pub(crate) fn read_config(path: &Path) -> std::io::Result<String> {
         _ => String::from_utf8(bytes)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
     }
+}
+
+/// Parses TOML from a file of the project. The parser's message quotes the line
+/// it failed on, and the repository may hold that file, so its control
+/// characters are escaped before the message can reach a terminal.
+pub(crate) fn toml_from_file<T: serde::de::DeserializeOwned>(text: &str) -> Result<T> {
+    toml::from_str(text)
+        .map_err(|e| anyhow::anyhow!("{}", crate::cli::printable_message(&e.to_string())))
 }
 
 /// Refuses a data directory that is a symbolic link or any other non-directory.
@@ -456,6 +464,19 @@ fn replacement_temp(target: &Path, n: u64) -> PathBuf {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+
+    #[test]
+    fn a_parse_error_shows_no_control_character_from_the_file() {
+        let dir = TempDir::new();
+        dir.write(
+            ".ripsem/config.toml",
+            "model = \"x\u{1b}]52;c;ZXZpbA==\u{7}\"\n",
+        );
+        let err = format!("{:#}", Config::load(dir.path()).unwrap_err());
+        assert!(!err.contains(['\u{1b}', '\u{7}']), "{err:?}");
+        assert!(err.contains("\\u{1b}"), "{err}");
+        assert!(err.contains("invalid basic string"), "{err}");
+    }
 
     #[test]
     fn a_config_read_again_keeps_what_the_run_was_started_with() {
