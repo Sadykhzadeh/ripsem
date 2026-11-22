@@ -1584,7 +1584,7 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
         ),
     };
     check_inside_root(root, &path)?;
-    let existing = match std::fs::read_to_string(&path) {
+    let existing = match crate::config::read_config(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", show_path(&path))),
@@ -2405,6 +2405,22 @@ mod tests {
             doc["mcp_servers"]["ripsem"]["command"].as_str(),
             Some("ripsem")
         );
+    }
+
+    #[test]
+    fn install_adds_its_note_to_a_claude_file_saved_as_utf16() {
+        let dir = crate::testutil::TempDir::new();
+        let path = dir.path().join("CLAUDE.md");
+        let text = "# Notes\n";
+        let bytes: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        std::fs::write(&path, bytes).unwrap();
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        let note = std::fs::read_to_string(&path).unwrap();
+        assert!(note.starts_with("# Notes\n"), "{note}");
+        assert!(note.contains("## Code search"), "{note}");
     }
 
     #[test]
