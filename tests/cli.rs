@@ -977,6 +977,27 @@ fn the_json_tables_in_the_readme_name_every_key_the_commands_print() {
     );
 }
 
+#[test]
+fn status_marks_the_index_stale_when_the_config_names_another_model() {
+    let dir = TempDir::new();
+    dir.write(
+        "src/retry.rs",
+        "fn retry_on_failure(n: u32) -> u32 {\n    n + 1\n}\n",
+    );
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    ripsem(&dir.path, &["index"]);
+    let status = |dir: &Path| -> serde_json::Value {
+        serde_json::from_str(&stdout(&ripsem(dir, &["status", "--json"]))).unwrap()
+    };
+    assert_eq!(status(&dir.path)["index"]["stale"], false);
+
+    ripsem(&dir.path, &["model", "set", "all-MiniLM-L6-v2"]);
+    let after = status(&dir.path);
+    assert_eq!(after["index"]["stale"], true, "{after}");
+    assert_eq!(after["index"]["drift"]["modified"], 0, "{after}");
+}
+
 /// Every `RIPSEM_` name that a Rust file under `dir` mentions.
 fn ripsem_names_in_sources(dir: &Path, out: &mut std::collections::BTreeSet<String>) {
     for entry in std::fs::read_dir(dir).unwrap() {

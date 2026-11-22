@@ -451,7 +451,7 @@ the file cannot be read, or `null` when it is missing.
 | `index.ann` | boolean | Whether the index has a nearest-neighbour graph. |
 | `index.backend` | string | The backend the index was built with. |
 | `index.model` | string | The model the index was built with. |
-| `index.stale` | boolean | Whether the index is behind the files it was built from. |
+| `index.stale` | boolean | Whether the index was built with another backend or model than the configuration names, so `ripsem index` rebuilds it. The files are described by `index.drift`. |
 | `index.drift` | object or null | How far the files are from the index; `null` when the tree cannot be walked. |
 | `index.drift.added` | number | Files on disk that the index does not hold. |
 | `index.drift.modified` | number | Files both hold, with different content. |
