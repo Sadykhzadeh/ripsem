@@ -753,7 +753,7 @@ fn cmd_status(root: &Path, as_json: bool, verify: bool) -> Result<()> {
             }
             if f.stale {
                 out!(
-                    "note:   index built with {}, config wants {}; run `ripsem index --force`",
+                    "note:   index built with {}, config wants {}; run `ripsem index`",
                     index::embedded_by(f.index_backend, &f.index_model),
                     index::embedded_by(config.backend, &config.model)
                 );
@@ -1468,7 +1468,7 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
             }
             config.model = id.clone();
             config.save_setting("model")?;
-            out!("model set to {id} (run `ripsem index --force` to rebuild)");
+            out!("model set to {id} (run `ripsem index` to rebuild)");
             Ok(())
         }
         ModelCmd::Backend { name } => {
@@ -1487,7 +1487,7 @@ fn cmd_model(root: &Path, action: ModelCmd) -> Result<()> {
             }
             config.backend = backend;
             config.save_setting("backend")?;
-            out!("backend set to {name} (run `ripsem index --force` to rebuild)");
+            out!("backend set to {name} (run `ripsem index` to rebuild)");
             Ok(())
         }
     }

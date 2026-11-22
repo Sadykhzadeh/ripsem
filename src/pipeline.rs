@@ -1112,7 +1112,7 @@ fn searcher_over(
     if !index.built_for(config.backend, &config.model) {
         anyhow::bail!(
             "index was built with {}, but this directory is configured for {}; \
-             run `ripsem index --force` to rebuild it",
+             run `ripsem index` to rebuild it",
             index.built_with(),
             crate::index::embedded_by(config.backend, &config.model)
         );

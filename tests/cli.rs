@@ -583,13 +583,21 @@ fn setting_the_model_or_backend_it_has_asks_for_no_rebuild() {
 
     assert!(ripsem(&dir.path, &["index"]).status.success());
     let changed = stdout(&ripsem(&dir.path, &["model", "set", "all-MiniLM-L6-v2"]));
-    assert!(changed.contains("index --force"), "{changed}");
+    assert!(
+        changed.contains("run `ripsem index` to rebuild"),
+        "{changed}"
+    );
+    assert!(!changed.contains("--force"), "{changed}");
+    let status = stdout(&ripsem(&dir.path, &["status"]));
+    assert!(status.contains("run `ripsem index`"), "{status}");
+    assert!(!status.contains("--force"), "{status}");
     let config = std::fs::read_to_string(dir.path.join(".ripsem/config.toml")).unwrap();
     assert!(config.contains("all-MiniLM-L6-v2"), "{config}");
 
     let again = stdout(&ripsem(&dir.path, &["model", "set", "all-MiniLM-L6-v2"]));
     assert!(!again.contains("needs no rebuild"), "{again}");
-    assert!(again.contains("index --force"), "{again}");
+    assert!(again.contains("run `ripsem index` to rebuild"), "{again}");
+    assert!(!again.contains("--force"), "{again}");
 }
 
 /// The dimensions column must start at the same place on every row, however

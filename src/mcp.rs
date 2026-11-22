@@ -281,7 +281,7 @@ fn file_uri_path(uri: &str) -> Option<PathBuf> {
 /// attempt. Opening decodes the whole file and can fail for a lasting reason
 /// (another model, an older format), so a retry waits for either to change.
 ///
-/// `ripsem model` followed by `ripsem index --force` rebuilds the index for
+/// `ripsem model` followed by `ripsem index` rebuilds the index for
 /// another model while the server runs. The held index cannot take it, so the
 /// configuration is read again, and when it names another model or backend the
 /// server opens the new index under it.
@@ -2406,7 +2406,7 @@ mod tests {
         pipeline::index_repo(&config, false).unwrap();
         crate::testutil::stamp_mtime(&config.index_path());
         // Configured for a model the index was not built with, which is a
-        // failure that lasts until `ripsem index --force`.
+        // failure that lasts until `ripsem index` rebuilds the index.
         config.model = "all-MiniLM-L6-v2".into();
         config.save().unwrap();
 
@@ -2426,7 +2426,7 @@ mod tests {
         assert!(session.is_some(), "a rebuilt index has to be picked up");
     }
 
-    /// `ripsem model set` and `ripsem index --force` while the server runs.
+    /// `ripsem model set` and `ripsem index` while the server runs.
     #[test]
     fn the_server_moves_to_an_index_rebuilt_for_another_model() {
         use crate::config::Backend;

@@ -618,7 +618,11 @@ fn opening_an_index_built_with_another_model_is_a_clear_error() {
         Ok(_) => panic!("an index from another model must not open"),
         Err(e) => e.to_string(),
     };
-    assert!(err.contains("index --force"), "got: {err}");
+    assert!(
+        err.contains("run `ripsem index` to rebuild it"),
+        "got: {err}"
+    );
+    assert!(!err.contains("--force"), "got: {err}");
     assert!(err.contains("all-MiniLM-L6-v2"), "got: {err}");
 
     // Rebuilding for the configured model clears it.
@@ -752,7 +756,11 @@ fn opening_an_index_built_by_another_backend_is_a_clear_error() {
         Ok(_) => panic!("an index from another backend must not open"),
         Err(e) => e.to_string(),
     };
-    assert!(err.contains("index --force"), "got: {err}");
+    assert!(
+        err.contains("run `ripsem index` to rebuild it"),
+        "got: {err}"
+    );
+    assert!(!err.contains("--force"), "got: {err}");
     assert!(err.contains("Hash backend"), "got: {err}");
     assert!(err.contains("Fastembed backend"), "got: {err}");
 }

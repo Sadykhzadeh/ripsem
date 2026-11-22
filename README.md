@@ -86,7 +86,7 @@ To try it without the download, switch to the hashing backend before the first
 index. It matches the words of a query rather than its meaning:
 
 ```bash
-ripsem model backend hash && ripsem index --force
+ripsem model backend hash && ripsem index
 ```
 
 ### Why not grep?

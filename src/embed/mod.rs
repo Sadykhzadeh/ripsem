@@ -81,12 +81,12 @@ pub fn backend_warning(backend: Backend) -> Option<&'static str> {
         Backend::Fastembed => None,
         Backend::Hash if cfg!(feature = "fastembed") => Some(
             "hashing backend: results match words, not meaning; \
-             run `ripsem model backend fastembed`, then `ripsem index --force`",
+             run `ripsem model backend fastembed`, then `ripsem index`",
         ),
         Backend::Hash => Some(
             "hashing backend: results match words, not meaning; \
              reinstall with `--features fastembed`, \
-             then run `ripsem model backend fastembed` and `ripsem index --force`",
+             then run `ripsem model backend fastembed` and `ripsem index`",
         ),
     }
 }
