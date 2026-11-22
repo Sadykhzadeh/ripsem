@@ -33,11 +33,21 @@ struct Globs {
     given: Vec<String>,
 }
 
+/// The most globs a search takes. Each one is compiled before the index is
+/// read, so an agent sending thousands would hold the server for as long as
+/// that takes.
+const MAX_GLOBS: usize = 256;
+
 impl Globs {
     fn new(raw: &[String]) -> Result<Option<Globs>> {
         if raw.is_empty() {
             return Ok(None);
         }
+        anyhow::ensure!(
+            raw.len() <= MAX_GLOBS,
+            "a search takes at most {MAX_GLOBS} globs, not {}",
+            raw.len()
+        );
         // Both sets take their patterns as inclusions; which set a pattern is
         // in says what a match means.
         let mut include = (OverrideBuilder::new(""), false);
@@ -422,6 +432,17 @@ mod tests {
             err.to_string().starts_with("'!' names no language"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn a_flood_of_globs_is_refused_before_it_is_compiled() {
+        let globs: Vec<String> = (0..20_000).map(|i| format!("dir{i}/**/*.rs")).collect();
+        let err = Scope::new(None, &[], &globs).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "a search takes at most 256 globs, not 20000"
+        );
+        assert!(Scope::new(None, &[], &globs[..256]).unwrap().is_some());
     }
 
     #[test]
