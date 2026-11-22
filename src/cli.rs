@@ -436,6 +436,17 @@ pub enum InstallCmd {
 }
 
 pub fn run(cli: Cli) -> Result<()> {
+    if let Command::Search { opts, .. } | Command::Similar { opts, .. } = &cli.command
+        && opts.count_by_file
+        && opts.sort == SortBy::Path
+    {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "'--sort path' does not change '--count-by-file', which lists the files by count",
+            )
+            .exit();
+    }
     let root = match &cli.path {
         Some(path) => {
             let root = path

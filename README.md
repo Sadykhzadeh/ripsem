@@ -314,7 +314,8 @@ more results below this; pass --offset 2 to see them
   branch. It needs a git repository and reads git with its own arguments.
 - `--sort path` shows the hits of the page ordered by file and then by line,
   instead of by score. `--offset` still reads the ranking by score, so the
-  page is the same set of hits either way.
+  page is the same set of hits either way. It cannot be combined with
+  `--count-by-file`, which already lists files by count.
 
 `ripsem similar <path>[:LINE[-LINE]]` finds the code nearest to a place
 already in the index: `ripsem similar src/auth.rs:40-72`, one line

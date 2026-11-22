@@ -1795,6 +1795,35 @@ fn null_ends_each_listed_path_with_a_nul_byte() {
 }
 
 #[test]
+fn sort_path_is_refused_with_count_by_file_but_not_with_files_with_matches() {
+    let dir = TempDir::new();
+    dir.write("src/login.rs", "fn login(user: &str) { verify password }");
+    dir.write("src/logout.rs", "fn logout(user: &str) { end session }");
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    for args in [
+        vec!["search", "verify password", "-c", "--sort", "path"],
+        vec!["similar", "src/login.rs", "-c", "--sort", "path"],
+    ] {
+        let out = ripsem(&dir.path, &args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&out).contains("--sort path"), "{}", stderr(&out));
+        assert!(out.stdout.is_empty(), "{args:?}");
+    }
+
+    let listed = ripsem(
+        &dir.path,
+        &["search", "verify password", "-l", "--sort", "path"],
+    );
+    assert!(listed.status.success(), "{}", stderr(&listed));
+    let text = stdout(&listed);
+    let paths: Vec<&str> = text.lines().collect();
+    assert_eq!(paths, ["src/login.rs", "src/logout.rs"], "{text}");
+}
+
+#[test]
 fn similar_finds_the_places_nearest_to_a_location_and_leaves_its_own_out() {
     let dir = paged_tree();
     let found = ripsem(&dir.path, &["similar", "src/auth0.rs"]);
