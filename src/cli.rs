@@ -1139,7 +1139,10 @@ fn cmd_symbol(root: &Path, name: &str, opts: &SymbolOpts) -> Result<()> {
         return Ok(());
     }
     if found.is_empty() {
-        eprintln!("no declaration named {} in the index", name.trim());
+        eprintln!(
+            "no declaration named {} in the index",
+            printable(name.trim())
+        );
     }
     for (path, d) in &found {
         out!(

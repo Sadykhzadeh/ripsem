@@ -960,7 +960,10 @@ fn symbol(config: &Config, session: Option<&pipeline::Searcher>, id: Value, args
     match found {
         Ok(found) => {
             let text = if found.is_empty() {
-                format!("no declaration named {name} in the index")
+                format!(
+                    "no declaration named {} in the index",
+                    crate::cli::printable(&name)
+                )
             } else {
                 found
                     .iter()
@@ -1794,6 +1797,28 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    /// The name an agent sent is echoed back in the answer, so a control
+    /// character in it is escaped as the other tools escape their text.
+    #[cfg(feature = "treesitter")]
+    #[test]
+    fn symbol_escapes_a_control_character_in_the_name_it_echoes() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("auth.rs", "fn refresh() {}\n");
+        let config = Config {
+            backend: crate::config::Backend::Hash,
+            root: dir.path().canonicalize().unwrap(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+
+        let none = call_tool(&config, "symbol", json!({ "name": "absent\nFAKE" }));
+        assert_eq!(
+            none["result"]["content"][0]["text"],
+            "no declaration named absent\\u{a}FAKE in the index"
         );
     }
 
