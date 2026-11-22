@@ -92,6 +92,9 @@ pub fn declaration(
 /// enclosing declaration is put in front of it. [`named`] completes it.
 #[cfg(feature = "treesitter")]
 pub fn raw_declaration(node: &tree_sitter::Node) -> Option<(&'static str, (usize, usize))> {
+    if is_reference(node) {
+        return None;
+    }
     if is_prototype(node) {
         return Some(("fn", declared_name(node)?));
     }
@@ -110,6 +113,13 @@ pub fn named(kind: &str, name: &str, enclosing: Option<&Symbol>) -> Symbol {
             None => name.to_string(),
         },
     }
+}
+
+/// `struct point *p` in C and C++ names a type in a variable or a parameter,
+/// where its specifier has no body, and defines nothing.
+#[cfg(feature = "treesitter")]
+fn is_reference(node: &tree_sitter::Node) -> bool {
+    node.kind().ends_with("_specifier") && node.child_by_field_name("body").is_none()
 }
 
 /// A C or C++ prototype is a declaration of a function that has no body, and
