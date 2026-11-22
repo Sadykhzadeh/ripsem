@@ -18,7 +18,7 @@ pub struct Chunk {
 /// Changes whenever the same file and settings would give other chunks or other
 /// terms for them, so an index cut by an older ripsem is cut again. A test pins
 /// it to the output.
-const REVISION: u32 = 21;
+const REVISION: u32 = 22;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -258,7 +258,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (21, expected),
+            (22, expected),
             "{seen}"
         );
     }
@@ -608,6 +608,34 @@ mod cutting {
         assert_eq!(
             declared_labels("a.cs", cs),
             ["record Item", "fn Item::Total"]
+        );
+    }
+
+    #[test]
+    fn a_dotted_namespace_is_named_whole() {
+        let cs = "namespace Acme.Billing\n{\n    public class Invoice\n    {\n        public int Total()\n        {\n            return 1;\n        }\n    }\n}\n";
+        assert_eq!(
+            declared_labels("a.cs", cs),
+            [
+                "mod Acme.Billing",
+                "class Acme.Billing::Invoice",
+                "fn Acme.Billing::Invoice::Total"
+            ]
+        );
+        let cpp = "namespace net::http {\nclass Client {\n public:\n  int get() {\n    return 1;\n  }\n};\n}\n";
+        assert_eq!(
+            declared_labels("a.cpp", cpp),
+            [
+                "mod net::http",
+                "class net::http::Client",
+                "fn net::http::Client::get"
+            ]
+        );
+        let php = "<?php\nnamespace App\\Http;\n\nclass Controller {\n    public function index() {\n        return 1;\n    }\n}\n";
+        assert!(
+            declared_labels("a.php", php).contains(&"mod App\\Http".to_string()),
+            "{:?}",
+            declared_labels("a.php", php)
         );
     }
 

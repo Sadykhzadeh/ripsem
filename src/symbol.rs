@@ -290,10 +290,11 @@ fn declared_name(node: &tree_sitter::Node) -> Option<(usize, usize)> {
 }
 
 /// C-like grammars wrap the identifier in nested declarators, so the field node
-/// is a starting point rather than the answer.
+/// is a starting point rather than the answer. A dotted or scoped name is the
+/// answer whole, as its first part alone would name another declaration.
 #[cfg(feature = "treesitter")]
 fn identifier_span(node: &tree_sitter::Node) -> Option<(usize, usize)> {
-    if is_name_leaf(node.kind()) {
+    if is_name_leaf(node.kind()) || is_qualified_name(node.kind()) {
         return Some((node.start_byte(), node.end_byte()));
     }
     let mut cursor = node.walk();
@@ -307,6 +308,16 @@ fn identifier_span(node: &tree_sitter::Node) -> Option<(usize, usize)> {
 #[cfg(feature = "treesitter")]
 fn is_name_leaf(kind: &str) -> bool {
     kind.ends_with("identifier") || matches!(kind, "word" | "name" | "constant" | "operator_name")
+}
+
+/// What C# and PHP call `Foo.Bar` and `App\Http`, and C++ `net::http`, in a
+/// namespace.
+#[cfg(feature = "treesitter")]
+fn is_qualified_name(kind: &str) -> bool {
+    matches!(
+        kind,
+        "qualified_name" | "namespace_name" | "nested_namespace_specifier"
+    )
 }
 
 #[cfg(all(test, feature = "treesitter"))]
