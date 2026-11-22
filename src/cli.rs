@@ -1613,7 +1613,7 @@ fn line_ending(text: &str) -> &'static str {
 /// Codex keeps its servers in TOML, so the table is appended as text and the
 /// rest of the file stays as it is.
 fn add_codex_server(path: &Path) -> Result<()> {
-    let text = match std::fs::read_to_string(path) {
+    let text = match crate::config::read_config(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", show_path(path))),
@@ -1684,7 +1684,7 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
 
     // The file usually lists other servers. If it is not a readable JSON object
     // it is left alone, since a fresh file would drop them.
-    let text = match std::fs::read_to_string(&path) {
+    let text = match crate::config::read_config(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", show_path(&path))),
@@ -2363,6 +2363,42 @@ mod tests {
         let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(doc["mcpServers"]["other"]["command"], "x");
         assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
+    }
+
+    #[test]
+    fn install_keeps_the_servers_of_a_config_saved_as_utf16() {
+        let dir = crate::testutil::TempDir::new();
+        let path = dir.path().join(".mcp.json");
+        let text = "{\"mcpServers\":{\"other\":{\"command\":\"x\"}}}";
+        let bytes: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        std::fs::write(&path, bytes).unwrap();
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["mcpServers"]["other"]["command"], "x");
+        assert_eq!(doc["mcpServers"]["ripsem"]["command"], "ripsem");
+    }
+
+    #[test]
+    fn install_keeps_the_settings_of_a_codex_config_saved_as_utf16() {
+        let dir = crate::testutil::TempDir::new();
+        let path = dir.path().join(".codex/config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let text = "model = \"gpt-5\"\n";
+        let bytes: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        std::fs::write(&path, bytes).unwrap();
+        cmd_install(dir.path(), InstallCmd::Codex).unwrap();
+        let doc: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["model"].as_str(), Some("gpt-5"));
+        assert_eq!(
+            doc["mcp_servers"]["ripsem"]["command"].as_str(),
+            Some("ripsem")
+        );
     }
 
     #[test]

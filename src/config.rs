@@ -318,7 +318,7 @@ fn assigns(line: &str, key: &str) -> bool {
 /// The text of a configuration file. Windows PowerShell's `>` writes UTF-16
 /// with a byte order mark, which TOML does not allow, so that is decoded as a
 /// source file is. Any other file must be UTF-8, and keeps its byte order mark.
-fn read_config(path: &Path) -> std::io::Result<String> {
+pub(crate) fn read_config(path: &Path) -> std::io::Result<String> {
     let bytes = std::fs::read(path)?;
     match bytes.as_slice() {
         [0xFF, 0xFE, ..] | [0xFE, 0xFF, ..] => Ok(crate::walk::decode_text(&bytes).into_owned()),
