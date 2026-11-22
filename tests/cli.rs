@@ -2989,6 +2989,24 @@ fn control_characters_in_a_file_are_printed_as_escapes() {
     }
 }
 
+/// A backslash is part of a file name on Unix, where only Windows reads it as a
+/// separator. The file is indexed under that name, so its hit reads back and
+/// `status --verify` does not report it as gone.
+#[cfg(unix)]
+#[test]
+fn a_backslash_in_a_unix_file_name_is_part_of_the_name() {
+    let dir = indexed_repository();
+    dir.write(r"src/odd\name.rs", "fn backslash_named() {}\n");
+    let index = ripsem(&dir.path, &["index"]);
+    assert!(index.status.success(), "{}", stderr(&index));
+
+    let found = stdout(&ripsem(&dir.path, &["search", "backslash named"]));
+    assert!(found.contains(r"src/odd\name.rs"), "{found}");
+    let status = stdout(&ripsem(&dir.path, &["status", "--verify"]));
+    assert!(!status.contains("gone"), "{status}");
+    assert!(!status.contains("changed"), "{status}");
+}
+
 /// A project whose own directory name is not UTF-8 is indexed like any other:
 /// only the names below the root decide what can be read back.
 #[cfg(unix)]

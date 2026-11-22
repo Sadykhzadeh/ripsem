@@ -2022,10 +2022,11 @@ fn refresh(config: &Config, rehash: &[String]) -> Option<Index> {
 /// Display `path` relative to `root` with forward slashes, matching the
 /// repo-relative paths the index and search output use.
 pub(crate) fn relative(root: &Path, path: &Path) -> String {
-    below(root, path)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
+    let text = below(root, path).unwrap_or(path).to_string_lossy();
+    match cfg!(windows) {
+        true => text.replace('\\', "/"),
+        false => text.into_owned(),
+    }
 }
 
 /// [`Path::strip_prefix`], answered from the text of the two paths when it can
@@ -2809,7 +2810,11 @@ mod tests {
             relative(root, Path::new("/repo/src/main.rs")),
             "src/main.rs"
         );
-        assert_eq!(relative(Path::new("a"), Path::new("a/b\\c")), "b/c");
+        let backslash = match cfg!(windows) {
+            true => "b/c",
+            false => "b\\c",
+        };
+        assert_eq!(relative(Path::new("a"), Path::new("a/b\\c")), backslash);
         // Outside the root: returned as it is.
         assert_eq!(relative(root, Path::new("/other/x.rs")), "/other/x.rs");
     }
@@ -2835,11 +2840,15 @@ mod tests {
         ];
         for root in roots {
             for path in paths {
-                let expected = Path::new(path)
+                let rest = Path::new(path)
                     .strip_prefix(root)
                     .unwrap_or(Path::new(path))
                     .to_string_lossy()
-                    .replace('\\', "/");
+                    .into_owned();
+                let expected = match cfg!(windows) {
+                    true => rest.replace('\\', "/"),
+                    false => rest,
+                };
                 assert_eq!(
                     relative(Path::new(root), Path::new(path)),
                     expected,
