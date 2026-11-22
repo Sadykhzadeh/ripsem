@@ -667,8 +667,9 @@ anyway.
 </p>
 
 1. **Walk.** The tree is read the way git sees it: `.gitignore`, the global
-   gitignore and `.ripsemignore` apply, and binary files, files above
-   `max_file_kb` and machine-written files are left out.
+   gitignore and `.ripsemignore` apply, and binary files, blank files, files
+   above `max_file_kb` and machine-written files are left out. A symbolic link
+   is not followed, so a file is indexed once, under its own path.
 2. **Chunk.** tree-sitter cuts each file at function and type boundaries and
    names every chunk after its declaration. A function or method is a chunk
    of its own however few lines it has, a class or `impl` is cut into one
@@ -705,9 +706,10 @@ anyway.
 
 **A file never shows up in results.** `ripsem index --dry-run` lists every file
 the index takes in, and says how many it left out and why. A file is left out when `.gitignore`, `.ripsemignore` or
-`exclude` matches it, when it is binary, a minified bundle (at least 8 KiB with
-lines averaging 4 KiB or more), or larger than `max_file_kb`, or when
-`skip_generated` treats it as machine-written.
+`exclude` matches it, when it is binary, blank or empty, a minified bundle (at
+least 8 KiB with lines averaging 4 KiB or more), or larger than `max_file_kb`,
+or when `skip_generated` treats it as machine-written. A symbolic link is not
+followed, so the file it points to is indexed under its own path only.
 
 **A result points at the wrong lines.** The file changed after it was indexed.
 `ripsem search` updates the index before it searches, and `ripsem watch` or a
