@@ -243,7 +243,9 @@ more results below this; pass --offset 2 to see them
   them`. An offset past the last result prints `no further matches`. The
   ranking is made again for each page, so a page reads the same as the
   matching stretch of one larger `-k` except where a deeper search finds a
-  chunk that holds every term of the query.
+  chunk that holds every term of the query. `-l` and `--count-by-file` print
+  no such line; their output is a list of files, and the page is the one
+  `--offset` names.
 - `--json` prints the hits as a JSON array. Each has `path`, `start_line`,
   `end_line`, `score`, `kind` and `symbol` (such as `fn` and
   `Session::refresh`, both `null` for a hit outside any declaration),
@@ -314,8 +316,9 @@ more results below this; pass --offset 2 to see them
   branch. It needs a git repository and reads git with its own arguments.
 - `--sort path` shows the hits of the page ordered by file and then by line,
   instead of by score. `--offset` still reads the ranking by score, so the
-  page is the same set of hits either way. It cannot be combined with
-  `--count-by-file`, which already lists files by count.
+  page is the same set of hits either way. With `-l` it lists the files in
+  path order. It cannot be combined with `--count-by-file`, which already lists
+  files by count.
 
 `ripsem similar <path>[:LINE[-LINE]]` finds the code nearest to a place
 already in the index: `ripsem similar src/auth.rs:40-72`, one line
