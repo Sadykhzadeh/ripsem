@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
@@ -19,8 +20,12 @@ pub fn indexing() -> bool {
     INDEXING.load(Ordering::Relaxed)
 }
 
+/// The reports are for whoever reads the terminal or the log. A reader that has
+/// gone, such as a pipe closed by `| head`, does not stop the index being kept.
 pub fn run(config: Config) -> Result<()> {
-    keep_current(config, true, |line| eprintln!("{line}"))
+    keep_current(config, true, |line| {
+        let _ = writeln!(std::io::stderr(), "{line}");
+    })
 }
 
 /// Keeps the index current from a thread of its own, for `ripsem mcp`: an

@@ -2902,6 +2902,37 @@ fn search_until_found(server: &mut McpServer, query: &str, needle: &str) -> Stri
     }
 }
 
+/// A watch whose reports go to a pipe that has closed keeps the index current:
+/// it does not end with a panic at its next report.
+#[test]
+fn the_watch_keeps_the_index_current_after_its_output_pipe_closes() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let dir = indexed_repository();
+    let mut watch = ripsem_command()
+        .arg("watch")
+        .current_dir(&dir.path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut reports = BufReader::new(watch.stderr.take().unwrap());
+    let mut first = String::new();
+    reports.read_line(&mut first).unwrap();
+    assert!(first.starts_with("indexed"), "{first}");
+    drop(reports);
+
+    dir.write("src/fresh.rs", "fn quarantine_ledger_total() {}\n");
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let ended = watch.try_wait().unwrap();
+    let search = ripsem(&dir.path, &["search", "quarantine ledger total"]);
+    let _ = watch.kill();
+    let _ = watch.wait();
+    assert!(ended.is_none(), "the watch ended: {ended:?}");
+    assert!(stdout(&search).contains("src/fresh.rs"), "{search:?}");
+}
+
 /// An unreadable directory under the root does not end the watch: the server
 /// still picks up a file added afterwards.
 #[cfg(unix)]
