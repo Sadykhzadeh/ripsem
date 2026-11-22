@@ -852,6 +852,19 @@ mod tests {
         assert!(!names(&collect(&config).unwrap()).contains(&"big.txt".to_string()));
     }
 
+    #[test]
+    fn a_file_exactly_at_the_size_limit_is_indexed() {
+        let dir = TempDir::new();
+        dir.write("edge.txt", &"x".repeat(1024));
+        dir.write("over.txt", &"x".repeat(1025));
+        let mut config = config_at(dir.path());
+        config.max_file_kb = 1;
+
+        let names = names(&collect(&config).unwrap());
+        assert!(names.contains(&"edge.txt".to_string()));
+        assert!(!names.contains(&"over.txt".to_string()));
+    }
+
     /// Git calls a file binary when a NUL shows up in its first 8000 bytes. One
     /// past the first kilobyte is still binary, not text with garbled words.
     #[test]
@@ -933,6 +946,22 @@ mod tests {
         assert_eq!(
             names(&collect(&config_at(dir.path())).unwrap()),
             ["normal.rs"]
+        );
+    }
+
+    #[test]
+    fn a_bundle_at_the_minified_thresholds_is_skipped_and_just_below_is_kept() {
+        let dir = TempDir::new();
+        let mut average_at = "x".repeat(4095);
+        average_at.push('\n');
+        average_at.push_str(&"y".repeat(4096));
+        dir.write("average_at.js", &average_at);
+        dir.write("bytes_below.js", &"z".repeat(8191));
+        dir.write("bytes_at.js", &"z".repeat(8192));
+
+        assert_eq!(
+            names(&collect(&config_at(dir.path())).unwrap()),
+            ["bytes_below.js"]
         );
     }
 
