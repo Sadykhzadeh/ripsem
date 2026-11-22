@@ -751,13 +751,13 @@ pub fn embedded_by(backend: Backend, model: &str) -> String {
 }
 
 pub(crate) fn path_in_scope(path: &str, prefix: &str) -> bool {
-    scope_matches(path, prefix, cfg!(windows))
+    scope_matches(path, prefix, cfg!(any(windows, target_os = "macos")))
 }
 
-/// Whether `path` is `prefix` or lies under it. Windows folds the case of ASCII
-/// letters, as its filesystem does, while the index keeps the casing the walk
-/// found. The byte after the prefix is `/` or the end, so `src` does not take
-/// in `src2`.
+/// Whether `path` is `prefix` or lies under it. Windows and macOS fold the case
+/// of ASCII letters, as their default file systems do, while the index keeps the
+/// casing the walk found. The byte after the prefix is `/` or the end, so `src`
+/// does not take in `src2`.
 fn scope_matches(path: &str, prefix: &str, fold_case: bool) -> bool {
     let (path, prefix) = (path.as_bytes(), prefix.as_bytes());
     let Some(head) = path.get(..prefix.len()) else {
@@ -898,7 +898,10 @@ mod tests {
 
     #[test]
     fn a_scope_ignores_case_only_where_the_filesystem_does() {
-        assert_eq!(path_in_scope("src/a.rs", "SRC"), cfg!(windows));
+        assert_eq!(
+            path_in_scope("src/a.rs", "SRC"),
+            cfg!(any(windows, target_os = "macos"))
+        );
         assert!(scope_matches("src/a.rs", "SRC/a.rs", true));
         assert!(scope_matches("src", "Src", true));
         assert!(!scope_matches("src/a.rs", "SRC", false));
