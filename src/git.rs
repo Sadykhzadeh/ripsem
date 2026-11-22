@@ -30,7 +30,10 @@ pub fn changed_since(root: &Path, rev: &str) -> Result<HashSet<String>> {
         ],
     )
     .map_err(|_| anyhow::anyhow!("unknown revision '{rev}'"))?;
-    let tracked = git(&dir, &["diff", "--name-only", "-z", "--relative", rev])?;
+    let tracked = git(
+        &dir,
+        &["diff", "--name-only", "-z", "--relative", rev, "--"],
+    )?;
     let untracked = git(&dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
     Ok(tracked
         .split('\0')

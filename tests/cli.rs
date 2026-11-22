@@ -1933,6 +1933,26 @@ fn commit_all(dir: &TempDir) {
 }
 
 #[test]
+fn since_takes_a_revision_named_like_a_directory() {
+    let dir = paged_tree();
+    commit_all(&dir);
+    git(&dir.path, &["branch", "docs"]);
+    dir.write("docs/fresh.md", "verify password, written after the commit");
+
+    let out = ripsem(
+        &dir.path,
+        &["search", "verify password", "--since", "docs", "--json"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&stdout(&out)).unwrap();
+    assert!(
+        rows.iter().all(|r| r["path"] == "docs/fresh.md") && !rows.is_empty(),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
 fn since_limits_a_search_to_the_files_changed_since_a_revision() {
     let dir = paged_tree();
     commit_all(&dir);
