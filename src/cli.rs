@@ -774,19 +774,29 @@ pub(crate) fn plural(n: usize, noun: &str) -> String {
 
 /// Text from the repository as a terminal shows it. A control character, such
 /// as the escape that starts a sequence for the terminal to act on, is written
-/// as `\u{1b}`; a tab is left as it is.
+/// as `\u{1b}`, and so is a bidirectional override or isolate, which would
+/// otherwise show a line in an order the code does not have. A tab is left as
+/// it is.
 pub(crate) fn printable(text: &str) -> Cow<'_, str> {
-    if !text.chars().any(|c| c.is_control() && c != '\t') {
+    let escaped = |c: char| (c.is_control() && c != '\t') || is_bidi_control(c);
+    if !text.chars().any(escaped) {
         return Cow::Borrowed(text);
     }
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
-        match c.is_control() && c != '\t' {
+        match escaped(c) {
             true => out.extend(c.escape_unicode()),
             false => out.push(c),
         }
     }
     Cow::Owned(out)
+}
+
+/// The embeddings, overrides and isolates of the Unicode bidirectional
+/// algorithm, the characters that make source read differently on screen from
+/// how the compiler reads it.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 pub(crate) fn show_path(path: &Path) -> String {
@@ -1867,6 +1877,16 @@ mod tests {
         );
         assert_eq!(highlight("parser configs", &words, true), "parser configs");
         assert_eq!(highlight("parse config", &words, false), "parse config");
+    }
+
+    #[test]
+    fn printable_escapes_bidirectional_overrides_but_not_ordinary_text() {
+        assert_eq!(
+            printable("if access \u{202e}\" ;;kcehc\" { }"),
+            "if access \\u{202e}\" ;;kcehc\" { }"
+        );
+        assert_eq!(printable("a\u{2066}b\u{2069}"), "a\\u{2066}b\\u{2069}");
+        assert!(matches!(printable("tab\tand \u{e9}"), Cow::Borrowed(_)));
     }
 
     #[test]
