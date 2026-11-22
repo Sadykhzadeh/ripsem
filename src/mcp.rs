@@ -1870,6 +1870,12 @@ mod tests {
         assert!(failure(json!({ "name": "x", "since": 3 })).contains("'since' must be a string"));
     }
 
+    #[test]
+    fn symbol_looks_up_its_name_without_the_space_around_it() {
+        let call = parse_symbol(&json!({ "name": "  refresh\t" }), Path::new("/repo")).unwrap();
+        assert_eq!(call.name, "refresh");
+    }
+
     /// The drift an agent is told is what a search would update: a file whose
     /// size and time are what the index stored is not read, unless the server
     /// was started to hash every file.
