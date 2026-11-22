@@ -210,7 +210,9 @@ fn kind_contains(node_kind: &str, needle: &str) -> bool {
 /// holds a value, and its kind only carries the needle `def`; its `type` field
 /// is the annotation, so it would be declared under the name of its type. A C
 /// or C++ `type_descriptor`, the type in a cast or a `sizeof`, is a use of its
-/// type.
+/// type. A C or C++ `#ifdef` or `#ifndef` carries the needle `def` and the name
+/// of its macro, so an include guard would declare a function that holds the
+/// whole header.
 #[cfg(feature = "treesitter")]
 fn is_use(node_kind: &str) -> bool {
     const USES: &[&str] = &[
@@ -231,6 +233,8 @@ fn is_use(node_kind: &str) -> bool {
         "val_definition",
         "var_definition",
         "type_descriptor",
+        "preproc_ifdef",
+        "preproc_elifdef",
     ];
     USES.iter().any(|suffix| node_kind.ends_with(suffix))
 }

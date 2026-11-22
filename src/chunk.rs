@@ -18,7 +18,7 @@ pub struct Chunk {
 /// Changes whenever the same file and settings would give other chunks or other
 /// terms for them, so an index cut by an older ripsem is cut again. A test pins
 /// it to the output.
-const REVISION: u32 = 26;
+const REVISION: u32 = 27;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -258,7 +258,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (26, expected),
+            (27, expected),
             "{seen}"
         );
     }
@@ -618,6 +618,18 @@ mod cutting {
         assert_eq!(declared_labels("a.c", c), ["struct point", "fn dist"]);
         let cpp = "class Shape {\n};\n\nint total(class Shape *s)\n{\n    return 1;\n}\n";
         assert_eq!(declared_labels("a.cpp", cpp), ["class Shape", "fn total"]);
+    }
+
+    #[test]
+    fn an_include_guard_is_not_a_declaration() {
+        let header = "#ifndef POINT_H\n#define POINT_H\n\nint dist(int a, int b);\n\n\
+                      static inline int twice(int a)\n{\n    return a + a;\n}\n\n#endif\n";
+        assert_eq!(
+            declared_labels("point.h", header),
+            ["macro POINT_H", "fn dist", "fn twice"]
+        );
+        let c = "int f(int a)\n{\n#ifdef DEBUG\n    a += 1;\n#endif\n    return a;\n}\n";
+        assert_eq!(declared_labels("a.c", c), ["fn f"]);
     }
 
     #[test]
