@@ -1193,6 +1193,16 @@ mod tests {
         assert!(hits[1].score <= hits[0].score);
     }
 
+    /// Two copies of one chunk can put the second closest match at a cosine of
+    /// one, so the floor reaches one. The score must still be a number.
+    #[test]
+    fn a_noise_floor_of_one_keeps_every_score_a_number() {
+        for cosine in [0.0, 0.5, 1.0] {
+            let score = reported_score(cosine, 1.0);
+            assert!(score.is_finite() && (0.0..=1.0).contains(&score), "{score}");
+        }
+    }
+
     /// A function too large for one chunk is cut into pieces that all carry
     /// its name. One place in the results is enough for it.
     #[test]
