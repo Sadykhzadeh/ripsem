@@ -50,8 +50,10 @@ fn keep_current(mut config: Config, strict: bool, report: impl Fn(String)) -> Re
     // still reaches it.
     let (tx, rx) = channel();
     let mut watcher = RecommendedWatcher::new(
-        move |res| {
-            let _ = tx.send(res);
+        move |res: notify::Result<notify::Event>| {
+            if !is_read(&res) {
+                let _ = tx.send(res);
+            }
         },
         notify::Config::default().with_follow_symlinks(false),
     )?;
@@ -178,13 +180,17 @@ struct Burst {
     rescan: bool,
 }
 
+/// Reading a file changes nothing. inotify reports every open, and a reindex
+/// opens every file, so counting reads would set off the next reindex forever.
+/// The watch also reads the config on each burst, so a read that woke the watch
+/// would make it read the config again, and so on for as long as it ran.
+fn is_read(event: &notify::Result<notify::Event>) -> bool {
+    matches!(event, Ok(event) if matches!(event.kind, EventKind::Access(_)))
+}
+
 impl Burst {
-    /// Reading a file changes nothing. inotify reports every open, and a
-    /// reindex opens every file, so counting reads would set off the next
-    /// reindex forever.
     fn add(&mut self, event: notify::Result<notify::Event>) {
         match event {
-            Ok(event) if matches!(event.kind, EventKind::Access(_)) => {}
             Ok(event) => {
                 self.rescan |= event.need_rescan();
                 // Windows reports a directory as modified, after the event for
@@ -213,21 +219,21 @@ mod tests {
 
     #[test]
     fn reading_a_file_is_not_a_change() {
-        let mut burst = Burst::default();
         for access in [
             AccessKind::Open(AccessMode::Any),
             AccessKind::Close(AccessMode::Read),
         ] {
-            burst.add(Ok(
+            assert!(is_read(&Ok(
                 Event::new(EventKind::Access(access)).add_path("a.rs".into())
-            ));
+            )));
         }
-        assert!(burst.paths.is_empty() && !burst.rescan);
-
-        burst.add(Ok(Event::new(EventKind::Modify(ModifyKind::Data(
-            DataChange::Content,
-        )))
-        .add_path("a.rs".into())));
+        let write = Ok(
+            Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+                .add_path("a.rs".into()),
+        );
+        assert!(!is_read(&write));
+        let mut burst = Burst::default();
+        burst.add(write);
         assert_eq!(burst.paths, [PathBuf::from("a.rs")]);
     }
 
@@ -264,6 +270,42 @@ mod tests {
         burst.add(Ok(Event::new(EventKind::Other).set_flag(Flag::Rescan)));
         assert!(burst.rescan);
         assert!(burst.paths.is_empty());
+    }
+
+    /// The watch reads the config after each burst. Those reads must not wake it
+    /// again, or a config it cannot parse is reported once a second with nothing
+    /// changed.
+    #[test]
+    fn reading_the_config_does_not_wake_the_watch() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("a.rs", "fn a() {}\n");
+        let config = Config {
+            root: dir.path().to_path_buf(),
+            backend: crate::config::Backend::Hash,
+            ..Default::default()
+        };
+        config.create_data_dir().unwrap();
+
+        let (tx, reports) = channel();
+        std::thread::spawn(move || {
+            let _ = keep_current(config, false, |line| {
+                let _ = tx.send(line);
+            });
+        });
+        let wait = Duration::from_secs(20);
+        let first = reports
+            .recv_timeout(wait)
+            .expect("a report of the first index");
+        assert!(first.starts_with("indexed"), "{first}");
+
+        std::fs::write(dir.path().join(".ripsem/config.toml"), "broken = [\n").unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        let after: Vec<String> = reports.try_iter().collect();
+        let unreadable = after
+            .iter()
+            .filter(|line| line.starts_with("config unreadable"))
+            .count();
+        assert_eq!(unreadable, 1, "{after:?}");
     }
 
     /// A scanner holding the index file open fails a save, and the server
