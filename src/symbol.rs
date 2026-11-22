@@ -172,6 +172,7 @@ const KINDS: &[(&str, &str)] = &[
     ("interface", "interface"),
     ("namespace", "mod"),
     ("constructor", "fn"),
+    ("destructor", "fn"),
     ("function", "fn"),
     ("method", "fn"),
     ("module", "mod"),
@@ -338,11 +339,15 @@ fn identifier_span(node: &tree_sitter::Node) -> Option<(usize, usize)> {
 }
 
 /// Most grammars call the leaf holding a declared name some flavour of
-/// `identifier`; bash calls it `word`, PHP calls it `name` and Ruby names a
-/// module or a class by its `constant`.
+/// `identifier`; bash calls it `word`, PHP calls it `name`, Ruby names a
+/// module or a class by its `constant` and C++ writes a destructor `~Res`.
 #[cfg(feature = "treesitter")]
 fn is_name_leaf(kind: &str) -> bool {
-    kind.ends_with("identifier") || matches!(kind, "word" | "name" | "constant" | "operator_name")
+    kind.ends_with("identifier")
+        || matches!(
+            kind,
+            "word" | "name" | "constant" | "operator_name" | "destructor_name"
+        )
 }
 
 /// What C# and PHP call `Foo.Bar` and `App\Http`, and C++ `net::http`, in a

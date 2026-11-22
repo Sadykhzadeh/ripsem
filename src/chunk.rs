@@ -18,7 +18,7 @@ pub struct Chunk {
 /// Changes whenever the same file and settings would give other chunks or other
 /// terms for them, so an index cut by an older ripsem is cut again. A test pins
 /// it to the output.
-const REVISION: u32 = 29;
+const REVISION: u32 = 30;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -258,7 +258,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (29, expected),
+            (30, expected),
             "{seen}"
         );
     }
@@ -755,6 +755,17 @@ mod cutting {
         let ruby = "def hello(name)\n  \"hi #{name}\"\nend\n";
         let chunks = chunk_source(Path::new("a.rb"), ruby, &Config::default());
         assert!(chunks.iter().all(|c| c.text != "hi #{name}"), "{chunks:?}");
+    }
+
+    #[test]
+    fn a_destructor_is_a_function_named_with_its_tilde() {
+        let cpp = "class Res {\npublic:\n    Res() {}\n    ~Res() {}\n};\n";
+        assert_eq!(
+            declared_labels("a.cpp", cpp),
+            ["class Res", "fn Res::Res", "fn Res::~Res"]
+        );
+        let cs = "public class Box\n{\n    ~Box()\n    {\n    }\n}\n";
+        assert_eq!(declared_labels("a.cs", cs), ["class Box", "fn Box::Box"]);
     }
 
     #[test]
