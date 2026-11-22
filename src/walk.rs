@@ -343,11 +343,16 @@ pub fn reaches_any(config: &Config, paths: &[PathBuf]) -> bool {
     let Ok(mut builder) = builder(config, true) else {
         return true;
     };
-    let on_the_way = targets.clone();
+    // Every directory above a target, so each entry the walk meets is one
+    // lookup; a scan of all the targets for each entry takes minutes once a
+    // burst of writes runs to tens of thousands of files.
+    let on_the_way: std::collections::HashSet<PathBuf> = targets
+        .iter()
+        .flat_map(|t| t.ancestors().map(Path::to_path_buf))
+        .collect();
     let filter_root = root.clone();
     builder.filter_entry(move |entry| {
-        !is_internal(entry.path(), &filter_root)
-            && on_the_way.iter().any(|t| t.starts_with(entry.path()))
+        !is_internal(entry.path(), &filter_root) && on_the_way.contains(entry.path())
     });
     let reached: std::collections::HashSet<PathBuf> = builder
         .build()
@@ -831,6 +836,21 @@ mod tests {
         assert!(!reaches_any(&config, std::slice::from_ref(&noise)));
         assert!(reaches_any(&config, &[noise, source]));
         assert!(!reaches_any(&config, &[]));
+    }
+
+    #[test]
+    fn a_large_burst_in_one_directory_is_judged_by_one_walk_of_it() {
+        let dir = TempDir::new();
+        let config = config_at(dir.path());
+        let mut burst = Vec::new();
+        for i in 0..10_000 {
+            dir.write(&format!("testdata/case{i}.txt"), "x\n");
+            burst.push(dir.path().join(format!("testdata/case{i}.txt")));
+        }
+        let started = std::time::Instant::now();
+        assert!(reaches_any(&config, &burst));
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_secs(5), "took {took:?}");
     }
 
     /// A path that does not start with the root cannot be judged. A needless
