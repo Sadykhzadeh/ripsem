@@ -1392,6 +1392,37 @@ fn symbol_finds_a_name_in_every_file_of_the_index() {
     );
 }
 
+/// A declaration inside a module is named after it, and a name that is the end
+/// of that one finds it.
+#[cfg(feature = "treesitter")]
+#[test]
+fn symbol_finds_a_declaration_by_the_end_of_its_qualified_name() {
+    let dir = TempDir::new();
+    dir.write(
+        "src/auth.rs",
+        "mod auth {\n    struct Session {\n        id: u32,\n    }\n\n    impl Session {\n        fn refresh(&mut self) {\n            self.id += 1;\n        }\n    }\n}\n",
+    );
+    dir.write(
+        "src/cache.rs",
+        "impl Cache {\n    fn refresh(&mut self) {}\n}\n",
+    );
+    assert!(ripsem(&dir.path, &["init"]).status.success());
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    for name in ["auth::Session::refresh", "Session::refresh"] {
+        let found = ripsem(&dir.path, &["symbol", name]);
+        assert!(found.status.success(), "{}", stderr(&found));
+        assert_eq!(
+            stdout(&found),
+            "src/auth.rs:7-9  fn auth::Session::refresh\n",
+            "{name}"
+        );
+    }
+    let partial = ripsem(&dir.path, &["symbol", "ession::refresh"]);
+    assert_eq!(stdout(&partial), "");
+}
+
 /// `symbol` takes the filters `search` takes, so a name declared in many places
 /// can be narrowed to one directory, language or glob.
 #[cfg(feature = "treesitter")]

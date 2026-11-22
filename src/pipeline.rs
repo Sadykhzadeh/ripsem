@@ -1941,7 +1941,7 @@ fn definitions_of(
             record
                 .declarations
                 .iter()
-                .filter(|d| d.symbol.name == name || d.symbol.leaf() == name)
+                .filter(|d| d.symbol.is_named(name))
                 .map(|d| (record.path.to_string(), d.clone()))
         })
         .collect();

@@ -37,6 +37,17 @@ impl Symbol {
     pub fn leaf(&self) -> &str {
         self.name.rsplit("::").next().unwrap_or(&self.name)
     }
+
+    /// Whether `name` is the whole name or its last parts, cut between two
+    /// declarations: `Session::refresh` and `refresh` both name
+    /// `auth::Session::refresh`.
+    pub fn is_named(&self, name: &str) -> bool {
+        self.name == name
+            || self
+                .name
+                .strip_suffix(name)
+                .is_some_and(|rest| rest.ends_with("::"))
+    }
 }
 
 /// One of the declarations a chunk holds, with the lines it spans. A chunk

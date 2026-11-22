@@ -342,7 +342,9 @@ A Markdown file has no declarations, so its outline is empty.
 `ripsem symbol <name>` finds where a declaration is defined. A bare name matches
 every declaration whose last part is that name, so `ripsem symbol refresh` lists
 `fn Session::refresh` and `fn Cache::refresh` alike, and a qualified name matches
-only that one: `ripsem symbol Session::refresh`. Each line is `path:start-end`
+only the declarations whose name ends in it: `ripsem symbol Session::refresh`
+finds `fn Session::refresh` and `fn auth::Session::refresh`, not
+`fn Cache::refresh`. Each line is `path:start-end`
 and the declaration, as a search prints a hit's header. The tree is read again
 first, as `search` does, and no model runs unless a changed file has to be
 embedded again. `--json` prints
