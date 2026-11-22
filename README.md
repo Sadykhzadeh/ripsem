@@ -164,6 +164,7 @@ lexical arm and the merge work the same at any size.
 ### Shell completions
 
 ```
+mkdir -p ~/.local/share/bash-completion/completions ~/.zfunc ~/.config/fish/completions
 ripsem completions bash > ~/.local/share/bash-completion/completions/ripsem
 ripsem completions zsh > ~/.zfunc/_ripsem
 ripsem completions fish > ~/.config/fish/completions/ripsem.fish
