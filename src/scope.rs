@@ -297,6 +297,7 @@ mod tests {
     fn a_negated_language_leaves_its_files_out() {
         let not_js = scope(None, &["!js"], &[]);
         assert!(!not_js.admits("web/app.js"));
+        assert!(!not_js.admits("web/APP.JS"));
         assert!(!not_js.admits("web/app.mjs"));
         assert!(not_js.admits("src/a.rs"));
         assert!(not_js.admits("Makefile"));
@@ -369,6 +370,14 @@ mod tests {
         assert!(only.admits("src/deep/a.rs"));
         assert!(!only.admits("src/gen.rs"));
         assert!(!only.admits("docs/a.rs"));
+    }
+
+    #[test]
+    fn a_directory_glob_does_not_take_in_a_file_of_the_same_name() {
+        let vendor = scope(None, &[], &["vendor/"]);
+        assert!(vendor.admits("vendor/a.rs"));
+        assert!(!vendor.admits("vendor"));
+        assert!(!vendor.admits("src/vendor"));
     }
 
     #[cfg(windows)]
