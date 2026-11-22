@@ -1786,6 +1786,12 @@ fn null_ends_each_listed_path_with_a_nul_byte() {
         &["search", "verify password", "-l", "-0", "--json"],
     );
     assert_eq!(json.status.code(), Some(2), "{}", stderr(&json));
+    for clash in ["--count-by-file", "--vimgrep"] {
+        let out = ripsem(&dir.path, &["search", "verify password", "-0", clash]);
+        assert_eq!(out.status.code(), Some(2), "{clash}");
+        assert!(stderr(&out).contains("cannot be used"), "{}", stderr(&out));
+        assert!(out.stdout.is_empty(), "{clash}");
+    }
 }
 
 #[test]

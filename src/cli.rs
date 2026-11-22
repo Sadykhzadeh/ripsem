@@ -293,7 +293,7 @@ pub struct SearchOpts {
         short = '0',
         long = "null",
         requires = "files_with_matches",
-        conflicts_with = "json"
+        conflicts_with_all = ["json", "count_by_file", "vimgrep"]
     )]
     null: bool,
     /// One `path:line:column:text` line per hit, the format editors load into
