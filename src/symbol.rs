@@ -206,7 +206,9 @@ fn kind_contains(node_kind: &str, needle: &str) -> bool {
 /// repeats the name of the function or the variable its declaration starts,
 /// and a C++ `static_cast<U>(x)` is a call, so both are left out as well. The
 /// body of a TypeScript enum holds its members under the field `name`, so it
-/// would be declared under the name of its first one.
+/// would be declared under the name of its first one. A Scala `val` or `var`
+/// holds a value, and its kind only carries the needle `def`; its `type` field
+/// is the annotation, so it would be declared under the name of its type.
 #[cfg(feature = "treesitter")]
 fn is_use(node_kind: &str) -> bool {
     const USES: &[&str] = &[
@@ -224,6 +226,8 @@ fn is_use(node_kind: &str) -> bool {
         "_parameters",
         "template_function",
         "enum_body",
+        "val_definition",
+        "var_definition",
     ];
     USES.iter().any(|suffix| node_kind.ends_with(suffix))
 }

@@ -18,7 +18,7 @@ pub struct Chunk {
 /// Changes whenever the same file and settings would give other chunks or other
 /// terms for them, so an index cut by an older ripsem is cut again. A test pins
 /// it to the output.
-const REVISION: u32 = 24;
+const REVISION: u32 = 25;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -258,7 +258,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (24, expected),
+            (25, expected),
             "{seen}"
         );
     }
@@ -618,6 +618,16 @@ mod cutting {
         assert_eq!(declared_labels("a.c", c), ["struct point", "fn dist"]);
         let cpp = "class Shape {\n};\n\nint total(class Shape *s)\n{\n    return 1;\n}\n";
         assert_eq!(declared_labels("a.cpp", cpp), ["class Shape", "fn total"]);
+    }
+
+    #[test]
+    fn a_scala_value_is_not_declared_under_the_name_of_its_type() {
+        let scala = "object Config {\n  val limit: Int = 5\n  var name: String = \"x\"\n  \
+                     lazy val cache: Map[String, Int] = Map()\n  def area(r: Double): Double = r\n}\n";
+        assert_eq!(
+            declared_labels("a.scala", scala),
+            ["object Config", "fn Config::area"]
+        );
     }
 
     #[test]
