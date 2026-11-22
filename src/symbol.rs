@@ -215,7 +215,10 @@ fn kind_contains(node_kind: &str, needle: &str) -> bool {
 /// whole header. In Rust a bound written `for<'a> FnOnce(&'a str)` is a
 /// `higher_ranked_trait_bound` and `Vec::<u8>::new()` holds a
 /// `generic_type_with_turbofish`: both name a trait or a type they do not
-/// declare.
+/// declare. A Go `case Foo:` in a type switch is a `type_case`, the types in a
+/// Scala function type `(Int, String) => Unit` are `parameter_types`, and a
+/// TypeScript `new (x: number): Foo` is a `construct_signature`: each holds a
+/// type it only names.
 #[cfg(feature = "treesitter")]
 fn is_use(node_kind: &str) -> bool {
     const USES: &[&str] = &[
@@ -240,6 +243,9 @@ fn is_use(node_kind: &str) -> bool {
         "preproc_elifdef",
         "higher_ranked_trait_bound",
         "generic_type_with_turbofish",
+        "type_case",
+        "parameter_types",
+        "construct_signature",
     ];
     USES.iter().any(|suffix| node_kind.ends_with(suffix))
 }

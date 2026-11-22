@@ -18,7 +18,7 @@ pub struct Chunk {
 /// Changes whenever the same file and settings would give other chunks or other
 /// terms for them, so an index cut by an older ripsem is cut again. A test pins
 /// it to the output.
-const REVISION: u32 = 28;
+const REVISION: u32 = 29;
 
 /// A line longer than this is cut into pieces of at most this many bytes. The
 /// models read about this much of a text, so a minified bundle on one line
@@ -258,7 +258,7 @@ mod tests {
         };
         assert_eq!(
             (REVISION, crate::fingerprint::content_hash(seen.as_bytes())),
-            (28, expected),
+            (29, expected),
             "{seen}"
         );
     }
@@ -625,6 +625,22 @@ mod cutting {
         let rust = "struct Wrap<T> {\n    b: T,\n}\n\nfn run<F>(f: F) -> usize\nwhere\n    F: for<'a> FnOnce(&'a str) -> usize,\n{\n    \
                     let w = Wrap::<u8> { b: 1 };\n    f(\"a\") + usize::from(w.b)\n}\n";
         assert_eq!(declared_labels("a.rs", rust), ["struct Wrap", "fn run"]);
+    }
+
+    #[test]
+    fn a_type_that_a_case_or_a_signature_only_names_is_not_declared() {
+        let go = "type Foo struct{}\n\nfunc describe(v interface{}) string {\n\tswitch v.(type) {\n\tcase Foo:\n\t\treturn \"foo\"\n\t}\n\treturn \"\"\n}\n";
+        assert_eq!(declared_labels("a.go", go), ["type Foo", "fn describe"]);
+        let scala = "object Util {\n  def run(cb: (Int, String) => Unit): Unit = {\n    cb(1, \"a\")\n  }\n}\n";
+        assert_eq!(
+            declared_labels("a.scala", scala),
+            ["object Util", "fn Util::run"]
+        );
+        let ts = "interface Ctor {\n  new (x: number): Foo;\n  get(y: string): Bar;\n}\n";
+        assert_eq!(
+            declared_labels("a.ts", ts),
+            ["interface Ctor", "fn Ctor::get"]
+        );
     }
 
     #[test]
