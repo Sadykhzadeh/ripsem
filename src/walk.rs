@@ -435,9 +435,20 @@ pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
             .collect::<String>()
     };
     // The little-endian UTF-32 mark starts with the whole UTF-16 one, so it is
-    // tried first.
+    // tried first, and only when what follows is a run of code points: UTF-16
+    // text that begins with a NUL character has the same four bytes.
+    let utf32_le = |rest: &[u8]| {
+        rest.len().is_multiple_of(4)
+            && rest
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|&quad| char::from_u32(u32::from_le_bytes(quad)).is_some())
+    };
     match bytes {
-        [0xFF, 0xFE, 0, 0, rest @ ..] => Cow::Owned(scalars(u32::from_le_bytes, rest)),
+        [0xFF, 0xFE, 0, 0, rest @ ..] if utf32_le(rest) => {
+            Cow::Owned(scalars(u32::from_le_bytes, rest))
+        }
         [0, 0, 0xFE, 0xFF, rest @ ..] => Cow::Owned(scalars(u32::from_be_bytes, rest)),
         [0xFF, 0xFE, rest @ ..] => Cow::Owned(units(u16::from_le_bytes, rest)),
         [0xFE, 0xFF, rest @ ..] => Cow::Owned(units(u16::from_be_bytes, rest)),
@@ -931,6 +942,16 @@ mod tests {
             .collect();
         assert_eq!(decode_text(&le), text);
         assert_eq!(decode_text(&be), text);
+    }
+
+    #[test]
+    fn utf16_that_begins_with_a_nul_character_is_not_utf32() {
+        let text = "\0a\0b";
+        let le: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        assert_eq!(decode_text(&le), text);
     }
 
     #[test]
