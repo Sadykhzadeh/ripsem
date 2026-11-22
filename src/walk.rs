@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use ignore::overrides::OverrideBuilder;
@@ -273,7 +273,7 @@ fn builder(config: &Config, patterns: bool) -> Result<WalkBuilder> {
             );
             let text = glob_text(pattern, cfg!(windows));
             anyhow::ensure!(
-                !text.trim().is_empty(),
+                !text.trim().is_empty() && names_below_root(&text),
                 "exclude pattern '{pattern}' names no path, or only the project root; remove it from exclude"
             );
             // Checked on its own first: the override adds a leading `!`, which
@@ -289,6 +289,14 @@ fn builder(config: &Config, patterns: bool) -> Result<WalkBuilder> {
     }
 
     Ok(builder)
+}
+
+/// Whether a glob names something below the root. A glob made only of `/` and
+/// `.` names the root itself.
+fn names_below_root(text: &str) -> bool {
+    Path::new(text)
+        .components()
+        .any(|c| matches!(c, Component::Normal(_)))
 }
 
 /// Globs treat a backslash as an escape, but on Windows it is the separator
@@ -739,6 +747,18 @@ mod tests {
             config.exclude = vec![blank.into()];
             let err = format!("{:#}", collect(&config).unwrap_err());
             assert!(err.contains("remove it from exclude"), "{err}");
+        }
+    }
+
+    #[test]
+    fn an_exclude_that_names_only_the_root_is_an_error() {
+        let dir = TempDir::new();
+        dir.write("keep.rs", "fn main() {}\n");
+        let mut config = config_at(dir.path());
+        for root in ["/", ".", "/.", "./.", "/./"] {
+            config.exclude = vec![root.into()];
+            let err = format!("{:#}", collect(&config).unwrap_err());
+            assert!(err.contains("remove it from exclude"), "{root}: {err}");
         }
     }
 
