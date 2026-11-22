@@ -501,7 +501,7 @@ fn similar_schema() -> Value {
         "end_line": {
             "type": "integer",
             "minimum": 1,
-            "description": "Last line of that place, inclusive. Default: the same as `line`."
+            "description": "Last line of that place, inclusive, with `line`. Default: the same as `line`."
         }
     });
     for key in [
@@ -3405,6 +3405,30 @@ mod tests {
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(symbol.starts_with("fn auth"), "{symbol}");
         assert!(text.lines().next().unwrap().ends_with(symbol), "{text}");
+    }
+
+    #[test]
+    fn an_end_line_without_a_line_is_a_tool_error_the_schema_says_so() {
+        let (_dir, config, searcher) = paged_project();
+        let listed = handle(&config, None, &req("tools/list", json!({}))).unwrap();
+        let similar = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "find_similar")
+            .unwrap();
+        let described = similar["inputSchema"]["properties"]["end_line"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(described.contains("with `line`"), "{described}");
+        let request = req(
+            "tools/call",
+            json!({ "name": "find_similar", "arguments": { "path": "src/auth0.rs", "end_line": 1 } }),
+        );
+        let resp = handle(&config, Some(&searcher), &request).unwrap();
+        assert_eq!(resp["result"]["isError"], true, "{resp}");
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("'end_line' needs 'line'"), "{text}");
     }
 
     #[test]
