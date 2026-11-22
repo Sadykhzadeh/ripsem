@@ -304,13 +304,17 @@ mod tests {
         assert!(first.starts_with("indexed"), "{first}");
 
         std::fs::write(dir.path().join(".ripsem/config.toml"), "broken = [\n").unwrap();
+        let report = reports
+            .recv_timeout(wait)
+            .expect("a report of the unreadable config");
+        assert!(report.starts_with("config unreadable"), "{report}");
         std::thread::sleep(Duration::from_millis(1500));
         let after: Vec<String> = reports.try_iter().collect();
         let unreadable = after
             .iter()
             .filter(|line| line.starts_with("config unreadable"))
             .count();
-        assert_eq!(unreadable, 1, "{after:?}");
+        assert_eq!(unreadable, 0, "{after:?}");
     }
 
     /// A scanner holding the index file open fails a save, and the server
