@@ -20,11 +20,21 @@ if (!name) {
   process.exit(1);
 }
 
+// npm installs the Linux package only where glibc is present, and the binary
+// needs it, so a musl system such as Alpine has no build to install again.
+function hasGlibc() {
+  return Boolean(process.report?.getReport().header.glibcVersionRuntime);
+}
+
 let dir;
 try {
   dir = path.dirname(require.resolve(`${name}/package.json`));
 } catch {
-  console.error(`ripsem: ${name} is not installed; install ripsem again with optional dependencies`);
+  console.error(
+    process.platform === "linux" && !hasGlibc()
+      ? "ripsem: there is no build for Linux without glibc, such as Alpine; it needs glibc 2.35 or newer"
+      : `ripsem: ${name} is not installed; install ripsem again with optional dependencies`
+  );
   process.exit(1);
 }
 
