@@ -165,8 +165,8 @@ impl Config {
         let path = cfg.config_path();
         check_config_file(&path)?;
         if path.exists() {
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", show_path(&path)))?;
+            let text =
+                read_config(&path).with_context(|| format!("reading {}", show_path(&path)))?;
             let mut parsed: Config =
                 toml::from_str(&text).with_context(|| format!("parsing {}", show_path(&path)))?;
             let overlap_given = toml::from_str::<toml::Table>(&text)
@@ -240,7 +240,7 @@ impl Config {
     pub fn save_setting(&self, key: &str) -> Result<()> {
         let path = self.config_path();
         check_config_file(&path)?;
-        let text = match std::fs::read_to_string(&path) {
+        let text = match read_config(&path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return self.save(),
             Err(e) => return Err(e).with_context(|| format!("reading {}", show_path(&path))),
@@ -313,6 +313,18 @@ fn assigns(line: &str, key: &str) -> bool {
         .iter()
         .find_map(|quote| line.strip_prefix(format!("{quote}{key}{quote}").as_str()))
         .is_some_and(|rest| rest.trim_start().starts_with('='))
+}
+
+/// The text of a configuration file. Windows PowerShell's `>` writes UTF-16
+/// with a byte order mark, which TOML does not allow, so that is decoded as a
+/// source file is. Any other file must be UTF-8, and keeps its byte order mark.
+fn read_config(path: &Path) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    match bytes.as_slice() {
+        [0xFF, 0xFE, ..] | [0xFE, 0xFF, ..] => Ok(crate::walk::decode_text(&bytes).into_owned()),
+        _ => String::from_utf8(bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+    }
 }
 
 /// Refuses a data directory that is a symbolic link or any other non-directory.
@@ -562,6 +574,32 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(cfg.config_path()).unwrap(),
             "\u{feff}backend = \"fastembed\"\nchunk_lines = 40\n"
+        );
+    }
+
+    #[test]
+    fn a_configuration_file_saved_as_utf16_is_read_and_rewritten_as_utf8() {
+        let dir = TempDir::new();
+        let mut cfg = Config {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        cfg.save().unwrap();
+        let text = "backend = \"hash\"\r\nchunk_lines = 40\r\n";
+        let bytes: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        std::fs::write(cfg.config_path(), bytes).unwrap();
+
+        cfg = Config::load(dir.path()).unwrap();
+        assert_eq!(cfg.backend, Backend::Hash);
+        assert_eq!(cfg.chunk_lines, 40);
+        cfg.backend = Backend::Fastembed;
+        cfg.save_setting("backend").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(cfg.config_path()).unwrap(),
+            "backend = \"fastembed\"\r\nchunk_lines = 40\r\n"
         );
     }
 

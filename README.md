@@ -198,6 +198,8 @@ writes the file when it is missing and never changes an existing one.
 index and the configuration are never written to a directory outside the
 project. `ripsem model set` and `ripsem model backend` change only their own
 setting in `config.toml`, and the comments and layout a user wrote are kept.
+A `config.toml` saved as UTF-16, as Windows PowerShell's `>` saves it, is read
+too; such a setting rewrites the file as UTF-8.
 
 `status` also reports how far the index has drifted from the files. Hits carry
 the line range their file had when it was indexed, so `tree: out of date: 3
