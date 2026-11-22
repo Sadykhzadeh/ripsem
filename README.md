@@ -75,10 +75,11 @@ ranges.
    `ripsem install roo`, `ripsem install opencode` or `ripsem install codex` (see
    [below](#use-with-coding-agents)).
 
-The first search from the top directory of a git repository, or from a directory
-where `ripsem init` has run, builds the index: it downloads the model (~133 MB)
-once and embeds the repository. Every search after that first embeds whatever
-changed since, so results never point at code that has moved. On Windows the
+The first `search`, `similar`, `outline` or `symbol` from the top directory of a
+git repository, or from a directory where `ripsem init` has run, builds the
+index: it downloads the model (~133 MB) once and embeds the repository. Every
+search after that first embeds whatever changed since, so results never point
+at code that has moved. On Windows the
 first index runs on the GPU through DirectML when there is one.
 
 To try it without the download, switch to the hashing backend before the first

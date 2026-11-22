@@ -1062,6 +1062,7 @@ fn cmd_similar(root: &Path, target: &str, opts: &SearchOpts) -> Result<()> {
         .transpose()?;
     let scope = scope_for(&config, opts)?;
     let target = pipeline::Target { path, lines };
+    pipeline::build_first_index(&config)?;
     let page = pipeline::similar_page(
         &config,
         &target,
@@ -1093,6 +1094,7 @@ fn cmd_outline(root: &Path, raw: &str, as_json: bool) -> Result<()> {
     );
     let path = mcp::scope_prefix(&from_here(raw, &config.root), &config.root)?
         .ok_or_else(|| anyhow::anyhow!("'{raw}' names no file"))?;
+    pipeline::build_first_index(&config)?;
     let declarations = pipeline::outline(&config, &path)?;
     if as_json {
         let rows: Vec<Value> = declarations.iter().map(declaration_row).collect();
@@ -1126,6 +1128,7 @@ fn cmd_symbol(root: &Path, name: &str, opts: &SymbolOpts) -> Result<()> {
         &opts.glob,
         opts.since.as_deref(),
     )?;
+    pipeline::build_first_index(&config)?;
     let found = pipeline::definitions(&config, name.trim(), scope.as_ref())?;
     if opts.json {
         let rows: Vec<Value> = found

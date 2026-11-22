@@ -3235,3 +3235,40 @@ fn init_that_cannot_write_its_config_leaves_no_empty_gitignore() {
     );
     assert!(dir.path.join(".ripsem/.gitignore").exists());
 }
+
+#[cfg(feature = "treesitter")]
+#[test]
+fn a_first_symbol_lookup_in_a_repository_builds_its_index() {
+    let dir = TempDir::new();
+    git(&dir.path, &["init", "-q"]);
+    dir.write("src/auth.rs", "fn refresh() {}\n");
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+
+    let out = ripsem(&dir.path, &["symbol", "refresh"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("src/auth.rs:1-1  fn refresh"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("no index yet; building one"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn a_first_symbol_lookup_outside_a_repository_names_the_index_command() {
+    let dir = TempDir::new();
+    dir.write("src/auth.rs", "fn refresh() {}\n");
+
+    let out = ripsem(&dir.path, &["symbol", "refresh"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("no index yet; run `ripsem index`"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!dir.path.join(".ripsem").exists());
+}

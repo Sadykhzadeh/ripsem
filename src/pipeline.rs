@@ -1704,6 +1704,19 @@ pub fn search_scoped(
     Ok(search_page(config, query, k, 0, scope, None)?.hits)
 }
 
+/// Builds the index when a repository or a directory `ripsem init` opted in
+/// has none yet, so a first search, `symbol`, `outline` or `similar` does not
+/// send the user off to run `ripsem index`. Anywhere else the directory may be
+/// a home folder, which nobody wants embedded by accident.
+pub fn build_first_index(config: &Config) -> Result<()> {
+    let opted_in = config.root.join(".git").exists() || config.data_dir().is_dir();
+    if !config.index_path().exists() && opted_in {
+        eprintln!("no index yet; building one, which later searches only update");
+        index_repo_once(config, false)?;
+    }
+    Ok(())
+}
+
 /// Like [`search_scoped`], for the page of `limit` hits that starts at place
 /// `offset` of the ranking, of the hits whose chunk matches `text` when there
 /// is one; see [`Searcher::query_page`].
@@ -1718,15 +1731,7 @@ pub fn search_page(
     if query.trim().is_empty() {
         anyhow::bail!("the query is empty; say what to look for");
     }
-    // A repository's first search builds its index rather than sending the
-    // user off to run `ripsem index`, and so does a directory `ripsem init`
-    // opted in. Anywhere else the directory may be a home folder, which nobody
-    // wants embedded by accident.
-    let opted_in = config.root.join(".git").exists() || config.data_dir().is_dir();
-    if !config.index_path().exists() && opted_in {
-        eprintln!("no index yet; building one, which later searches only update");
-        index_repo_once(config, false)?;
-    }
+    build_first_index(config)?;
     let embedder = Arc::new(LazyEmbedder::new(config));
     // Loading the model and decoding the index are independent, so they run
     // side by side. Without an index there is nothing to search and no reason
