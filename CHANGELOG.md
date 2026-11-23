@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `install vscode` and `install opencode` add the server to a config that holds
+  comments or trailing commas, as those editors allow, and keep the rest of the
+  file as it was. Before, such a file was refused as not valid JSON.
 - The MCP `outline` and `symbol` tools answer from the index the session holds,
   as `search` does, instead of reading and decoding the index on every call. A
   file or tree that changed on disk is still read again before the answer.
@@ -181,6 +184,15 @@
 - `ripsem init` in a subdirectory of a project that already has an index warns
   on stderr that the new `.ripsem` hides the parent's index from commands run
   there. The index is still created.
+- `ripsem search` names the unreadable files its index refresh skipped, the
+  same warning `ripsem index` prints, once per run, also when the search reads
+  a changed file again. `-q` keeps it quiet, and the MCP server does not print it.
+- `ripsem callers <NAME> [PATH...]` lists the calls to a function or method in
+  the indexed files, as `path:line:column` with the function that holds each
+  call. The calls are read from the syntax tree, so a name in a string or a
+  comment is not one. It takes the output options of `search`. Rust, Python,
+  JavaScript, TypeScript, Go, Java, C#, C, C++ and Ruby are read. The MCP
+  server offers the same search as the `find_callers` tool.
 - `ripsem similar <path>[:LINE[-LINE]]` finds the code nearest to a file, or to
   a line range of it, from the vectors the index already stores, so no model
   runs. The chunks the location covers are left out of the answer. The MCP

@@ -10,6 +10,8 @@ use regex::Regex;
 
 use crate::config::Config;
 use crate::fingerprint::FileStat;
+#[cfg(feature = "treesitter")]
+use crate::index::path_in_scope;
 use crate::index::{Index, Record};
 use crate::lexical::TermHash;
 use crate::scope::Scope;
@@ -118,6 +120,9 @@ pub struct Page {
     /// Files a hit was left out for because their text on disk is no longer
     /// the text the index holds.
     pub stale: Vec<String>,
+    /// Files the index refresh before the answer could not read, relative to
+    /// the root and sorted. Only the command line names them.
+    pub unreadable: Vec<String>,
 }
 
 impl Page {
@@ -1343,6 +1348,7 @@ impl Searcher {
                 hits: Vec::new(),
                 next: None,
                 stale: vec![target.path.clone()],
+                unreadable: Vec::new(),
             });
         }
         let bytes = std::fs::read(&full).with_context(|| format!("reading {}", target.path))?;
@@ -1351,6 +1357,7 @@ impl Searcher {
                 hits: Vec::new(),
                 next: None,
                 stale: vec![target.path.clone()],
+                unreadable: Vec::new(),
             });
         }
         let total = walk::decode_text(&bytes).lines().count();
@@ -1408,6 +1415,47 @@ impl Searcher {
             (hits, stale) = self.matching(hits, text, end.saturating_add(SPARE_HITS));
         }
         Ok(with_stale(self.places(hits, &[], &[], offset, end), stale))
+    }
+
+    /// The page of call sites of `query` in the indexed files that `scope`
+    /// admits and that lie under one of `prefixes`, or in every indexed file
+    /// when there are none. Files are read in path order and the calls in
+    /// each in source order; the page is the window `offset` to `offset +
+    /// limit` of them.
+    #[cfg(feature = "treesitter")]
+    pub(crate) fn callers_page(
+        &self,
+        query: &crate::callers::Query,
+        limit: usize,
+        offset: usize,
+        scope: Option<&Scope>,
+        prefixes: &[String],
+    ) -> Result<CallPage> {
+        if let Some(scope) = scope
+            && !self.index.covers(scope)
+        {
+            anyhow::bail!(scope.nothing_matches());
+        }
+        let files: std::collections::BTreeSet<&str> = self
+            .index
+            .records
+            .iter()
+            .map(|r| r.path.as_str())
+            .filter(|path| scope.is_none_or(|s| s.admits(path)))
+            .filter(|path| prefixes.is_empty() || prefixes.iter().any(|p| path_in_scope(path, p)))
+            .collect();
+        if files.is_empty()
+            && let Some(first) = prefixes.first()
+        {
+            anyhow::bail!(Scope::under(first).nothing_matches());
+        }
+        let names: Vec<&str> = files.into_iter().collect();
+        let found = crate::callers::find(&self.root, &names, query);
+        let end = offset.saturating_add(limit);
+        Ok(CallPage {
+            more: found.len() > end,
+            hits: found.into_iter().skip(offset).take(limit).collect(),
+        })
     }
 
     /// The best `k` places for a query embedded as `qv`, through the
@@ -1506,6 +1554,7 @@ impl Searcher {
             hits: out,
             next,
             stale,
+            unreadable: Vec::new(),
         }
     }
 
@@ -1737,9 +1786,10 @@ pub fn search_page(
     // side by side. Without an index there is nothing to search and no reason
     // to load (or download) a model.
     let mut current = None;
+    let mut unreadable = Vec::new();
     if config.index_path().exists() {
         embedder.warm();
-        current = refresh(config, &[]);
+        (current, unreadable) = refresh(config, &[]);
     }
     let searcher = match current {
         Some(index) => {
@@ -1756,7 +1806,12 @@ pub fn search_page(
     if found.is_err() {
         embedder.settle();
     }
-    found
+    found.map(|mut page| {
+        page.unreadable.extend(unreadable);
+        page.unreadable.sort_unstable();
+        page.unreadable.dedup();
+        page
+    })
 }
 
 /// The page of a query asked of `held`. When that page names files changed on
@@ -1772,12 +1827,15 @@ pub fn answer_with_reread(
     if page.stale.is_empty() {
         return Ok(page);
     }
-    let Some(index) = refresh(config, &page.stale) else {
+    let (index, unreadable) = refresh(config, &page.stale);
+    let Some(index) = index else {
         return Ok(page);
     };
     let mtime = file_mtime(&config.index_path());
     let fresh = searcher_over(config, index, held.embedder(), mtime)?;
-    ask(&fresh)
+    let mut again = ask(&fresh)?;
+    again.unreadable = unreadable;
+    Ok(again)
 }
 
 /// [`Searcher::similar_page`] through [`answer_with_reread`]. A target that
@@ -1821,6 +1879,42 @@ pub fn search_answer(
     })
 }
 
+/// The call sites a page of `ripsem callers` shows, and whether another page
+/// follows it.
+#[cfg(feature = "treesitter")]
+pub struct CallPage {
+    pub hits: Vec<crate::callers::Found>,
+    pub more: bool,
+}
+
+/// The call sites of `query` in the files the index holds, read the way
+/// [`similar_page`] reads the index: built when the repository opted in,
+/// brought up to date, then searched. See [`Searcher::callers_page`] for
+/// `scope` and `prefixes`.
+#[cfg(feature = "treesitter")]
+pub fn callers_page(
+    config: &Config,
+    query: &crate::callers::Query,
+    limit: usize,
+    offset: usize,
+    scope: Option<&Scope>,
+    prefixes: &[String],
+) -> Result<CallPage> {
+    build_first_index(config)?;
+    if !config.index_path().exists() {
+        anyhow::bail!("no index yet; run `ripsem index` in this directory first");
+    }
+    let embedder = Arc::new(LazyEmbedder::new(config));
+    let (refreshed, _) = refresh(config, &[]);
+    let searcher = match refreshed {
+        Some(index) => searcher_over(config, index, embedder, file_mtime(&config.index_path())),
+        None => open_with(config, embedder),
+    }?;
+    let found = searcher.callers_page(query, limit, offset, scope, prefixes);
+    leave_to_exit(searcher.index);
+    found
+}
+
 /// Code already in the index that `similar` looks for neighbours of: a file, or
 /// the 1-based lines `start` to `end` of it.
 pub struct Target {
@@ -1852,7 +1946,8 @@ pub fn similar_page(
         anyhow::bail!("no index yet; run `ripsem index` in this directory first");
     }
     let embedder = Arc::new(LazyEmbedder::new(config));
-    let searcher = match refresh(config, &[]) {
+    let (refreshed, _) = refresh(config, &[]);
+    let searcher = match refreshed {
         Some(index) => searcher_over(config, index, embedder, file_mtime(&config.index_path())),
         None => open_with(config, embedder),
     }?;
@@ -1868,7 +1963,8 @@ pub fn outline(config: &Config, path: &str) -> Result<Vec<Declaration>> {
     if !config.index_path().exists() {
         anyhow::bail!("no index yet; run `ripsem index` in this directory first");
     }
-    let index = match refresh(config, &[path.to_string()]) {
+    let (refreshed, _) = refresh(config, &[path.to_string()]);
+    let index = match refreshed {
         Some(index) => index,
         None => Index::load(&config.index_path())?,
     };
@@ -1914,7 +2010,8 @@ pub fn definitions(
     if !config.index_path().exists() {
         anyhow::bail!("no index yet; run `ripsem index` in this directory first");
     }
-    let index = match refresh(config, &[]) {
+    let (refreshed, _) = refresh(config, &[]);
+    let index = match refreshed {
         Some(index) => index,
         None => Index::load(&config.index_path())?,
     };
@@ -2004,7 +2101,7 @@ pub fn rebuilt_line(reason: &str) -> String {
 /// time moved. A failure, such as a read-only checkout, leaves the search to
 /// the index as it is. Returns the index it ended with, when it has one that
 /// matches the file. The files in `rehash` are read whatever their stat.
-fn refresh(config: &Config, rehash: &[String]) -> Option<Index> {
+fn refresh(config: &Config, rehash: &[String]) -> (Option<Index>, Vec<String>) {
     match index_and_keep(config, false, rehash, Pace::default()) {
         Ok((stats, index)) => {
             if let Some(reason) = &stats.rebuilt {
@@ -2015,11 +2112,11 @@ fn refresh(config: &Config, rehash: &[String]) -> Option<Index> {
                     crate::cli::plural(stats.embedded, "file")
                 );
             }
-            index
+            (index, stats.unreadable)
         }
         Err(e) => {
             eprintln!("warning: could not update the index: {e:#}");
-            None
+            (None, Vec::new())
         }
     }
 }

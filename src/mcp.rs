@@ -408,7 +408,7 @@ fn handle(config: &Config, session: Option<&pipeline::Searcher>, request: &Value
         )),
         "tools/list" => Some(ok(
             id?,
-            json!({ "tools": [tool_schema(), similar_schema(), outline_schema(), symbol_schema(), status_schema()] }),
+            json!({ "tools": [tool_schema(), similar_schema(), outline_schema(), symbol_schema(), status_schema(), callers_schema()] }),
         )),
         "tools/call" => Some(handle_call(config, session, id?, request)),
         "ping" => Some(ok(id?, json!({}))),
@@ -647,9 +647,12 @@ fn handle_call(
         "outline" => return outline(config, session, id, &call_arguments(request)),
         "symbol" => return symbol(config, session, id, &call_arguments(request)),
         "index_status" => return index_status(config, id, &call_arguments(request)),
+        "find_callers" => {
+            return find_callers(config, session, id, &call_arguments(request));
+        }
         other => {
             let message = format!(
-                "unknown tool '{other}'; the tools are 'search', 'find_similar', 'outline', 'symbol' and 'index_status'"
+                "unknown tool '{other}'; the tools are 'search', 'find_similar', 'outline', 'symbol', 'index_status' and 'find_callers'"
             );
             return error(id, -32602, &message);
         }
@@ -774,6 +777,196 @@ fn find_similar(
         Ok(page) => ok(id, search_result(page, min_score, offset)),
         Err(e) => tool_error(id, &e),
     }
+}
+
+fn callers_schema() -> Value {
+    let search = tool_schema();
+    let mut properties = json!({
+        "name": {
+            "type": "string",
+            "description": "The function or method to find the calls of, such as 'load'. A qualifier narrows it: 'Index::load' or 'module.load'. Matched by name, not by type."
+        },
+        "path": {
+            "type": "string",
+            "description": "Optional subdirectory (relative to the repo) to limit the search to, e.g. 'src/embed'."
+        }
+    });
+    for key in ["lang", "glob", "limit", "offset"] {
+        properties[key] = search["inputSchema"]["properties"][key].clone();
+    }
+    json!({
+        "name": "find_callers",
+        "title": "Find callers",
+        "annotations": read_only("Find callers"),
+        "outputSchema": {
+            "type": "object",
+            "properties": {
+                "calls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string" },
+                            "line": { "type": "integer", "minimum": 1 },
+                            "column": { "type": "integer", "minimum": 1 },
+                            "callee": { "type": "string" },
+                            "qualifier": { "type": "array", "items": { "type": "string" } },
+                            "symbol": { "type": ["string", "null"] },
+                            "kind": { "type": ["string", "null"] },
+                            "snippet": { "type": "string" }
+                        },
+                        "required": ["path", "line", "column", "callee", "qualifier", "symbol", "kind", "snippet"]
+                    }
+                },
+                "next_offset": { "type": ["integer", "null"], "minimum": 0 }
+            },
+            "required": ["calls", "next_offset"]
+        },
+        "description": "Find where a function or method is called in this repository: each call with its file, line, column and the function it sits in. Matching is by name, not by type, so a method name shared by two types gives both. Use it to see who depends on a function before changing it, rather than grepping for the name.",
+        "inputSchema": {
+            "type": "object",
+            "properties": properties,
+            "required": ["name"],
+            "additionalProperties": false
+        }
+    })
+}
+
+/// The arguments `find_callers` takes. Scores and text patterns do not apply
+/// to a call site, so they are unknown arguments here.
+#[cfg(feature = "treesitter")]
+const CALLERS_ARGUMENTS: [&str; 6] = ["name", "path", "lang", "glob", "limit", "offset"];
+
+/// `find_callers`: the call sites of a name in the indexed files, answered by
+/// the function the CLI's `callers` uses.
+#[cfg(feature = "treesitter")]
+fn find_callers(
+    config: &Config,
+    session: Option<&pipeline::Searcher>,
+    id: Value,
+    args: &Value,
+) -> Value {
+    let (query, filters, prefixes, scope) = match parse_callers(args, &config.root) {
+        Ok(parsed) => parsed,
+        Err(e) => return tool_error(id, &e),
+    };
+    let (limit, offset) = (filters.limit, filters.offset);
+    let found = match session {
+        Some(s) => s.callers_page(&query, limit, offset, scope.as_ref(), &prefixes),
+        None if crate::watch::indexing() => Err(anyhow!(
+            "the index is being built in the background; search again shortly"
+        )),
+        None => pipeline::open(config)
+            .and_then(|s| s.callers_page(&query, limit, offset, scope.as_ref(), &prefixes)),
+    };
+    match found {
+        Ok(page) => ok(id, callers_result(page, offset)),
+        Err(e) => tool_error(id, &e),
+    }
+}
+
+#[cfg(not(feature = "treesitter"))]
+fn find_callers(_: &Config, _: Option<&pipeline::Searcher>, id: Value, _: &Value) -> Value {
+    tool_error(
+        id,
+        &anyhow!(
+            "this build has no call-site grammars, so find_callers is unavailable; build with the default features"
+        ),
+    )
+}
+
+#[cfg(feature = "treesitter")]
+fn parse_callers(
+    args: &Value,
+    root: &Path,
+) -> Result<(crate::callers::Query, Filters, Vec<String>, Option<Scope>)> {
+    let args = args
+        .as_object()
+        .ok_or_else(|| anyhow!("the arguments must be an object with a 'name'"))?;
+    if let Some(name) = args
+        .keys()
+        .find(|k| !CALLERS_ARGUMENTS.contains(&k.as_str()))
+    {
+        bail!(
+            "unknown argument '{name}'; the arguments are name, path, lang, glob, limit and offset"
+        );
+    }
+    let given = |name: &str| args.get(name).filter(|v| !v.is_null());
+    let raw = match given("name") {
+        None => bail!("missing 'name'"),
+        Some(Value::String(n)) => n.as_str(),
+        Some(other) => bail!("'name' must be a string, not {other}"),
+    };
+    let query = crate::callers::Query::parse(raw)?;
+    let prefix = match given("path") {
+        None => None,
+        Some(Value::String(p)) => scope_prefix(p, root)?,
+        Some(other) => bail!("'path' must be a string, not {other}"),
+    };
+    let filters = filters(&given)?;
+    let scope = Scope::new(None, &filters.langs, &filters.globs)?;
+    Ok((query, filters, prefix.into_iter().collect(), scope))
+}
+
+/// What one page of call sites answers: a line per call, where the next page
+/// starts, and the calls as data.
+#[cfg(feature = "treesitter")]
+fn callers_result(page: pipeline::CallPage, offset: usize) -> Value {
+    let next_offset = page.more.then_some(offset + page.hits.len());
+    let mut result = match page.hits.is_empty() {
+        true if offset > 0 => nothing_further(offset),
+        true => json!({
+            "content": [{ "type": "text", "text": "No calls found." }],
+            "isError": false
+        }),
+        false => {
+            let lines: Vec<String> = page
+                .hits
+                .iter()
+                .map(|h| {
+                    let within = h
+                        .site
+                        .enclosing
+                        .as_ref()
+                        .map_or("-".to_string(), |s| s.label());
+                    format!(
+                        "{}:{}:{}  {within}\n    {}",
+                        h.path, h.site.line, h.site.column, h.text
+                    )
+                })
+                .collect();
+            json!({
+                "content": [{ "type": "text", "text": lines.join("\n") }],
+                "isError": false
+            })
+        }
+    };
+    if let Some(next) = next_offset {
+        say_more(&mut result, next);
+    }
+    let calls: Vec<Value> = page
+        .hits
+        .iter()
+        .map(|h| {
+            json!({
+                "path": h.path,
+                "line": h.site.line,
+                "column": h.site.column,
+                "callee": h.site.callee,
+                "qualifier": h.site.qualifier,
+                "symbol": h.site.enclosing.as_ref().map(|s| &s.name),
+                "kind": h.site.enclosing.as_ref().map(|s| &s.kind),
+                "snippet": h.text,
+            })
+        })
+        .collect();
+    if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "structuredContent".into(),
+            json!({ "calls": calls, "next_offset": next_offset }),
+        );
+    }
+    result
 }
 
 /// A failure the model should read as its own words, as the CLI prints them.
@@ -1550,7 +1743,8 @@ mod tests {
                 "find_similar",
                 "outline",
                 "symbol",
-                "index_status"
+                "index_status",
+                "find_callers"
             ]
         );
         let status = &tools[4]["inputSchema"];
@@ -1944,6 +2138,39 @@ mod tests {
             ..config
         };
         assert_eq!(modified(&hashing), 1);
+    }
+
+    /// An index cut by an older chunker still answers, and `index_status` says
+    /// its chunks are due a recut until an index run makes them current.
+    #[test]
+    fn an_index_cut_by_an_older_chunker_answers_and_says_it_is_due_a_recut() {
+        let dir = crate::testutil::TempDir::new();
+        dir.write("auth.rs", "fn authenticate(user) { verify password }");
+        let config = Config {
+            backend: crate::config::Backend::Hash,
+            root: dir.path().canonicalize().unwrap(),
+            ..Default::default()
+        };
+        config.save().unwrap();
+        pipeline::index_repo(&config, false).unwrap();
+        let mut older = crate::index::Index::load(&config.index_path()).unwrap();
+        older.chunking = crate::chunk::Chunking::default();
+        older.save(&config.index_path()).unwrap();
+
+        let searched = call_tool(&config, "search", json!({ "query": "authenticate" }));
+        assert_eq!(searched["result"]["isError"], false, "{searched}");
+        let text = searched["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("auth.rs:1-1"), "got: {text}");
+
+        let status = |config: &Config| -> Value {
+            let resp = call_tool(config, "index_status", json!({}));
+            assert_eq!(resp["result"]["isError"], false, "{resp}");
+            resp["result"]["structuredContent"]["index"]["rechunk"].clone()
+        };
+        assert_eq!(status(&config), true);
+
+        pipeline::index_repo(&config, false).unwrap();
+        assert_eq!(status(&config), false);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use crate::config::{Backend, Config, replace_file};
 use crate::index::{self, Index};
+use crate::jsonc;
 use crate::scope::Scope;
 use crate::{embed, mcp, model, pipeline, walk, watch};
 
@@ -154,6 +155,23 @@ pub enum Command {
         name: String,
         #[command(flatten)]
         opts: SymbolOpts,
+    },
+    /// Find the calls to a function or method, by its name, in the indexed
+    /// files: where is `load` called? Calls are read from the syntax tree, so
+    /// a name in a string or a comment is not one. Matching is by name, not by
+    /// type: a method `open` on two types gives the calls of both.
+    Callers {
+        /// The function or method name, such as `load`. A qualifier narrows
+        /// the match to calls written with it: `Index::load` or `module.load`.
+        /// The type of a receiver is not known, so `self.load()` and
+        /// `Self::load()` are not narrowed to `Index` and do not match
+        /// `Index::load`.
+        name: String,
+        /// Only files under these paths, as `--in` reads them. With none,
+        /// every indexed file is searched.
+        paths: Vec<String>,
+        #[command(flatten)]
+        opts: SearchOpts,
     },
     /// Index and keep the index in sync as files change.
     #[command(after_long_help = "Examples:
@@ -470,6 +488,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Similar { target, opts } => cmd_similar(&root, &target, &opts),
         Command::Outline { file, json } => cmd_outline(&root, &file, json),
         Command::Symbol { name, opts } => cmd_symbol(&root, &name, &opts),
+        Command::Callers { name, paths, opts } => cmd_callers(&root, &name, &paths, &opts),
         Command::Watch => watch::run(load_config(&root)?),
         Command::Status { json, verify } => cmd_status(&root, json, verify),
         Command::Mcp => mcp::serve(load_config(&root)?, cli.path.is_some()),
@@ -634,6 +653,7 @@ fn status_value(
                 "backend": f.index_backend,
                 "model": f.index_model,
                 "stale": f.stale,
+                "rechunk": f.rechunk,
                 "written_unix": f.written,
                 "drift": match f.drift {
                     Some(d) => json!({
@@ -993,11 +1013,123 @@ fn first_text_line(hit: &pipeline::SearchHit) -> (usize, &str) {
         })
 }
 
+/// What the output formats print for one place: a hit of `search` or `similar`,
+/// or a call site of `callers`. The formats are the same for both.
+trait Place {
+    fn path(&self) -> &str;
+    fn start_line(&self) -> usize;
+    /// The header of a grouped result: where the place is and what holds it.
+    fn header(&self, color: bool) -> String;
+    fn snippet(&self) -> &str;
+    /// Line, column and text of a `--vimgrep` line.
+    fn vimgrep(&self) -> (usize, usize, &str);
+    fn json(&self) -> Value;
+}
+
+impl Place for pipeline::SearchHit {
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    fn start_line(&self) -> usize {
+        self.start_line
+    }
+
+    fn header(&self, color: bool) -> String {
+        let place = format!(
+            "{}:{}",
+            paint(&printable(&self.path), "1", color),
+            paint(
+                &format!("{}-{}", self.start_line, self.end_line),
+                "32",
+                color
+            )
+        );
+        match &self.symbol {
+            Some(s) => format!(
+                "{place}  {}  ({})",
+                printable(&s.label()),
+                show_score(self.score)
+            ),
+            None => format!("{place}  ({})", show_score(self.score)),
+        }
+    }
+
+    fn snippet(&self) -> &str {
+        &self.snippet
+    }
+
+    fn vimgrep(&self) -> (usize, usize, &str) {
+        let (line, text) = first_text_line(self);
+        (line, 1, text)
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "path": self.path,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "score": self.score,
+            "kind": self.symbol.as_ref().map(|s| &s.kind),
+            "symbol": self.symbol.as_ref().map(|s| &s.name),
+            "snippet": self.snippet,
+        })
+    }
+}
+
+#[cfg(feature = "treesitter")]
+impl Place for crate::callers::Found {
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    fn start_line(&self) -> usize {
+        self.site.line
+    }
+
+    fn header(&self, color: bool) -> String {
+        let at = format!(
+            "{}:{}",
+            paint(&printable(&self.path), "1", color),
+            paint(
+                &format!("{}:{}", self.site.line, self.site.column),
+                "32",
+                color
+            )
+        );
+        match &self.site.enclosing {
+            Some(s) => format!("{at}  {}", printable(&s.label())),
+            None => at,
+        }
+    }
+
+    fn snippet(&self) -> &str {
+        &self.text
+    }
+
+    fn vimgrep(&self) -> (usize, usize, &str) {
+        (self.site.line, self.site.column, &self.text)
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "path": self.path,
+            "line": self.site.line,
+            "column": self.site.column,
+            "callee": self.site.callee,
+            "qualifier": self.site.qualifier,
+            "kind": self.site.enclosing.as_ref().map(|s| &s.kind),
+            "symbol": self.site.enclosing.as_ref().map(|s| &s.name),
+            "snippet": self.text,
+        })
+    }
+}
+
 /// Counts hits per file for `--count-by-file`, most hits first, then by path.
-fn file_hit_counts(hits: &[pipeline::SearchHit]) -> Vec<(String, usize)> {
+fn file_hit_counts<P: Place>(hits: &[P]) -> Vec<(String, usize)> {
     let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for h in hits {
-        *counts.entry(h.path.as_str()).or_insert(0) += 1;
+        *counts.entry(h.path()).or_insert(0) += 1;
     }
     let mut pairs: Vec<(String, usize)> = counts
         .into_iter()
@@ -1055,6 +1187,9 @@ fn cmd_search(root: &Path, words: &[String], opts: &SearchOpts) -> Result<()> {
         scope.as_ref(),
         text.as_ref(),
     )?;
+    if !opts.quiet && !page.unreadable.is_empty() {
+        eprintln!("warning: {}", skipped_line(&page.unreadable));
+    }
     show(
         page,
         opts,
@@ -1213,6 +1348,43 @@ fn similar_line_hint(raw: &str, err: anyhow::Error) -> anyhow::Error {
     }
 }
 
+#[cfg(feature = "treesitter")]
+fn cmd_callers(root: &Path, name: &str, paths: &[String], opts: &SearchOpts) -> Result<()> {
+    anyhow::ensure!(
+        opts.min_score.is_none() && opts.regex.is_none(),
+        "callers does not rank by score, so --min-score and -e do not apply"
+    );
+    let query = crate::callers::Query::parse(name)?;
+    let config = load_config(root)?;
+    let scope = scope_for(&config, opts)?;
+    let prefixes: Vec<Option<String>> = paths
+        .iter()
+        .map(|raw| mcp::scope_prefix(&from_here(raw, &config.root), &config.root))
+        .collect::<Result<_>>()?;
+    // A path that is the whole repository (`.`) is no restriction at all.
+    let prefixes: Vec<String> = match prefixes.iter().all(Option::is_some) {
+        true => prefixes.into_iter().flatten().collect(),
+        false => Vec::new(),
+    };
+    let page = pipeline::callers_page(
+        &config,
+        &query,
+        opts.limit,
+        opts.offset,
+        scope.as_ref(),
+        &prefixes,
+    )?;
+    show_places(page.hits, page.more, opts, context_lines(opts), &[])
+}
+
+#[cfg(not(feature = "treesitter"))]
+fn cmd_callers(_: &Path, _: &str, _: &[String], _: &SearchOpts) -> Result<()> {
+    anyhow::bail!(
+        "this build has no call-site grammars, so `ripsem callers` is unavailable; \
+         build with the default features"
+    )
+}
+
 /// Splits `path`, `path:LINE` or `path:START-END`. A colon that is not
 /// followed by line numbers belongs to the path.
 pub(crate) fn parse_target(raw: &str) -> Result<(&str, Option<(usize, usize)>)> {
@@ -1287,12 +1459,27 @@ fn scope_from(
 /// `--min-score` have had their say.
 fn show(page: pipeline::Page, opts: &SearchOpts, context: usize, words: &[String]) -> Result<()> {
     let more = page.more(opts.min_score);
-    let mut hits = apply_min_score(page.hits, opts.min_score);
+    let hits = apply_min_score(page.hits, opts.min_score);
+    show_places(hits, more, opts, context, words)
+}
+
+/// Prints one page of places as the options ask, after `-q` has had its say.
+fn show_places<P: Place>(
+    mut hits: Vec<P>,
+    more: bool,
+    opts: &SearchOpts,
+    context: usize,
+    words: &[String],
+) -> Result<()> {
     if opts.quiet {
         std::process::exit(i32::from(hits.is_empty()));
     }
     if opts.sort == SortBy::Path {
-        hits.sort_by(|a, b| a.path.cmp(&b.path).then(a.start_line.cmp(&b.start_line)));
+        hits.sort_by(|a, b| {
+            a.path()
+                .cmp(b.path())
+                .then(a.start_line().cmp(&b.start_line()))
+        });
     }
     let next = more.then_some(opts.offset + hits.len());
     let color = use_color(
@@ -1342,8 +1529,8 @@ fn no_hits_message(offset: usize) -> &'static str {
 /// Prints search results in the shape the flags ask for. `next` is the offset
 /// of the page that follows, when there is one.
 #[allow(clippy::too_many_arguments)]
-fn print_hits(
-    hits: &[pipeline::SearchHit],
+fn print_hits<P: Place>(
+    hits: &[P],
     as_json: bool,
     context: usize,
     words: &[String],
@@ -1357,8 +1544,12 @@ fn print_hits(
 ) -> Result<()> {
     if vimgrep {
         for h in hits {
-            let (line, text) = first_text_line(h);
-            out!("{}:{line}:1:{}", printable(&h.path), printable(text));
+            let (line, column, text) = h.vimgrep();
+            out!(
+                "{}:{line}:{column}:{}",
+                printable(h.path()),
+                printable(text)
+            );
         }
         return Ok(());
     }
@@ -1367,7 +1558,7 @@ fn print_hits(
         let mut seen = std::collections::HashSet::new();
         let paths: Vec<&str> = hits
             .iter()
-            .map(|h| h.path.as_str())
+            .map(|h| h.path())
             .filter(|path| seen.insert(*path))
             .collect();
         if as_json {
@@ -1409,20 +1600,7 @@ fn print_hits(
     }
 
     if as_json {
-        let rows: Vec<Value> = hits
-            .iter()
-            .map(|h| {
-                json!({
-                    "path": h.path,
-                    "start_line": h.start_line,
-                    "end_line": h.end_line,
-                    "score": h.score,
-                    "kind": h.symbol.as_ref().map(|s| &s.kind),
-                    "symbol": h.symbol.as_ref().map(|s| &s.name),
-                    "snippet": h.snippet,
-                })
-            })
-            .collect();
+        let rows: Vec<Value> = hits.iter().map(Place::json).collect();
         out!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
@@ -1432,20 +1610,8 @@ fn print_hits(
         return Ok(());
     }
     for h in hits {
-        let place = format!(
-            "{}:{}",
-            paint(&printable(&h.path), "1", color),
-            paint(&format!("{}-{}", h.start_line, h.end_line), "32", color)
-        );
-        match &h.symbol {
-            Some(s) => out!(
-                "{place}  {}  ({})",
-                printable(&s.label()),
-                show_score(h.score)
-            ),
-            None => out!("{place}  ({})", show_score(h.score)),
-        }
-        for l in snippet_lines(&h.snippet, context, words) {
+        out!("{}", h.header(color));
+        for l in snippet_lines(h.snippet(), context, words) {
             for piece in wrap(&printable(l)) {
                 out!("    {}", highlight(&piece, words, color));
             }
@@ -1576,6 +1742,10 @@ fn check_inside_root(root: &Path, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The first sentence of the note, which only `install` writes. A file that
+/// names ripsem in passing does not contain it.
+const NOTE_MARKER: &str = "This repository is indexed by ripsem.";
+
 fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
     let (path, note) = match target {
         InstallCmd::ClaudeCode => (
@@ -1612,9 +1782,9 @@ fn add_note(root: &Path, target: &InstallCmd) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", show_path(&path))),
     };
-    if existing.contains("ripsem") {
+    if existing.contains(NOTE_MARKER) {
         out!(
-            "{} already mentions ripsem; left as it is",
+            "{} already has the ripsem note; left as it is",
             show_path(&path)
         );
         return Ok(());
@@ -1723,12 +1893,22 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
     let doc: Value = if text.trim().is_empty() {
         json!({})
     } else {
-        serde_json::from_str(text).with_context(|| {
-            format!(
-                "{} is not valid JSON; fix it and run this again",
-                show_path(&path)
-            )
-        })?
+        match serde_json::from_str(text) {
+            Ok(doc) => doc,
+            // VS Code and OpenCode read comments and trailing commas in these
+            // files, so a file that has them is edited as text.
+            Err(_) if matches!(target, InstallCmd::Vscode | InstallCmd::OpenCode) => {
+                return add_jsonc_server(&path, key, &server_entry(target), text);
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!(
+                        "{} is not valid JSON; fix it and run this again",
+                        show_path(&path)
+                    )
+                });
+            }
+        }
     };
     if !doc.is_object() {
         anyhow::bail!(
@@ -1756,30 +1936,7 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
             None => {}
         },
     }
-    // Claude Code, Gemini CLI and OpenCode start a project's server in the
-    // directory they run in, and Roo Code starts it in the first workspace
-    // folder. Cursor and VS Code do not say where they start one, but expand
-    // `${workspaceFolder}`, which keeps the file free of this machine's paths.
-    let entry = match target {
-        InstallCmd::ClaudeCode | InstallCmd::Gemini | InstallCmd::Roo => {
-            json!({ "command": "ripsem", "args": ["mcp"] })
-        }
-        InstallCmd::OpenCode => json!({
-            "type": "local",
-            "command": ["ripsem", "mcp"],
-            "enabled": true,
-        }),
-        InstallCmd::Codex => unreachable!("Codex is written as TOML above"),
-        InstallCmd::Cursor => json!({
-            "command": "ripsem",
-            "args": ["mcp", "--path", "${workspaceFolder}"],
-        }),
-        InstallCmd::Vscode => json!({
-            "type": "stdio",
-            "command": "ripsem",
-            "args": ["mcp", "--path", "${workspaceFolder}"],
-        }),
-    };
+    let entry = server_entry(target);
 
     let written = if text.trim().is_empty() {
         serde_json::to_string_pretty(&json!({ key: { "ripsem": entry } }))? + "\n"
@@ -1794,6 +1951,100 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
     replace_file(&path, &written)?;
     out!("added ripsem to {}", show_path(&path));
     Ok(())
+}
+
+/// The entry `install` writes for an agent.
+fn server_entry(target: &InstallCmd) -> Value {
+    // Claude Code, Gemini CLI and OpenCode start a project's server in the
+    // directory they run in, and Roo Code starts it in the first workspace
+    // folder. Cursor and VS Code do not say where they start one, but expand
+    // `${workspaceFolder}`, which keeps the file free of this machine's paths.
+    match target {
+        InstallCmd::ClaudeCode | InstallCmd::Gemini | InstallCmd::Roo => {
+            json!({ "command": "ripsem", "args": ["mcp"] })
+        }
+        InstallCmd::OpenCode => json!({
+            "type": "local",
+            "command": ["ripsem", "mcp"],
+            "enabled": true,
+        }),
+        InstallCmd::Codex => unreachable!("Codex is written as TOML"),
+        InstallCmd::Cursor => json!({
+            "command": "ripsem",
+            "args": ["mcp", "--path", "${workspaceFolder}"],
+        }),
+        InstallCmd::Vscode => json!({
+            "type": "stdio",
+            "command": "ripsem",
+            "args": ["mcp", "--path", "${workspaceFolder}"],
+        }),
+    }
+}
+
+/// JSON with comments or trailing commas: the entry is spliced in with the
+/// file's own layout and the text is never rewritten. What the reader cannot
+/// place with certainty is refused.
+fn add_jsonc_server(path: &Path, key: &str, entry: &Value, text: &str) -> Result<()> {
+    let fix =
+        |what: &str| anyhow::anyhow!("{what} in {}; fix it and run this again", show_path(path));
+    let root = jsonc::parse(text).ok_or_else(|| fix("the file is not valid JSON"))?;
+    fn member_of<'a>(
+        object: &'a jsonc::Object,
+        key: &str,
+        fix: &dyn Fn(&str) -> anyhow::Error,
+    ) -> Result<Option<&'a jsonc::Node>> {
+        let found = object.find(key).map_err(|e| fix(&e))?;
+        Ok(found.map(|m| &m.value))
+    }
+    let written = match member_of(&root, key, &fix)? {
+        None => {
+            let style = style_for(text, &root);
+            let member = jsonc::member_text(key, &json!({ "ripsem": entry }), &style);
+            jsonc::insert(text, &root, &member, &style)
+        }
+        Some(jsonc::Node::Object(servers)) => {
+            if member_of(servers, "ripsem", &fix)?.is_some() {
+                out!("ripsem is already in {}; left as it is", show_path(path));
+                return Ok(());
+            }
+            let style = style_for(text, servers);
+            let member = jsonc::member_text("ripsem", entry, &style);
+            jsonc::insert(text, servers, &member, &style)
+        }
+        Some(_) => return Err(fix(&format!("{key} is not a JSON object"))),
+    };
+    replace_file(path, &written)?;
+    out!("added ripsem to {}", show_path(path));
+    Ok(())
+}
+
+/// The layout a member written into `object` takes, read from the file: its line
+/// break, the indentation of the members already in it (or one step past the
+/// line that opens it), and the indentation of its closing brace.
+fn style_for(text: &str, object: &jsonc::Object) -> jsonc::Style {
+    let line_indent = |pos: usize| -> String {
+        let start = text[..pos].rfind('\n').map_or(0, |i| i + 1);
+        text[start..]
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect()
+    };
+    let unit = match text.lines().find(|line| line.starts_with([' ', '\t'])) {
+        Some(line) if line.starts_with('\t') => "\t".to_string(),
+        Some(line) => line.chars().take_while(|c| *c == ' ').collect(),
+        None => "  ".to_string(),
+    };
+    let indent = match object.members.last() {
+        Some(last) => line_indent(last.key_start),
+        None => format!("{}{unit}", line_indent(object.open)),
+    };
+    jsonc::Style {
+        newline: line_ending(text).to_string(),
+        indent,
+        close_indent: line_indent(object.close),
+        unit,
+        multi: text[object.open..object.close].contains('\n'),
+    }
 }
 
 /// `text` with `key: value` added as the last member of `object`, a JSON
@@ -1996,7 +2247,7 @@ mod tests {
                 ("src/c.rs".to_string(), 1),
             ]
         );
-        assert!(file_hit_counts(&[]).is_empty());
+        assert!(file_hit_counts::<pipeline::SearchHit>(&[]).is_empty());
     }
 
     #[test]
@@ -2230,6 +2481,30 @@ mod tests {
         let text = std::fs::read_to_string(&claude).unwrap();
         assert!(text.starts_with("# Project\n\nBuild with make.\n\n## Code search\n"));
         assert_eq!(text.matches("indexed by ripsem").count(), 1);
+    }
+
+    /// A project note that only names ripsem in passing is not the note, so the
+    /// agent still gets the instruction; a file that has the note keeps one copy.
+    #[test]
+    fn a_note_that_only_names_ripsem_in_prose_does_not_block_the_note() {
+        let dir = crate::testutil::TempDir::new();
+        let claude = dir.path().join("CLAUDE.md");
+        std::fs::write(
+            &claude,
+            "# Project\n\nWe ran ripsem once to compare tools.\n",
+        )
+        .unwrap();
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        assert!(mcp::INSTRUCTIONS.starts_with(NOTE_MARKER));
+        let text = std::fs::read_to_string(&claude).unwrap();
+        assert!(
+            text.starts_with("# Project\n\nWe ran ripsem once"),
+            "{text}"
+        );
+        assert_eq!(text.matches(NOTE_MARKER).count(), 1, "{text}");
+        cmd_install(dir.path(), InstallCmd::ClaudeCode).unwrap();
+        let again = std::fs::read_to_string(&claude).unwrap();
+        assert_eq!(again, text);
     }
 
     #[test]

@@ -2796,6 +2796,90 @@ fn an_unreadable_file_is_named_on_stderr_and_the_run_still_succeeds() {
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn a_search_that_refreshes_the_index_names_the_unreadable_files_once_and_not_with_q() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new();
+    dir.write("src/keep.rs", "fn keep() {}\n");
+    dir.write("src/locked.rs", "fn locked() {}\n");
+    let locked = dir.path.join("src/locked.rs");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&locked).is_ok() {
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        return;
+    }
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    let search = ripsem(&dir.path, &["search", "keep"]);
+    assert!(search.status.success(), "{}", stderr(&search));
+    let warning = "skipped 1 unreadable file: src/locked.rs";
+    assert_eq!(
+        stderr(&search).matches(warning).count(),
+        1,
+        "{}",
+        stderr(&search)
+    );
+
+    let quiet = ripsem(&dir.path, &["search", "keep", "-q"]);
+    assert!(!stderr(&quiet).contains("skipped"), "{}", stderr(&quiet));
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_search_that_rereads_a_changed_file_names_the_unreadable_files_once() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+    let set_aged = |path: &Path| {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(aged)
+            .unwrap();
+    };
+    let dir = TempDir::new();
+    dir.write("src/edit.rs", "fn alpha() {}\n");
+    dir.write("src/locked.rs", "fn locked() {}\n");
+    set_aged(&dir.path.join("src/edit.rs"));
+    let locked = dir.path.join("src/locked.rs");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&locked).is_ok() {
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        return;
+    }
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+
+    // Same size and time as before, different words: the stat check cannot see it,
+    // so the hit is left out and the search reads the file again.
+    std::fs::write(dir.path.join("src/edit.rs"), "fn omega() {}\n").unwrap();
+    set_aged(&dir.path.join("src/edit.rs"));
+    let search = ripsem(&dir.path, &["search", "alpha"]);
+    assert!(search.status.success(), "{}", stderr(&search));
+    assert!(
+        stderr(&search).contains("updated the index: 1 file changed"),
+        "the changed file was not read again: {}",
+        stderr(&search)
+    );
+    let warning = "skipped 1 unreadable file: src/locked.rs";
+    assert_eq!(
+        stderr(&search).matches(warning).count(),
+        1,
+        "{}",
+        stderr(&search)
+    );
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
 #[test]
 fn a_dry_run_says_why_each_file_it_reaches_was_left_out() {
     let dir = TempDir::new();
@@ -3432,4 +3516,313 @@ fn a_first_symbol_lookup_outside_a_repository_names_the_index_command() {
         stderr(&out)
     );
     assert!(!dir.path.join(".ripsem").exists());
+}
+
+/// A repository with calls to `load` in four languages, and a Go `Load`.
+#[cfg(feature = "treesitter")]
+fn repository_with_calls() -> TempDir {
+    let dir = TempDir::new();
+    dir.write(
+        "src/store.rs",
+        "pub fn load(path: &str) -> String {\n    std::fs::read_to_string(path).unwrap_or_default()\n}\n\
+         pub fn save(path: &str, text: &str) {\n    let _ = load(path);\n}\n",
+    );
+    dir.write(
+        "src/main.rs",
+        "fn main() {\n    let text = store::load(\"data.txt\");\n    println!(\"{}\", text);\n}\n",
+    );
+    dir.write(
+        "app/handlers.py",
+        "from store import load\n\ndef handle(path):\n    # load(path) in a comment is not a call\n    return load(path)\n",
+    );
+    dir.write(
+        "web/app.js",
+        "import { load } from './store.js';\n// load() in a comment\nexport function show(p) {\n  return load(p);\n}\n",
+    );
+    dir.write(
+        "pkg/store.go",
+        "package store\n\nfunc Load(path string) string {\n\treturn path\n}\n\nfunc Run() string {\n\treturn Load(\"x\")\n}\n",
+    );
+    ripsem(&dir.path, &["init"]);
+    ripsem(&dir.path, &["model", "backend", "hash"]);
+    assert!(ripsem(&dir.path, &["index"]).status.success());
+    dir
+}
+
+#[test]
+#[cfg(feature = "treesitter")]
+fn callers_lists_each_call_with_its_place_in_every_language() {
+    let dir = repository_with_calls();
+    let vimgrep = ripsem(&dir.path, &["callers", "load", "--vimgrep"]);
+    assert!(vimgrep.status.success(), "{}", stderr(&vimgrep));
+    assert_eq!(
+        stdout(&vimgrep).lines().collect::<Vec<_>>(),
+        [
+            "app/handlers.py:5:12:return load(path)",
+            "src/main.rs:2:23:let text = store::load(\"data.txt\");",
+            "src/store.rs:5:13:let _ = load(path);",
+            "web/app.js:4:10:return load(p);",
+        ]
+    );
+
+    let grouped = stdout(&ripsem(&dir.path, &["callers", "load"]));
+    for header in [
+        "app/handlers.py:5:12  fn handle",
+        "src/main.rs:2:23  fn main",
+        "src/store.rs:5:13  fn save",
+        "web/app.js:4:10  fn show",
+    ] {
+        assert!(
+            grouped.lines().any(|l| l == header),
+            "{header} not in {grouped}"
+        );
+    }
+
+    let go = ripsem(&dir.path, &["callers", "Load", "--vimgrep"]);
+    assert_eq!(stdout(&go), "pkg/store.go:8:9:return Load(\"x\")\n");
+}
+
+#[test]
+#[cfg(feature = "treesitter")]
+fn callers_lists_files_counts_and_json_as_search_does() {
+    let dir = repository_with_calls();
+    let files = stdout(&ripsem(&dir.path, &["callers", "load", "-l"]));
+    assert_eq!(
+        files,
+        "app/handlers.py\nsrc/main.rs\nsrc/store.rs\nweb/app.js\n"
+    );
+
+    let counts = stdout(&ripsem(&dir.path, &["callers", "load", "--count-by-file"]));
+    assert_eq!(counts.lines().count(), 4, "{counts}");
+
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout(&ripsem(&dir.path, &["callers", "load", "--json"]))).unwrap();
+    let first = &json[0];
+    assert_eq!(first["path"], "app/handlers.py");
+    assert_eq!(
+        (first["line"].as_u64(), first["column"].as_u64()),
+        (Some(5), Some(12))
+    );
+    assert_eq!(first["callee"], "load");
+    assert_eq!(
+        (first["kind"].as_str(), first["symbol"].as_str()),
+        (Some("fn"), Some("handle"))
+    );
+    assert_eq!(first["snippet"], "return load(path)");
+}
+
+#[test]
+#[cfg(feature = "treesitter")]
+fn callers_takes_paths_and_reports_nothing_with_the_search_exit_codes() {
+    let dir = repository_with_calls();
+    let under_src = stdout(&ripsem(&dir.path, &["callers", "load", "src/", "-l"]));
+    assert_eq!(under_src, "src/main.rs\nsrc/store.rs\n");
+
+    let none = ripsem(&dir.path, &["callers", "nothing_calls_this", "-q"]);
+    assert_eq!(none.status.code(), Some(1));
+    let some = ripsem(&dir.path, &["callers", "load", "-q"]);
+    assert_eq!(some.status.code(), Some(0));
+    let plain = ripsem(&dir.path, &["callers", "nothing_calls_this"]);
+    assert!(plain.status.success());
+    assert_eq!(stdout(&plain).trim(), "no matches");
+}
+
+#[test]
+#[cfg(feature = "treesitter")]
+fn callers_narrows_to_the_qualifier_a_call_was_written_with() {
+    let dir = repository_with_calls();
+    let qualified = ripsem(&dir.path, &["callers", "store::load", "--vimgrep"]);
+    assert_eq!(
+        stdout(&qualified),
+        "src/main.rs:2:23:let text = store::load(\"data.txt\");\n"
+    );
+    let other = ripsem(&dir.path, &["callers", "Index::load", "-q"]);
+    assert_eq!(other.status.code(), Some(1));
+}
+
+/// `find_callers` answers over stdio with the calls as structured content, and
+/// its errors are tool errors in the CLI's words; a score option is unknown.
+#[test]
+#[cfg(feature = "treesitter")]
+fn find_callers_returns_the_calls_over_stdio() {
+    let dir = repository_with_calls();
+    let responses = mcp_over_stdio(
+        &dir.path,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_callers","arguments":{"name":"load","path":"src"}}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"find_callers","arguments":{"name":"Index::"}}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"find_callers","arguments":{"name":"load","min_score":0.5}}}"#,
+        ],
+    );
+    let tool = &responses[0]["result"]["tools"][5];
+    assert_eq!(tool["name"], "find_callers");
+    assert_eq!(tool["annotations"]["readOnlyHint"], true);
+    assert!(tool["outputSchema"].is_object());
+
+    let result = &responses[1]["result"];
+    assert_eq!(result["isError"], false, "{result}");
+    let calls = result["structuredContent"]["calls"].as_array().unwrap();
+    let places: Vec<String> = calls
+        .iter()
+        .map(|c| {
+            let path = c["path"].as_str().unwrap();
+            format!("{path}:{}:{}", c["line"], c["column"])
+        })
+        .collect();
+    assert_eq!(places, ["src/main.rs:2:23", "src/store.rs:5:13"]);
+    assert_eq!(calls[0]["symbol"], "main");
+    assert_eq!(calls[0]["qualifier"], json!(["store"]));
+    assert!(
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("src/main.rs:2:23  fn main")
+    );
+
+    let text = |i: usize| {
+        responses[i]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(responses[2]["result"]["isError"], true);
+    assert!(
+        text(2).contains("'Index::' is not a function name"),
+        "{}",
+        text(2)
+    );
+    assert_eq!(responses[3]["result"]["isError"], true);
+    assert!(
+        text(3).contains("unknown argument 'min_score'"),
+        "{}",
+        text(3)
+    );
+}
+
+#[test]
+#[cfg(feature = "treesitter")]
+fn callers_refuses_a_name_that_is_not_one_and_the_score_options() {
+    let dir = repository_with_calls();
+    let bad = ripsem(&dir.path, &["callers", "Index::"]);
+    assert!(!bad.status.success());
+    assert!(
+        stderr(&bad).contains("'Index::' is not a function name"),
+        "{}",
+        stderr(&bad)
+    );
+
+    let scored = ripsem(&dir.path, &["callers", "load", "--min-score", "0.5"]);
+    assert!(!scored.status.success());
+    assert!(
+        stderr(&scored).contains("--min-score"),
+        "{}",
+        stderr(&scored)
+    );
+}
+
+/// What `install vscode` leaves in `.vscode/mcp.json` that started as `before`.
+fn vscode_config_after_install(before: &str) -> String {
+    let dir = TempDir::new();
+    dir.write(".vscode/mcp.json", before);
+    let install = ripsem(&dir.path, &["install", "vscode"]);
+    assert!(install.status.success(), "{}", stderr(&install));
+    std::fs::read_to_string(dir.path.join(".vscode/mcp.json")).unwrap()
+}
+
+/// VS Code accepts comments and trailing commas in `mcp.json`, so a file that
+/// has them is edited as text: the user's comments, layout and line breaks stay,
+/// there is one ripsem entry, and a second run changes nothing.
+#[test]
+fn install_adds_to_a_config_with_comments_and_trailing_commas() {
+    let cases: [(&str, &[&str]); 7] = [
+        (
+            "{\n  // before the list\n  \"servers\": {\n    // inside\n    \"zeta\": { \"command\": \"z\" } // after zeta\n  }\n}\n",
+            &["// before the list", "// inside", "// after zeta"],
+        ),
+        (
+            "{\n  \"servers\": {\n    \"zeta\": { \"command\": \"z\" },\n  },\n}\n",
+            &[],
+        ),
+        (
+            "{\n  \"servers\": { /* none yet */ }\n}\n",
+            &["/* none yet */"],
+        ),
+        (
+            "{\"servers\": {\"zeta\": {\"command\": \"z\"}}, // x\n \"x\": 1}\n",
+            &["// x"],
+        ),
+        (
+            "{\r\n  \"servers\": {\r\n    \"zeta\": { \"command\": \"z\" },\r\n  }\r\n}\r\n",
+            &[],
+        ),
+        (
+            "{\n\t\"servers\": {\n\t\t\"zeta\": {\"command\": \"z\"},\n\t}\n}\n",
+            &[],
+        ),
+        (
+            "{\n  // \"servers\": { \"zeta\": {} }\n  \"other\": 1,\n}\n",
+            &["// \"servers\": { \"zeta\": {} }"],
+        ),
+    ];
+    for (input, comments) in cases {
+        let out = vscode_config_after_install(input);
+        assert_eq!(
+            out.matches("\"ripsem\":").count(),
+            1,
+            "{input:?} -> {out:?}"
+        );
+        assert!(out.contains("\"mcp\""), "{out:?}");
+        for comment in comments {
+            assert!(out.contains(comment), "{comment:?} lost in {out:?}");
+        }
+        if input.contains("\r\n") {
+            assert!(!out.replace("\r\n", "").contains('\n'), "{out:?}");
+        }
+        if input.contains('\t') {
+            assert!(out.contains("\n\t\t\"ripsem\""), "{out:?}");
+        }
+        assert_eq!(
+            vscode_config_after_install(&out),
+            out,
+            "a second run changed {out:?}"
+        );
+    }
+}
+
+/// An entry the user already has is left as it is, with the comments around it.
+#[test]
+fn install_leaves_a_ripsem_entry_in_a_config_with_comments() {
+    let before = "{\n  // mine\n  \"servers\": {\n    \"ripsem\": { \"command\": \"/x\" }, // kept\n  },\n}\n";
+    assert_eq!(vscode_config_after_install(before), before);
+}
+
+/// What cannot be placed with certainty is refused, and the file is not touched.
+#[test]
+fn install_refuses_a_config_it_cannot_place_an_entry_in() {
+    for (bad, reason) in [
+        (
+            "{\"servers\": {\"zeta\": {\"command\": \"z\"}",
+            "not valid JSON",
+        ),
+        ("{\"servers\": [1]} // c", "not a JSON object"),
+        (
+            "{ /* a */ \"servers\": {}, \"servers\": {} }",
+            "more than once",
+        ),
+    ] {
+        let dir = TempDir::new();
+        dir.write(".vscode/mcp.json", bad);
+        let install = ripsem(&dir.path, &["install", "vscode"]);
+        assert_eq!(install.status.code(), Some(1), "{bad:?}");
+        assert!(
+            stderr(&install).contains(reason),
+            "{bad:?}: {}",
+            stderr(&install)
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path.join(".vscode/mcp.json")).unwrap(),
+            bad
+        );
+    }
 }

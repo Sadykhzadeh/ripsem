@@ -1,5 +1,9 @@
 #[cfg(feature = "hnsw")]
 pub mod ann;
+#[cfg(feature = "treesitter")]
+pub mod callers;
+#[cfg(feature = "treesitter")]
+pub mod calls;
 pub mod chunk;
 pub mod cli;
 pub mod config;
@@ -7,6 +11,7 @@ pub mod embed;
 pub mod fingerprint;
 pub mod git;
 pub mod index;
+pub mod jsonc;
 pub mod lang;
 pub mod lexical;
 pub mod markdown;

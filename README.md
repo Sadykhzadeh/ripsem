@@ -181,6 +181,7 @@ ripsem search "where is auth set up?"   # updates the index first
 ripsem similar src/auth.rs:40-72  # the code nearest to a location, no model run
 ripsem outline src/auth.rs        # the declarations the index holds for a file
 ripsem symbol refresh             # where a declaration named refresh is defined
+ripsem callers load               # where load is called, from the syntax tree
 ripsem status                     # index size, counts, model, drift from the tree
 ripsem status --json              # the same as JSON (schema ripsem/status/v1)
 ripsem status --verify            # also read every indexed file and list the ones that changed
@@ -354,6 +355,30 @@ declares prints nothing and exits 0, with a line on stderr saying so. `--in`,
 that `search` would keep with the same filters, so `ripsem symbol refresh --in
 src --lang rust` names the Rust definitions under `src`.
 
+`ripsem callers <NAME> [PATH...]` lists where a function or method is called:
+each call as `path:line:column`, the function it sits in, and its line. The
+calls come from the syntax tree of each file, so a name in a string or a comment
+is not one. It walks the files the index holds, after updating the index as
+`search` does, and parses only the files that contain the name, in parallel.
+`PATH` limits the files as `--in` does. The output options are `search`'s
+(`--json`, `--vimgrep`, `-l`, `-0`, `--count-by-file`, `-q`, `-k` and
+`--offset`), and so are `--lang`, `-g` and `--in`. `--min-score` and `-e` are
+refused, since no call is ranked. Rust, Python, JavaScript, TypeScript, Go,
+Java, C#, C, C++ and Ruby are read. PHP, Kotlin, Scala and Bash are not yet:
+their call nodes were not checked against the grammar.
+
+The match is by name, not by type: `open` on two types gives the calls of
+both. A qualifier narrows it. `Index::load` and `module.load` keep the calls
+whose path or receiver ends in `Index` or `module`, so `crate::index::Index::load`
+matches. Names are not resolved, so `self.load()` and `Self::load()` do not
+match `Index::load`, and a receiver that is a call, as in `a.b().load()`, is
+not narrowed to any type. Find those by the name alone, or with grep.
+
+The MCP server offers the same search as the `find_callers` tool, with a `name`,
+an optional `path`, and the `lang`, `glob`, `limit` and `offset` arguments of
+`search`. Its results come back as structured `calls`.
+
+
 ## Exit codes
 
 - `0`: the command ran. A search with no hits also exits 0, unless `-q` is
@@ -459,6 +484,7 @@ the file cannot be read, or `null` when it is missing.
 | `index.model` | string | The model the index was built with. |
 | `index.stale` | boolean | Whether the index was built with another backend or model than the configuration names, so `ripsem index` rebuilds it. The files are described by `index.drift`. |
 | `index.drift` | object or null | How far the files are from the index; `null` when the tree cannot be walked. |
+| `index.rechunk` | boolean | Whether the index was cut with other chunk settings or by an older chunker, so `ripsem index` cuts every file again. |
 | `index.drift.added` | number | Files on disk that the index does not hold. |
 | `index.drift.modified` | number | Files both hold, with different content. |
 | `index.drift.removed` | number | Files the index holds that are no longer on disk. |
