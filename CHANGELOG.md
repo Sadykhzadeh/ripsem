@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `install vscode` and `install opencode` add the server to a config that holds
+  comments or trailing commas, as those editors allow, and keep the rest of the
+  file as it was. Before, such a file was refused as not valid JSON.
 - The MCP `outline` and `symbol` tools answer from the index the session holds,
   as `search` does, instead of reading and decoding the index on every call. A
   file or tree that changed on disk is still read again before the answer.

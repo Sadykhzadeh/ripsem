@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use crate::config::{Backend, Config, replace_file};
 use crate::index::{self, Index};
+use crate::jsonc;
 use crate::scope::Scope;
 use crate::{embed, mcp, model, pipeline, walk, watch};
 
@@ -1892,12 +1893,22 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
     let doc: Value = if text.trim().is_empty() {
         json!({})
     } else {
-        serde_json::from_str(text).with_context(|| {
-            format!(
-                "{} is not valid JSON; fix it and run this again",
-                show_path(&path)
-            )
-        })?
+        match serde_json::from_str(text) {
+            Ok(doc) => doc,
+            // VS Code and OpenCode read comments and trailing commas in these
+            // files, so a file that has them is edited as text.
+            Err(_) if matches!(target, InstallCmd::Vscode | InstallCmd::OpenCode) => {
+                return add_jsonc_server(&path, key, &server_entry(target), text);
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!(
+                        "{} is not valid JSON; fix it and run this again",
+                        show_path(&path)
+                    )
+                });
+            }
+        }
     };
     if !doc.is_object() {
         anyhow::bail!(
@@ -1925,30 +1936,7 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
             None => {}
         },
     }
-    // Claude Code, Gemini CLI and OpenCode start a project's server in the
-    // directory they run in, and Roo Code starts it in the first workspace
-    // folder. Cursor and VS Code do not say where they start one, but expand
-    // `${workspaceFolder}`, which keeps the file free of this machine's paths.
-    let entry = match target {
-        InstallCmd::ClaudeCode | InstallCmd::Gemini | InstallCmd::Roo => {
-            json!({ "command": "ripsem", "args": ["mcp"] })
-        }
-        InstallCmd::OpenCode => json!({
-            "type": "local",
-            "command": ["ripsem", "mcp"],
-            "enabled": true,
-        }),
-        InstallCmd::Codex => unreachable!("Codex is written as TOML above"),
-        InstallCmd::Cursor => json!({
-            "command": "ripsem",
-            "args": ["mcp", "--path", "${workspaceFolder}"],
-        }),
-        InstallCmd::Vscode => json!({
-            "type": "stdio",
-            "command": "ripsem",
-            "args": ["mcp", "--path", "${workspaceFolder}"],
-        }),
-    };
+    let entry = server_entry(target);
 
     let written = if text.trim().is_empty() {
         serde_json::to_string_pretty(&json!({ key: { "ripsem": entry } }))? + "\n"
@@ -1963,6 +1951,100 @@ fn add_server(root: &Path, target: &InstallCmd) -> Result<()> {
     replace_file(&path, &written)?;
     out!("added ripsem to {}", show_path(&path));
     Ok(())
+}
+
+/// The entry `install` writes for an agent.
+fn server_entry(target: &InstallCmd) -> Value {
+    // Claude Code, Gemini CLI and OpenCode start a project's server in the
+    // directory they run in, and Roo Code starts it in the first workspace
+    // folder. Cursor and VS Code do not say where they start one, but expand
+    // `${workspaceFolder}`, which keeps the file free of this machine's paths.
+    match target {
+        InstallCmd::ClaudeCode | InstallCmd::Gemini | InstallCmd::Roo => {
+            json!({ "command": "ripsem", "args": ["mcp"] })
+        }
+        InstallCmd::OpenCode => json!({
+            "type": "local",
+            "command": ["ripsem", "mcp"],
+            "enabled": true,
+        }),
+        InstallCmd::Codex => unreachable!("Codex is written as TOML"),
+        InstallCmd::Cursor => json!({
+            "command": "ripsem",
+            "args": ["mcp", "--path", "${workspaceFolder}"],
+        }),
+        InstallCmd::Vscode => json!({
+            "type": "stdio",
+            "command": "ripsem",
+            "args": ["mcp", "--path", "${workspaceFolder}"],
+        }),
+    }
+}
+
+/// JSON with comments or trailing commas: the entry is spliced in with the
+/// file's own layout and the text is never rewritten. What the reader cannot
+/// place with certainty is refused.
+fn add_jsonc_server(path: &Path, key: &str, entry: &Value, text: &str) -> Result<()> {
+    let fix =
+        |what: &str| anyhow::anyhow!("{what} in {}; fix it and run this again", show_path(path));
+    let root = jsonc::parse(text).ok_or_else(|| fix("the file is not valid JSON"))?;
+    fn member_of<'a>(
+        object: &'a jsonc::Object,
+        key: &str,
+        fix: &dyn Fn(&str) -> anyhow::Error,
+    ) -> Result<Option<&'a jsonc::Node>> {
+        let found = object.find(key).map_err(|e| fix(&e))?;
+        Ok(found.map(|m| &m.value))
+    }
+    let written = match member_of(&root, key, &fix)? {
+        None => {
+            let style = style_for(text, &root);
+            let member = jsonc::member_text(key, &json!({ "ripsem": entry }), &style);
+            jsonc::insert(text, &root, &member, &style)
+        }
+        Some(jsonc::Node::Object(servers)) => {
+            if member_of(servers, "ripsem", &fix)?.is_some() {
+                out!("ripsem is already in {}; left as it is", show_path(path));
+                return Ok(());
+            }
+            let style = style_for(text, servers);
+            let member = jsonc::member_text("ripsem", entry, &style);
+            jsonc::insert(text, servers, &member, &style)
+        }
+        Some(_) => return Err(fix(&format!("{key} is not a JSON object"))),
+    };
+    replace_file(path, &written)?;
+    out!("added ripsem to {}", show_path(path));
+    Ok(())
+}
+
+/// The layout a member written into `object` takes, read from the file: its line
+/// break, the indentation of the members already in it (or one step past the
+/// line that opens it), and the indentation of its closing brace.
+fn style_for(text: &str, object: &jsonc::Object) -> jsonc::Style {
+    let line_indent = |pos: usize| -> String {
+        let start = text[..pos].rfind('\n').map_or(0, |i| i + 1);
+        text[start..]
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect()
+    };
+    let unit = match text.lines().find(|line| line.starts_with([' ', '\t'])) {
+        Some(line) if line.starts_with('\t') => "\t".to_string(),
+        Some(line) => line.chars().take_while(|c| *c == ' ').collect(),
+        None => "  ".to_string(),
+    };
+    let indent = match object.members.last() {
+        Some(last) => line_indent(last.key_start),
+        None => format!("{}{unit}", line_indent(object.open)),
+    };
+    jsonc::Style {
+        newline: line_ending(text).to_string(),
+        indent,
+        close_indent: line_indent(object.close),
+        unit,
+        multi: text[object.open..object.close].contains('\n'),
+    }
 }
 
 /// `text` with `key: value` added as the last member of `object`, a JSON

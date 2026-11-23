@@ -3720,3 +3720,109 @@ fn callers_refuses_a_name_that_is_not_one_and_the_score_options() {
         stderr(&scored)
     );
 }
+
+/// What `install vscode` leaves in `.vscode/mcp.json` that started as `before`.
+fn vscode_config_after_install(before: &str) -> String {
+    let dir = TempDir::new();
+    dir.write(".vscode/mcp.json", before);
+    let install = ripsem(&dir.path, &["install", "vscode"]);
+    assert!(install.status.success(), "{}", stderr(&install));
+    std::fs::read_to_string(dir.path.join(".vscode/mcp.json")).unwrap()
+}
+
+/// VS Code accepts comments and trailing commas in `mcp.json`, so a file that
+/// has them is edited as text: the user's comments, layout and line breaks stay,
+/// there is one ripsem entry, and a second run changes nothing.
+#[test]
+fn install_adds_to_a_config_with_comments_and_trailing_commas() {
+    let cases: [(&str, &[&str]); 7] = [
+        (
+            "{\n  // before the list\n  \"servers\": {\n    // inside\n    \"zeta\": { \"command\": \"z\" } // after zeta\n  }\n}\n",
+            &["// before the list", "// inside", "// after zeta"],
+        ),
+        (
+            "{\n  \"servers\": {\n    \"zeta\": { \"command\": \"z\" },\n  },\n}\n",
+            &[],
+        ),
+        (
+            "{\n  \"servers\": { /* none yet */ }\n}\n",
+            &["/* none yet */"],
+        ),
+        (
+            "{\"servers\": {\"zeta\": {\"command\": \"z\"}}, // x\n \"x\": 1}\n",
+            &["// x"],
+        ),
+        (
+            "{\r\n  \"servers\": {\r\n    \"zeta\": { \"command\": \"z\" },\r\n  }\r\n}\r\n",
+            &[],
+        ),
+        (
+            "{\n\t\"servers\": {\n\t\t\"zeta\": {\"command\": \"z\"},\n\t}\n}\n",
+            &[],
+        ),
+        (
+            "{\n  // \"servers\": { \"zeta\": {} }\n  \"other\": 1,\n}\n",
+            &["// \"servers\": { \"zeta\": {} }"],
+        ),
+    ];
+    for (input, comments) in cases {
+        let out = vscode_config_after_install(input);
+        assert_eq!(
+            out.matches("\"ripsem\":").count(),
+            1,
+            "{input:?} -> {out:?}"
+        );
+        assert!(out.contains("\"mcp\""), "{out:?}");
+        for comment in comments {
+            assert!(out.contains(comment), "{comment:?} lost in {out:?}");
+        }
+        if input.contains("\r\n") {
+            assert!(!out.replace("\r\n", "").contains('\n'), "{out:?}");
+        }
+        if input.contains('\t') {
+            assert!(out.contains("\n\t\t\"ripsem\""), "{out:?}");
+        }
+        assert_eq!(
+            vscode_config_after_install(&out),
+            out,
+            "a second run changed {out:?}"
+        );
+    }
+}
+
+/// An entry the user already has is left as it is, with the comments around it.
+#[test]
+fn install_leaves_a_ripsem_entry_in_a_config_with_comments() {
+    let before = "{\n  // mine\n  \"servers\": {\n    \"ripsem\": { \"command\": \"/x\" }, // kept\n  },\n}\n";
+    assert_eq!(vscode_config_after_install(before), before);
+}
+
+/// What cannot be placed with certainty is refused, and the file is not touched.
+#[test]
+fn install_refuses_a_config_it_cannot_place_an_entry_in() {
+    for (bad, reason) in [
+        (
+            "{\"servers\": {\"zeta\": {\"command\": \"z\"}",
+            "not valid JSON",
+        ),
+        ("{\"servers\": [1]} // c", "not a JSON object"),
+        (
+            "{ /* a */ \"servers\": {}, \"servers\": {} }",
+            "more than once",
+        ),
+    ] {
+        let dir = TempDir::new();
+        dir.write(".vscode/mcp.json", bad);
+        let install = ripsem(&dir.path, &["install", "vscode"]);
+        assert_eq!(install.status.code(), Some(1), "{bad:?}");
+        assert!(
+            stderr(&install).contains(reason),
+            "{bad:?}: {}",
+            stderr(&install)
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path.join(".vscode/mcp.json")).unwrap(),
+            bad
+        );
+    }
+}
