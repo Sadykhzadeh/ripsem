@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `multilingual-e5-small` embeds code as `passage: …` and `nomic-embed-text-v1.5`
+  embeds queries as `search_query: …` and code as `search_document: …`, the
+  markers both models were trained with. Before, e5 saw its marker on the query
+  side only and nomic on neither, so both compared a question with code as if
+  it were another question. An index built by an older ripsem is embedded again
+  on the next `index` or `search`, whatever its model, because the chunk
+  revision changed.
+
 - `install vscode` and `install opencode` add the server to a config that holds
   comments or trailing commas, as those editors allow, and keep the rest of the
   file as it was. Before, such a file was refused as not valid JSON.
