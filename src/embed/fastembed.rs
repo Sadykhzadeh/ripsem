@@ -11,7 +11,16 @@ use crate::cli::show_path;
 pub struct FastEmbedder {
     model: Mutex<TextEmbedding>,
     dims: usize,
-    query_prefix: Option<String>,
+    prefixes: Prefixes,
+}
+
+/// What a model expects in front of each side. Some models are trained with
+/// a marker that says whether a text is a question or something to be found,
+/// and give weaker vectors without it; fastembed leaves adding it to us.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Prefixes {
+    query: Option<&'static str>,
+    document: Option<&'static str>,
 }
 
 impl FastEmbedder {
@@ -19,7 +28,7 @@ impl FastEmbedder {
     /// stays on the CPU. A model that only answers queries skips packing its
     /// weights for repeated runs, which a single short text never earns back.
     pub fn new(model_id: &str, gpu: bool, queries_only: bool) -> Result<Self> {
-        let (embedding_model, dims, query_prefix) = map_model(model_id)?;
+        let (embedding_model, dims, prefixes) = map_model(model_id)?;
         let cache = cache_dir();
         create_cache(&cache)?;
         let options = TextInitOptions::new(embedding_model)
@@ -46,7 +55,7 @@ impl FastEmbedder {
         Ok(Self {
             model: Mutex::new(model),
             dims,
-            query_prefix,
+            prefixes,
         })
     }
 }
@@ -69,26 +78,38 @@ fn cache_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".ripsem-models"))
 }
 
-fn map_model(id: &str) -> Result<(EmbeddingModel, usize, Option<String>)> {
-    let bge = Some("Represent this sentence for searching relevant passages:".to_string());
+fn map_model(id: &str) -> Result<(EmbeddingModel, usize, Prefixes)> {
+    let bge = Prefixes {
+        query: Some("Represent this sentence for searching relevant passages:"),
+        document: None,
+    };
+    // No trailing spaces: `with_prefix` joins prefix and text with " ".
+    let e5 = Prefixes {
+        query: Some("query:"),
+        document: Some("passage:"),
+    };
+    let nomic = Prefixes {
+        query: Some("search_query:"),
+        document: Some("search_document:"),
+    };
     Ok(match id {
         "bge-small-en-v1.5" => (EmbeddingModel::BGESmallENV15, 384, bge),
-        "all-MiniLM-L6-v2" => (EmbeddingModel::AllMiniLML6V2, 384, None),
+        "all-MiniLM-L6-v2" => (EmbeddingModel::AllMiniLML6V2, 384, Prefixes::default()),
         "bge-base-en-v1.5" => (EmbeddingModel::BGEBaseENV15, 768, bge),
-        "multilingual-e5-small" => (
-            EmbeddingModel::MultilingualE5Small,
-            384,
-            // No trailing space: embed_query joins prefix and text with " ".
-            Some("query:".to_string()),
-        ),
-        "nomic-embed-text-v1.5" => (EmbeddingModel::NomicEmbedTextV15, 768, None),
+        "multilingual-e5-small" => (EmbeddingModel::MultilingualE5Small, 384, e5),
+        "nomic-embed-text-v1.5" => (EmbeddingModel::NomicEmbedTextV15, 768, nomic),
         // Trained on queries and code as they come: no prefix on either side.
-        "jina-embeddings-v2-base-code" => (EmbeddingModel::JinaEmbeddingsV2BaseCode, 768, None),
+        "jina-embeddings-v2-base-code" => (
+            EmbeddingModel::JinaEmbeddingsV2BaseCode,
+            768,
+            Prefixes::default(),
+        ),
         other => return Err(anyhow!("unknown model {other:?}; see `ripsem model list`")),
     })
 }
 
-/// The text a query is embedded as: the model's prefix, a space, the query.
+/// The text a query or document is embedded as: the model's prefix for that
+/// side, a space, the text.
 fn with_prefix(prefix: Option<&str>, text: &str) -> String {
     match prefix {
         Some(p) => format!("{p} {text}"),
@@ -102,13 +123,22 @@ impl Embedder for FastEmbedder {
     }
 
     fn embed_documents(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         let mut model = self.model.lock().expect("embedder mutex poisoned");
-        Ok(model.embed(refs, None)?)
+        match self.prefixes.document {
+            Some(prefix) => {
+                let texts: Vec<String> =
+                    texts.iter().map(|t| with_prefix(Some(prefix), t)).collect();
+                Ok(model.embed(texts, None)?)
+            }
+            None => {
+                let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                Ok(model.embed(refs, None)?)
+            }
+        }
     }
 
     fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
-        let q = with_prefix(self.query_prefix.as_deref(), text);
+        let q = with_prefix(self.prefixes.query, text);
         let mut model = self.model.lock().expect("embedder mutex poisoned");
         let mut out = model.embed(vec![q.as_str()], None)?;
         out.pop()
@@ -148,22 +178,42 @@ mod tests {
 
     #[test]
     fn the_code_model_takes_queries_as_they_are() {
-        let (_, _, prefix) = map_model("jina-embeddings-v2-base-code").unwrap();
-        assert_eq!(prefix, None);
+        let (_, _, prefixes) = map_model("jina-embeddings-v2-base-code").unwrap();
+        assert_eq!(prefixes, Prefixes::default());
         assert_eq!(
-            with_prefix(prefix.as_deref(), "parse a header"),
+            with_prefix(prefixes.query, "parse a header"),
             "parse a header"
         );
     }
 
     #[test]
     fn a_query_prefix_is_joined_with_one_space() {
-        let (_, _, prefix) = map_model("multilingual-e5-small").unwrap();
-        assert_eq!(with_prefix(prefix.as_deref(), "find it"), "query: find it");
-        let (_, _, prefix) = map_model("bge-small-en-v1.5").unwrap();
+        let (_, _, prefixes) = map_model("multilingual-e5-small").unwrap();
+        assert_eq!(with_prefix(prefixes.query, "find it"), "query: find it");
+        let (_, _, prefixes) = map_model("bge-small-en-v1.5").unwrap();
         assert!(
-            with_prefix(prefix.as_deref(), "find it")
+            with_prefix(prefixes.query, "find it")
                 .starts_with("Represent this sentence for searching relevant passages: find it")
         );
+    }
+
+    /// e5 and nomic are trained with a marker on both sides; a document
+    /// embedded without its marker is compared as if it were another query.
+    #[test]
+    fn models_trained_with_document_markers_get_them() {
+        let (_, _, e5) = map_model("multilingual-e5-small").unwrap();
+        assert_eq!(
+            with_prefix(e5.document, "fn main() {}"),
+            "passage: fn main() {}"
+        );
+        let (_, _, nomic) = map_model("nomic-embed-text-v1.5").unwrap();
+        assert_eq!(with_prefix(nomic.query, "find it"), "search_query: find it");
+        assert_eq!(
+            with_prefix(nomic.document, "fn main() {}"),
+            "search_document: fn main() {}"
+        );
+        for id in ["bge-small-en-v1.5", "bge-base-en-v1.5", "all-MiniLM-L6-v2"] {
+            assert_eq!(map_model(id).unwrap().2.document, None, "{id}");
+        }
     }
 }
