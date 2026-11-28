@@ -8,7 +8,12 @@
   side only and nomic on neither, so both compared a question with code as if
   it were another question. An index built by an older ripsem is embedded again
   on the next `index` or `search`, whatever its model, because the chunk
-  revision changed.
+  revision changed. On the bench's 1,043 generated queries over four repos,
+  dense-only MRR@10 goes from 0.403 to 0.464 for e5 and from 0.389 to 0.462
+  for nomic, and full search from 0.420 to 0.425 and from 0.416 to 0.425. On
+  the 100 hand-written queries, e5 full search goes from 0.414 to 0.428, and
+  nomic from 0.390 to 0.364, inside that set's 95% interval (0.31–0.47). The
+  default `bge-small-en-v1.5` is unchanged: every number is the same.
 
 - `install vscode` and `install opencode` add the server to a config that holds
   comments or trailing commas, as those editors allow, and keep the rest of the
